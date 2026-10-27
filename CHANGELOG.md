@@ -46,6 +46,20 @@
 - README 头部与「架构」章节改成跟编译器仓库同款（居中头图 + badge + 导航 +
   mermaid 流程图）。
 
+**已发布**：<https://github.com/JiHuiYiYou/JiHuiYiYou-IDE/releases/tag/v0.1.0>
+（`JHYY-IDE-0.1.0-x64-setup.exe`，NSIS / Windows x64）
+
+> **发版踩的两个坑**（都写在 `electron-builder.yml` 和 `release.yml` 的注释里了）：
+>
+> 1. **electron-builder 看到 git tag 会自己发 Release**（*Implicit publishing
+>    triggered by git tag*），然后去找 `GH_TOKEN` —— CI 里没有 ⇒ exit 1。
+>    产物其实早打出来了，死在最后一步。⇒ `--publish never` + `publish: null`，
+>    发布交给 CI 的 `softprops/action-gh-release`（它拿的是提权过的 `GITHUB_TOKEN`）。
+> 2. **产物文件名里不能有空格** —— GitHub 上传资产时把空格换成点
+>    （`JHYY IDE-…` → `JHYY.IDE-…`），于是 notes 里的下载链接 404、
+>    `SHA256.txt` 里的文件名跟下下来的对不上。顺带：electron-builder 的
+>    自动更新元数据本来就按「去空格」的名字写 ⇒ 带空格的话**自动更新**也是坏的。
+
 **已知限制**：
 
 - 只构建和验证了 **Windows x64**。
