@@ -32,7 +32,12 @@ win:
     - target: nsis
       arch:
         - x64
-  artifactName: ${productName}-${version}-${arch}-setup.${ext}
+  # ⚠️ **文件名里不能有空格** —— GitHub 上传 release 资产时会把空格换成点
+  # （`JHYY IDE-x.y.z-...` → `JHYY.IDE-x.y.z-...`），于是 notes 里的下载链接
+  # 和 SHA256.txt 里写的文件名全对不上（2026-10-28 首个 release 就这么翻车的）。
+  # 顺带：electron-builder 的自动更新元数据（latest.yml）本来就按「去空格」
+  # 的名字写 —— 文件名带空格的话自动更新也是坏的。
+  artifactName: JHYY-IDE-${version}-${arch}-setup.${ext}
 
 nsis:
   oneClick: false

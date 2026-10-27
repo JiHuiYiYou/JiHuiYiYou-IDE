@@ -57,7 +57,7 @@ npm install
 npm run dev
 ```
 
-**Release**: grab `JHYY IDE-<version>-x64-setup.exe` from the
+**Release**: grab `JHYY-IDE-<version>-x64-setup.exe` from the
 [Releases page](https://github.com/JiHuiYiYou/JiHuiYiYou-IDE/releases).
 
 ## Quick start

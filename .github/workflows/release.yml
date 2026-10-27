@@ -142,7 +142,7 @@ jobs:
         run: |
           $version = $env:VERSION
           $tag = $env:TAG_NAME
-          $installerUrl = "https://github.com/JiHuiYiYou/JiHuiYiYou-IDE/releases/download/$tag/JHYY%20IDE-$version-x64-setup.exe"
+          $installerUrl = "https://github.com/JiHuiYiYou/JiHuiYiYou-IDE/releases/download/$tag/JHYY-IDE-$version-x64-setup.exe"
           $shaUrl = "https://github.com/JiHuiYiYou/JiHuiYiYou-IDE/releases/download/$tag/SHA256.txt"
           $notes = @"
           ## JHYY IDE $version
@@ -163,7 +163,7 @@ jobs:
           ### 校验
 
           \`\`\`
-          Get-FileHash -Algorithm SHA256 '.\JHYY IDE-$version-x64-setup.exe'
+          Get-FileHash -Algorithm SHA256 '.\JHYY-IDE-$version-x64-setup.exe'
           \`\`\`
 
           ### 装完还需要编译器

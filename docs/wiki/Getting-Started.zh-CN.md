@@ -5,7 +5,7 @@
 ### IDE 本身
 
 去 [Releases](https://github.com/JiHuiYiYou/JiHuiYiYou-IDE/releases) 下安装包
-（`JHYY IDE-x.y.z-x64-setup.exe`）。目前只有 Windows x64 —— 也是唯一构建并验证过的平台。
+（`JHYY-IDE-x.y.z-x64-setup.exe`）。目前只有 Windows x64 —— 也是唯一构建并验证过的平台。
 
 > 安装包**没有代码签名**，所以 Windows SmartScreen 会拦一下。
 > 选"更多信息 → 仍要运行"。

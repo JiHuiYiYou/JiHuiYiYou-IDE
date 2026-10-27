@@ -5,7 +5,7 @@
 ### The IDE
 
 Download the installer from
-[Releases](https://github.com/JiHuiYiYou/JiHuiYiYou-IDE/releases) (`JHYY IDE-x.y.z-x64-setup.exe`).
+[Releases](https://github.com/JiHuiYiYou/JiHuiYiYou-IDE/releases) (`JHYY-IDE-x.y.z-x64-setup.exe`).
 Windows x64 only — that is the only platform built and tested so far.
 
 > The installer is **not code-signed**, so Windows SmartScreen will complain once.

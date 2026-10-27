@@ -58,7 +58,7 @@ npm run dev
 ```
 
 **发行版**：去 [Releases 页](https://github.com/JiHuiYiYou/JiHuiYiYou-IDE/releases)
-拿 `JHYY IDE-<版本>-x64-setup.exe`。
+拿 `JHYY-IDE-<版本>-x64-setup.exe`。
 
 ## 快速开始
 
