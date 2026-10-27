@@ -1,0 +1,230 @@
+# GH Actions release workflow — JHYY IDE 安装包
+#
+# **这是个 reusable workflow** —— 由 `ci.yml` 的 `release` job 调用，
+# 而那个 job `needs: [check, conformance]`。门不绿就发不出去。
+#
+# ⚠️ 为什么不用 `on: push: tags` 直接触发：
+#   `push: tags` 触发的 run **无法 `needs:` 别的 workflow**，所以 release
+#   会变成「门没过也能发布」。编译器仓库踩过这个坑（v3.4.2 / v4.0.0-rc1 …
+#   五次 tag push 全部失败，最后一个真实 release 停在 6 周前，而同期文档
+#   一直在写 "shipped"）。**「文档说 shipped」与「有可安装产物」之间断了
+#   6 周没人发现，因为发布失败不阻塞任何东西。**
+#
+# 手动路径（workflow_dispatch）默认 dry_run —— 只验证发布链本身能不能跑通，
+# 不创建 Release。
+#
+# Out of scope:
+#   - 代码签名（Authenticode）—— deferred
+#   - Linux / macOS 安装包 —— 语言工具链目前 Windows 优先
+#
+# ⚠️ concurrency group 必须跟调用方**不一样**（加 `-release-` 后缀）。
+#   GitHub 明确警告：caller 与 called workflow 用同一个 group、两边都是
+#   cancel-in-progress: false 时会互相等待 —— 死锁，run 以 failure 结束
+#   且没有任何注解说明原因。编译器仓库实测踩过（tag 推送后 run 里
+#   build-and-test 与 sysv 都 success，唯独 release 连 check-run 都没生成）。
+name: JHYY IDE Release
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: '要发布的 tag（由调用方传入）'
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 0.1.0)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Dry-run (skip upload + release creation)'
+        type: boolean
+        default: true
+
+# Release 构建中途被取消会留下半套产物 —— 所以不 cancel-in-progress。
+concurrency:
+  # ⚠️ 这个 group **必须与调用方 ci.yml 的不一样**。
+  # 被调用的 workflow 里 `github.workflow` 是**调用方的**名字，所以光写
+  # `${{ github.workflow }}` 不够 —— 必须显式加后缀区分。
+  group: ${{ github.workflow }}-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # create Release
+
+jobs:
+  build-and-release:
+    name: 构建安装包 + 创建 GitHub Release
+    runs-on: windows-latest
+    # 30 分钟余量 —— 打包本身约 3-5 分钟，剩下的余量给 electron-builder
+    # 下载 Electron 二进制。job 被超时砍掉会留下半套 artifacts，而
+    # GitHub Release 一旦被创建再补产物是另一套麻烦。
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: JiHuiYiYou-IDE
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: JiHuiYiYou-IDE/package-lock.json
+
+      - name: 解析版本号
+        shell: pwsh
+        run: |
+          # 三条入口，优先级从高到低：
+          #   workflow_call     —— ci.yml 传来的 tag（唯一会真正发布的那条路）
+          #   workflow_dispatch —— 手动输入的 version（dry-run / 手动重发）
+          if ("${{ inputs.tag }}" -ne "") {
+            $env:VERSION = "${{ inputs.tag }}" -replace '^v', ''
+            Write-Host "[via workflow_call] tag=${{ inputs.tag }}"
+          } elseif ("${{ inputs.version }}" -ne "") {
+            $env:VERSION = "${{ inputs.version }}"
+            Write-Host "[via workflow_dispatch] version=${{ inputs.version }}"
+          } else {
+            $env:VERSION = "${{ github.ref_name }}" -replace '^v', ''
+            Write-Host "[fallback] ref_name=${{ github.ref_name }}"
+          }
+          if ($env:VERSION -eq "") { throw "VERSION 解析失败，拒绝发布" }
+          $env:IS_RC = ($env:VERSION -match '-rc') ? '1' : '0'
+          $env:TAG_NAME = "v$($env:VERSION)"
+          Write-Host "VERSION=$($env:VERSION) IS_RC=$($env:IS_RC) TAG_NAME=$($env:TAG_NAME)"
+          "VERSION=$($env:VERSION)"        | Add-Content -Path $env:GITHUB_ENV
+          "IS_RC=$($env:IS_RC)"            | Add-Content -Path $env:GITHUB_ENV
+          "TAG_NAME=$($env:TAG_NAME)"      | Add-Content -Path $env:GITHUB_ENV
+
+      - name: Install dependencies
+        working-directory: JiHuiYiYou-IDE
+        run: npm ci
+
+      - name: 构建安装包（NSIS）
+        working-directory: JiHuiYiYou-IDE
+        run: npm run dist
+
+      - name: 确认产物在（门不许静默跳过）
+        shell: pwsh
+        run: |
+          # ⚠️ PowerShell 里 `*.{exe,msi}` 是 **bash 的 brace expansion**，
+          # PowerShell 会当成参数列表 → ParserError。用 -in / -Include，
+          # 不能靠 glob。
+          $arts = Get-ChildItem JiHuiYiYou-IDE\release -File -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Extension -eq '.exe' -and $_.Name -match 'setup' }
+          if (-not $arts) {
+            Write-Host "::error::release 目录里没有 setup 安装包"
+            Get-ChildItem JiHuiYiYou-IDE\release -Recurse -ErrorAction SilentlyContinue |
+              ForEach-Object { Write-Host "  $($_.FullName)" }
+            exit 1
+          }
+          foreach ($f in $arts) {
+            Write-Host "  ✅ $($f.Name) ($($f.Length) bytes)"
+          }
+
+      - name: 生成 SHA256.txt
+        shell: pwsh
+        run: |
+          $arts = Get-ChildItem JiHuiYiYou-IDE\release -File |
+                  Where-Object { $_.Extension -eq '.exe' -and $_.Name -match 'setup' }
+          $lines = foreach ($f in $arts) {
+            $sha = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()
+            "$sha  $($f.Name)"
+          }
+          Set-Content -Path JiHuiYiYou-IDE\release\SHA256.txt -Value $lines
+          Get-Content JiHuiYiYou-IDE\release\SHA256.txt
+
+      - name: 生成 release notes
+        shell: pwsh
+        run: |
+          $version = $env:VERSION
+          $tag = $env:TAG_NAME
+          $installerUrl = "https://github.com/JiHuiYiYou/JiHuiYiYou-IDE/releases/download/$tag/JHYY%20IDE-$version-x64-setup.exe"
+          $shaUrl = "https://github.com/JiHuiYiYou/JiHuiYiYou-IDE/releases/download/$tag/SHA256.txt"
+          $notes = @"
+          ## JHYY IDE $version
+
+          给 [JHYY（机会翼游）](https://github.com/JiHuiYiYou/JiHuiYiYou-compiler) 做的桌面 IDE。
+
+          - **块视图**（Blockly）—— 拖块写程序
+          - **文本视图**（CodeMirror 6）—— 正常写代码
+          - **内嵌 Claude Code** —— 对话本机的 \`claude\` CLI，它能调 \`jhyy_check\` 看真实编译错误
+
+          两个写代码的视图共用同一个 AST，改一边另一边跟着变。
+
+          ### 下载
+
+          - [安装包 $version]($installerUrl)
+          - [SHA256.txt]($shaUrl)
+
+          ### 校验
+
+          \`\`\`
+          Get-FileHash -Algorithm SHA256 '.\JHYY IDE-$version-x64-setup.exe'
+          \`\`\`
+
+          > 安装包**未做代码签名** —— Windows SmartScreen 可能拦一下，选"更多信息 → 仍要运行"。
+          > 需要本机有 JHYY 编译器（IDE 会自动找 \`../JiHuiYiYou/compiler/build/bin/jhyy.exe\`、
+          > \`C:\Program Files\JHYY\bin\jhyy.exe\` 或 PATH 上的 \`jhyy.exe\`）。
+          "@
+          Set-Content -Path JiHuiYiYou-IDE\release\release-notes.md -Value $notes
+          Get-Content JiHuiYiYou-IDE\release\release-notes.md | Select-Object -First 20
+
+      - name: 创建 GitHub Release
+        # ⚠️ **不能用 `github.event_name` 判定「是不是被 workflow_call 调进来的」**
+        # —— 被调用的 workflow 里 `github.event_name` 是**调用方的** event。
+        # 编译器仓库实测踩过：构建、验证全 success，唯独这一步 skipped，
+        # run 整体却是绿的，Release 根本没被创建 ——
+        # **一道跳过自己的门比没有门更隐蔽**，因为 run 是 ✓。
+        #
+        # 改成用「只在 workflow_call 下才存在的 input」判定：`tag` 只在
+        # `on: workflow_call` 里声明，workflow_dispatch 路径没有它。
+        # 这比 `github.event_name` 可靠 —— 后者的值取决于调用方从哪来。
+        #
+        # 顺带：`inputs.dry_run` 是 **boolean**，不能拿 'false' 字符串比。
+        #
+        # 三条路径逐一核对：
+        #   workflow_call                    → tag != ''            → 发
+        #   workflow_dispatch dry_run=true   → tag == '' 且 true     → 不发
+        #   workflow_dispatch dry_run=false  → tag == '' 且 == false → 发
+        if: ${{ inputs.tag != '' || inputs.dry_run == false }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: 'JHYY IDE ${{ env.VERSION }}${{ env.IS_RC == ''1'' && '' [RC]'' || '''' }}'
+          body_path: JiHuiYiYou-IDE/release/release-notes.md
+          draft: false
+          prerelease: ${{ env.IS_RC == '1' }}
+          make_latest: ${{ env.IS_RC != '1' }}
+          fail_on_unmatched_files: true
+          files: |
+            JiHuiYiYou-IDE/release/*-x64-setup.exe
+            JiHuiYiYou-IDE/release/SHA256.txt
+          # GITHUB_TOKEN auto-provided; no extra secrets needed.
+
+      - name: Dry-run 汇总
+        # ⚠️ 2026-10-18 修：`inputs.dry_run` 是 **boolean**，拿字符串 'true' 去比
+        # 永远为 false —— 于是这两个 dry-run 专属的检查从上线起就没跑过一次。
+        # tag 路径不受影响（本来就该 skip），但 dry-run 因此一直没在做
+        # dry-run 该做的核对。
+        if: inputs.dry_run && github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        run: |
+          Write-Host ""
+          Write-Host "============================================="
+          Write-Host "DRY RUN — nothing uploaded, no Release created"
+          Write-Host "VERSION=$($env:VERSION) TAG_NAME=$($env:TAG_NAME) IS_RC=$($env:IS_RC)"
+          Write-Host "Built artifacts:"
+          $arts = Get-ChildItem JiHuiYiYou-IDE\release -File -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Name -match 'setup\.exe$|SHA256\.txt$|release-notes\.md$' }
+          if (-not $arts) {
+            Write-Host "  ❌ 没有产物"
+            exit 1
+          }
+          foreach ($f in $arts) {
+            Write-Host "  ✅ $($f.Name) ($($f.Length) bytes)"
+          }
+          Write-Host "============================================="

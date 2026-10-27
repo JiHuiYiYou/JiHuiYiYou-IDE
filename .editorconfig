@@ -1,0 +1,32 @@
+# EditorConfig — JHYY IDE repo-wide consistency
+# https://editorconfig.org/
+
+root = true
+
+# Default for all files
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+
+# TypeScript / JS (2 空格, prettier 风格)
+[*.{ts,tsx,js,jsx,mjs,cjs}]
+indent_size = 2
+
+# JSON / YAML (2 空格)
+[*.{json,yml,yaml}]
+indent_size = 2
+
+# CSS (2 空格)
+[*.css]
+indent_size = 2
+
+# Markdown
+[*.md]
+indent_size = 2
+
+# Shell / Python (4 空格)
+[*.{sh,py}]
+indent_size = 4

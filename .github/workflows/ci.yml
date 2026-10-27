@@ -1,0 +1,169 @@
+# GH Actions CI — JHYY IDE
+#
+# | job          | 阻断? | 验的是                                                       |
+# |--------------|-------|--------------------------------------------------------------|
+# | check        | ✅ 是 | 类型检查 + 单元测试 + 快速一致性门（编译，不运行）              |
+# | conformance  | ✅ 是 | 语言仓库全部 284 个例子：IDE 解析→打印→**真实编译器编译→运行**   |
+# | release      | ✅ 是 | 打 tag 时构建 NSIS 安装包 + 创建 GitHub Release               |
+#
+# **一致性门需要编译器仓库。** 它被 checkout 到本仓库的**兄弟目录**
+# （`JiHuiYiYou-IDE/` 与 `JiHuiYiYou/` 平级），因为测试按"兄弟目录"找编译器
+# —— 这跟本地开发的布局一致，也让 CI 和本地跑的是同一条路径。
+#
+# ⚠️ **门不许静默跳过。** 一道因为缺前置条件而跳过的门比没有门更隐蔽 ——
+# run 是绿的，但什么都没验。所以 `conformance` job 里显式检查编译器在不在，
+# 不在就直接 fail。
+#
+# **跟 [JiHuiYiYou-compiler](https://github.com/JiHuiYiYou/JiHuiYiYou-compiler)
+# 的 CI 用同一个 MSYS2 UCRT64 工具链** —— 那边的编译器要 gcc 链接，
+# 这边的编译器（跑测试时）也要 gcc 链接。
+
+name: JHYY IDE CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# 同一个 branch 上后一次 push 取消前一次（还没跑完的）。
+# ⚠️ `release` job 用的 group 必须跟这里**不一样** —— GitHub 明确警告：
+# caller 与 called workflow 用同一个 group、两边都是 cancel-in-progress: false
+# 时会互相等待（死锁，run 以 failure 结束且没有任何注解说明原因）。
+# 被调用的 workflow 里 `github.workflow` 是**调用方的**名字，所以光写
+# `${{ github.workflow }}` 不够 —— 必须显式加后缀区分。
+concurrency:
+  group: jhyy-ide-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: 类型检查 + 单元测试
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout IDE
+        uses: actions/checkout@v4
+        with:
+          path: JiHuiYiYou-IDE
+
+      - name: Checkout 编译器仓库（兄弟目录，一致性门要用）
+        uses: actions/checkout@v4
+        with:
+          repository: JiHuiYiYou/JiHuiYiYou-compiler
+          path: JiHuiYiYou
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: JiHuiYiYou-IDE/package-lock.json
+
+      - name: Setup MSYS2 + toolchain
+        # 编译器要 gcc 链接；IDE 的一致性测试调的就是这个编译器。
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            base-devel
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-binutils
+
+      - name: 确认编译器在（门不许静默跳过）
+        shell: pwsh
+        run: |
+          $jhyy = "JiHuiYiYou\compiler\build\bin\jhyy.exe"
+          if (-not (Test-Path $jhyy)) {
+            Write-Host "::error::找不到编译器 $jhyy —— 一致性门没法跑。拒绝继续。"
+            exit 1
+          }
+          Write-Host "[OK] 编译器在: $jhyy"
+          & $jhyy --help | Select-Object -First 3
+
+      - name: Install dependencies
+        working-directory: JiHuiYiYou-IDE
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: JiHuiYiYou-IDE
+        run: npm run typecheck
+
+      - name: 单元测试 + 快速一致性门
+        working-directory: JiHuiYiYou-IDE
+        run: npx vitest run tests/lang tests/blocks tests/compiler tests/conformance/examples.test.ts
+
+  conformance:
+    name: 全量一致性门（编译 + 运行）
+    runs-on: windows-latest
+    # 30 分钟是实测值附近的余量 —— 284 个例子每个都要 gcc 链接一遍。
+    # 超时砍掉会留下半截产物，而 run 结论是 failure 且看不出原因。
+    timeout-minutes: 45
+    steps:
+      - name: Checkout IDE
+        uses: actions/checkout@v4
+        with:
+          path: JiHuiYiYou-IDE
+
+      - name: Checkout 编译器仓库（兄弟目录）
+        uses: actions/checkout@v4
+        with:
+          repository: JiHuiYiYou/JiHuiYiYou-compiler
+          path: JiHuiYiYou
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: JiHuiYiYou-IDE/package-lock.json
+
+      - name: Setup MSYS2 + toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            base-devel
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-binutils
+
+      - name: 确认编译器在（门不许静默跳过）
+        shell: pwsh
+        run: |
+          $jhyy = "JiHuiYiYou\compiler\build\bin\jhyy.exe"
+          if (-not (Test-Path $jhyy)) {
+            Write-Host "::error::找不到编译器 $jhyy —— 一致性门没法跑。拒绝继续。"
+            exit 1
+          }
+          Write-Host "[OK] 编译器在: $jhyy"
+
+      - name: Install dependencies
+        working-directory: JiHuiYiYou-IDE
+        run: npm ci
+
+      - name: 全量一致性门（IDE 打印的代码 → 真实编译器 → 真跑）
+        working-directory: JiHuiYiYou-IDE
+        env:
+          # 门必须真的走「编译 + 运行」那条路，不能只编译。
+          # 全程 284 个例子，每个都 gcc 链接一遍 —— 半小时。
+          JHY_CONFORMANCE_FULL: '1'
+        run: npx vitest run tests/conformance/run.test.ts
+
+  release:
+    name: 构建安装包 + 创建 Release
+    # 只有打了 v* tag 才发。
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [check, conformance]
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets: inherit

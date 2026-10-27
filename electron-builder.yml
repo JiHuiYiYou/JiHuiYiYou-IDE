@@ -1,0 +1,33 @@
+appId: com.jihuiyiyou.ide
+productName: JHYY IDE
+copyright: JHYY
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - out/**/*
+  - package.json
+  - '!**/*.map'
+
+asar: true
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: ${productName}-${version}-${arch}-setup.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: JHYY IDE
+  deleteAppDataOnUninstall: false
+
+# 打包体积大头是 Electron 本身（约 200 MB），压缩一下。
+compression: normal

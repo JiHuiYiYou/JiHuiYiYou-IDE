@@ -1,0 +1,15 @@
+node_modules/
+out/
+dist/
+release/
+.vite/
+*.log
+.DS_Store
+Thumbs.db
+
+# 构建产物
+*.tsbuildinfo
+
+# 本地调试
+tmp/
+.tmp/

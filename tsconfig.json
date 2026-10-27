@@ -1,0 +1,24 @@
+{
+  "include": ["src/**/*", "tests/**/*", "scripts/**/*", "electron.vite.config.ts", "vitest.config.ts"],
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "types": ["node"],
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@lang/*": ["src/lang/*"],
+      "@shared/*": ["src/shared/*"]
+    }
+  }
+}

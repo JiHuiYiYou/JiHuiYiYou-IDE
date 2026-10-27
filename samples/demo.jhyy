@@ -1,0 +1,12 @@
+extern fn printf(fmt: *u8, val: i32) -> i32;
+
+fn main_jhyy() -> i32 {
+    let mut i = 0;
+    let mut total = 0;
+    while i < 10 {
+        total = total + i;
+        i = i + 1;
+    }
+    printf("total = %d\n", total);
+    total
+}

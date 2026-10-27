@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="16" fill="#1a1a2e"/>
+  <!-- 三块堆叠的积木：拖块编程 -->
+  <rect x="26" y="30" width="34" height="20" rx="5" fill="#00d4aa"/>
+  <rect x="40" y="56" width="34" height="20" rx="5" fill="#00d4aa" opacity="0.75"/>
+  <rect x="54" y="82" width="34" height="20" rx="5" fill="#00d4aa" opacity="0.5"/>
+  <rect x="26" y="106" width="64" height="4" rx="2" fill="#00d4aa" opacity="0.6"/>
+</svg>

@@ -1,0 +1,22 @@
+# 强制 LF 行尾（Windows 上 git 偶尔弹 "LF will be replaced by CRLF" 警告）
+*.ts    text eol=lf
+*.tsx   text eol=lf
+*.js    text eol=lf
+*.mjs   text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.svg   text eol=lf
+*.txt   text eol=lf
+*.lock  text eol=lf
+
+# 二进制 —— 不能做换行转换（转换会损坏文件）
+*.exe   binary
+*.dll   binary
+*.png   binary
+*.ico   binary
+*.woff  binary
+*.zip   binary
