@@ -14,7 +14,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "conformance": "vitest run tests/conformance",
-    "dist": "electron-vite build && electron-builder --win nsis",
+    "dist": "electron-vite build && electron-builder --win nsis --publish never",
     "gen:spec": "node scripts/gen-spec-index.mjs",
     "publish:wiki": "node scripts/publish-wiki.mjs",
     "smoke:claude": "vite-node scripts/claude-smoke.ts"

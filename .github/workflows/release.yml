@@ -157,7 +157,7 @@ jobs:
 
           ### 下载
 
-          - [安装包 $version]($installerUrl)
+          - [安装包 $version]($installerUrl)（NSIS，Windows x64）
           - [SHA256.txt]($shaUrl)
 
           ### 校验
@@ -166,9 +166,27 @@ jobs:
           Get-FileHash -Algorithm SHA256 '.\JHYY IDE-$version-x64-setup.exe'
           \`\`\`
 
+          ### 装完还需要编译器
+
+          IDE **本身**不含编译器 —— 每次编译、每条诊断都由真实的 \`jhyy.exe\` 出。
+          IDE 会按这个顺序自动找：
+
+          1. IDE 设置里配的路径
+          2. 环境变量 \`JHY_EXE\`
+          3. \`../JiHuiYiYou/compiler/build/bin/jhyy.exe\`（仓库旁边那个开发构建）
+          4. \`C:\Program Files\JHYY\bin\jhyy.exe\`（官方安装版）
+          5. \`PATH\` 上的 \`jhyy.exe\`
+
+          编译器要 MSYS2 的 ucrt64 gcc 才能链接（见
+          [编译器仓库](https://github.com/JiHuiYiYou/JiHuiYiYou-compiler)）。
+          **别用 Git Bash 自带的 MinGW gcc** —— 它链不了 PE，而且失败时不吭声。
+
+          ### 长文指南
+
+          [Wiki](https://github.com/JiHuiYiYou/JiHuiYiYou-IDE/wiki)：快速上手 · 架构 ·
+          块子集 · 疑难排查。
+
           > 安装包**未做代码签名** —— Windows SmartScreen 可能拦一下，选"更多信息 → 仍要运行"。
-          > 需要本机有 JHYY 编译器（IDE 会自动找 \`../JiHuiYiYou/compiler/build/bin/jhyy.exe\`、
-          > \`C:\Program Files\JHYY\bin\jhyy.exe\` 或 PATH 上的 \`jhyy.exe\`）。
           "@
           Set-Content -Path JiHuiYiYou-IDE\release\release-notes.md -Value $notes
           Get-Content JiHuiYiYou-IDE\release\release-notes.md | Select-Object -First 20

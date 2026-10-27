@@ -13,6 +13,17 @@ files:
 
 asar: true
 
+# ⚠️ **不让 electron-builder 自己发 Release。**
+#
+# electron-builder 26 看到 git tag 会「隐式发布」（日志原文：*Implicit publishing
+# triggered by git tag*），然后去找 `GH_TOKEN` —— CI 里没有 ⇒ 直接 exit 1。
+# 2026-10-28 第一次跑 release job 就死在这：产物已经打出来了（.exe + .blockmap
+# 都在），最后一步发布时炸的。
+#
+# 发布由 CI 的 `softprops/action-gh-release` 负责 —— 它拿的是 job 上显式提权过的
+# `GITHUB_TOKEN`（`contents: write`）。`npm run dist` 里也带了 `--publish never`。
+publish: null
+
 win:
   # 延用编译器仓库的品牌图标（`assets/` 下那套就是从那儿拷来的）——
   # electron-builder 要 256x256 起步，`.ico` 里带了 16/32/48/64/128/256 六档。
