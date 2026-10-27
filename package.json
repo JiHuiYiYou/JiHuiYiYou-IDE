@@ -39,7 +39,7 @@
     "electron": "^45.0.0",
     "electron-builder": "^26.18.1",
     "electron-vite": "^5.0.0",
-    "typescript": "^5.9.3",
+    "typescript": "^7.0.2",
     "vite": "^7.3.7",
     "vitest": "^3.2.7"
   }
