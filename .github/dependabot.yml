@@ -7,9 +7,16 @@
 #     打包还成不成立 ⇒ 单独一个 group，攒一批再升。
 #   · **运行期**（blockly / codemirror / react）—— **进产物**。这些是 IDE 的
 #     脸面（块视图、文本视图），升级必须过一致性门 + 手动看一眼界面。
-#     ⇒ 不自动升，交给人判断。
+#     ⇒ 不自动升，交给人判断（见下面的 ignore）。
 #
-# 只升 patch/minor，不升 major —— 大版本往往要改代码（Blockly 13 → 14 那种）。
+# ⚠️ **大版本会单独开 PR，不会并进 group。** Dependabot 的 group
+# `update-types` 只决定「哪些更新进这个组」，**不是**「大版本不许升」。
+# 所以 Electron 46 / Vite 8 / TypeScript 7 这类大版本照样会开 PR ——
+# 这是**故意的**：大版本要改代码（Blockly 13 → 14 那种），由人判断要不要接，
+# 但你得先知道它来了。CI 会告诉你它成不成立。
+#
+# （想要「大版本一律不开」，得另加一条
+# `ignore: [{dependency-name: "*", update-types: ["version-update:semver-major"]}]`。）
 version: 2
 updates:
   - package-ecosystem: npm
