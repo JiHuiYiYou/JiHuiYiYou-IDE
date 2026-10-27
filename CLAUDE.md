@@ -34,14 +34,22 @@ JHYY IDE —— 给 **JHYY（机会翼游）** 做的桌面 IDE。
 `jhyy.exe` 是唯一的裁判。任何改动 `src/lang/` 之后，必须跑：
 
 ```bash
-npm test          # 360 个测试，含 287 个真实编译器的往返验证
+npm test          # 359 个测试，含 278 个真实编译器的往返验证
 ```
 
-`tests/conformance/examples.test.ts` 会把语言仓库的 **284 个示例**逐个走
+`tests/conformance/examples.test.ts` 会把语言仓库的 **277 个示例**逐个走
 「IDE 解析 → IDE 打印 → 真实 `jhyy.exe` 编译」，一个不过就是回归。
 
+> **语料口径跟上游一致**：以 `_` 开头的文件**不进语料**
+> （`mcp-jhyy/jhyy_regress.py:786`、`mcp-jhyy/server.py:453`、
+> `scripts/dev/audit_test_assertions.py:302` 三处都排除）。
+> 那 9 个文件断言的是**跟机器绑定**的事实 —— 比如 `_jh_gcc_p1.jhyy` 期望
+> gcc 在 `C:\msys64\ucrt64\bin\gcc.exe`，CI 机器上那个路径压根不存在
+> （setup-msys2 装在 `$RUNNER_TEMP\msys64`）⇒ 必假红。
+> **别把它们放回来** —— 除非上游也放回来。
+
 `tests/conformance/run.test.ts` 更狠：编译 + **运行** + 比对 `// EXPECT:` 指令。
-全量跑（要半小时）：
+全量跑（约 25 分钟）：
 
 ```bash
 JHY_CONFORMANCE_FULL=1 npx vitest run tests/conformance/run.test.ts
@@ -105,7 +113,7 @@ src/
 npm run dev          # 开发
 npm run build        # 构建
 npm run typecheck    # 类型检查
-npm test             # 测试（360 个）
+npm test             # 测试（359 个）
 npm run conformance  # 只跑一致性测试
 npm run dist         # 打 NSIS 安装包
 npx vite-node scripts/claude-smoke.ts   # Claude 集成冒烟（会消耗 API 额度）
@@ -122,6 +130,10 @@ npx vite-node scripts/claude-smoke.ts   # Claude 集成冒烟（会消耗 API �
 - **编译器没有错误恢复**，第一个错就 bail —— 所以每次编译只有一条诊断。
 - **编译器的跨阶段临时文件走相对 CWD 的路径**（`compiler/build/obj/…`），
   而它**不会自己创建那个目录** —— IDE 得给编译器一个可写的 CWD。
+- **子进程的 PATH 只「追加」，绝不「替换」**（语言仓库 W-156 的教训）：
+  继承来的 PATH 一个字都不能丢 —— CI 上 setup-msys2 把 MSYS2 装在
+  `$RUNNER_TEMP\msys64`，整个替换掉 ⇒ windres 找不到 ⇒ 几百个测试全挂。
+  见 `src/main/compiler/env.ts`。
 - **Blockly 13 里 `setNextStatement(true)` 不再创建 previousConnection**，
   语句块必须显式 `setPreviousStatement(true)`。
 - **Blockly 的字段必须显式给名字**，否则会建出空名字的字段，读回来时找不到。

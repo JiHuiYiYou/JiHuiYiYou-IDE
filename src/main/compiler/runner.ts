@@ -75,7 +75,7 @@ interface SpawnOutcome {
 function runProcess(
   exe: string,
   args: string[],
-  opts: { cwd: string; timeoutMs: number },
+  opts: { cwd: string; timeoutMs: number; env?: Record<string, string> },
 ): Promise<SpawnOutcome> {
   return new Promise((resolvePromise) => {
     let stdout = ''
@@ -90,7 +90,7 @@ function runProcess(
       // stdin 接到"空设备" —— 读 stdin 的程序立刻拿到 EOF，而不是一直阻塞。
       // 语言仓库的回归 harness 也是这么做的（subprocess.DEVNULL）。
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: buildSubprocessEnv(),
+      env: buildSubprocessEnv(opts.env),
     })
 
     activeChild = child
@@ -152,6 +152,13 @@ export interface CompileOptions {
    * 并发编译时必须传不同的名字，否则会互相覆盖。
    */
   outBase?: string
+  /**
+   * 额外的环境变量（覆盖继承来的同名变量）。
+   *
+   * 一致性测试用它实现 `// SETENV: KEY=VALUE` 指令 —— 语言仓库的回归 harness
+   * 也是把 SETENV 注入到编译 + 运行两个 env 里（`mcp-jhyy/jhyy_regress.py:471`）。
+   */
+  env?: Record<string, string>
 }
 
 /**
@@ -179,6 +186,7 @@ export async function compileFile(opts: CompileOptions): Promise<CompileResult> 
   const outcome = await runProcess(opts.exePath, args, {
     cwd: work,
     timeoutMs: opts.timeoutMs ?? 60_000,
+    env: opts.env,
   })
 
   const { diagnostics, raw } = parseDiagnostics(outcome.stderr)
@@ -208,6 +216,14 @@ export interface RunOptions {
    * 有些例子用相对路径读写 `compiler/build/bin/…`。
    */
   cwd?: string
+  /**
+   * 额外的环境变量 —— **编译和运行都带上**。
+   *
+   * 一致性测试用它实现 `// SETENV: KEY=VALUE` 指令：语言仓库的回归 harness
+   * 也是把 SETENV 同时注入编译 env 和运行 env（`mcp-jhyy/jhyy_regress.py:470-471`），
+   * 少一边的话测试的语义就跟上游对不上了。
+   */
+  env?: Record<string, string>
 }
 
 /**
@@ -230,6 +246,7 @@ export async function runFile(opts: RunOptions): Promise<RunResult> {
     noLink: false,
     timeoutMs: 60_000,
     outBase,
+    env: opts.env,
   })
 
   if (!compile.ok) {
@@ -259,6 +276,7 @@ export async function runFile(opts: RunOptions): Promise<RunResult> {
   const outcome = await runProcess(exePath, [], {
     cwd: opts.cwd ?? dirname(file),
     timeoutMs: opts.timeoutMs ?? 10_000,
+    env: opts.env,
   })
 
   const crash = ntstatusName(outcome.code)

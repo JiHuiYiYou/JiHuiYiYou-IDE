@@ -21,6 +21,12 @@
    跑 `npm test` 时一致性套件会**真的**调 `jhyy.exe` 编译 —— 没有编译器仓库的话，
    那两个套件会**静默跳过**（这是最坏的情况：门看着是绿的，其实什么都没验）。
 
+4. **知道语料的口径**：一致性门跑的是语言仓库 `compiler/tests/examples/` 下
+   **277 个** `.jhyy`。以 `_` 开头的 9 个文件**不进语料** —— 跟语言仓库自己的
+   harness 同口径（三处都排除：`jhyy_regress.py:786`、`server.py:453`、
+   `audit_test_assertions.py:302`）。它们断言的是跟机器绑定的事实
+   （比如 gcc 必须在 `C:\msys64\ucrt64\bin\gcc.exe`），换台机器就假红。
+
 ## 提交流程
 
 ### 1. 改前
@@ -43,7 +49,7 @@
 
 | 改的文件 | 必跑 |
 |----------|------|
-| `src/lang/**`（解析器 / 打印器 / 块转换） | `npm test`（**含 287 个真实编译器一致性门**） |
+| `src/lang/**`（解析器 / 打印器 / 块转换） | `npm test`（**含 278 个真实编译器一致性门**） |
 | `src/renderer/**` | `npm run typecheck` + `npm test` + 手动起 `npm run dev` 看一眼 |
 | `src/main/**` | `npm run typecheck` + `npm test`（含真实编译器集成测试） |
 | `tests/**` | `npm test` |
@@ -88,7 +94,7 @@
 | 门 | 验的是什么 |
 |---|---|
 | `check` | 类型检查 + 单测（不含一致性） |
-| `conformance` | 语言仓库的 284 个例子：IDE 解析 → IDE 打印 → 真实编译器编译 → 运行 → 比对 `// EXPECT:` |
+| `conformance` | 语言仓库的 277 个例子：IDE 解析 → IDE 打印 → 真实编译器编译 → 运行 → 比对 `// EXPECT:` |
 | `release` | 打 tag 时构建安装包 + 创建 GitHub Release |
 
 **CI 门必须真的走到它要验的路径。** 一道因为缺前置条件而**静默跳过**的门，

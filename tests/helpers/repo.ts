@@ -40,7 +40,28 @@ export function examplesDir(): string | null {
   return existsSync(dir) ? dir : null
 }
 
-/** 递归收集所有 .jhyy 文件。 */
+/**
+ * 递归收集所有 .jhyy 文件。
+ *
+ * ⚠️ **以 `_` 开头的文件不进语料** —— 跟语言仓库的 harness 保持同一口径：
+ *
+ *   - `mcp-jhyy/jhyy_regress.py:786`   `if not p.name.startswith("_")`
+ *   - `mcp-jhyy/server.py:453`         `not f.startswith("_")`
+ *   - `scripts/dev/audit_test_assertions.py:302`  `not p.name.startswith("_")`
+ *
+ * 三处**都**排除，说明 `_` 前缀是语言仓库约定的「不属于可移植语料」标记。
+ * 现有 9 个这样的文件全是**环境相关 / 需手工准备**的：
+ *
+ *   - `_jh_gcc_p1/p2/p3.jhyy` —— 断言 `jh_gcc_path()` 返回
+ *     `C:\msys64\ucrt64\bin\gcc.exe`。那是**本机的** MSYS2 路径；
+ *     CI 上 setup-msys2 把 MSYS2 装在 `$RUNNER_TEMP\msys64` ⇒ 该路径不存在 ⇒
+ *     探测返回别的路径 ⇒ 断言必假红（2026-10-27 IDE CI 就是这么红的）。
+ *     p2 还要手工建 `_tmp_jhyy_home/env.txt` 才能跑（文件里写明了）。
+ *   - `_audit_w098_*.jhyy` / `_w101_repro_chain.jhyy` —— 特定 bug 的复现件。
+ *
+ * 跟上游口径一致 ⇒ IDE 的门**不会**因为「上游自己都不跑的东西」而红。
+ * 反过来说：这不是把门放宽 —— 上游的回归门跑的是同一批文件。
+ */
 export function collectJhyyFiles(dir: string): string[] {
   const out: string[] = []
   for (const entry of readdirSync(dir)) {
@@ -48,7 +69,7 @@ export function collectJhyyFiles(dir: string): string[] {
     const st = statSync(full)
     if (st.isDirectory()) {
       out.push(...collectJhyyFiles(full))
-    } else if (entry.endsWith('.jhyy')) {
+    } else if (entry.endsWith('.jhyy') && !entry.startsWith('_')) {
       out.push(full)
     }
   }
@@ -112,6 +133,15 @@ export interface Directives {
   /** `// SKIP: reason` —— 跳过 */
   skip: boolean
   skipReason?: string
+  /**
+   * `// SETENV: KEY=VALUE` —— 注入到子进程 env。
+   *
+   * 语言仓库的回归 harness 支持这条指令（`mcp-jhyy/jhyy_regress.py:441-447`），
+   * 注入到**编译 + 运行**两个 env（`:470-471`）。IDE 的门要跟它同口径 ——
+   * 否则一个靠 env 区分行为的测试，IDE 跑出来的环境跟上游不一样，
+   * 比出来的结论也就没有意义了。
+   */
+  setenv: Record<string, string>
 }
 
 export function readDirectives(src: string): Directives {
@@ -123,6 +153,15 @@ export function readDirectives(src: string): Directives {
   const mSkip = text.match(/\/\/\s*SKIP\s*[:=]\s*(.*)/)
   const mXfail = text.match(/\/\/\s*XFAIL\s*[:=]\s*(.*)/)
 
+  // SETENV：多行 KEY=VALUE。行尾 `#` 起是注释（跟上游同规则）。
+  const setenv: Record<string, string> = {}
+  for (const line of text.split('\n')) {
+    const sm = /^\/\/\s*SETENV\s*:\s*([A-Za-z_][A-Za-z0-9_]*)=(.*?)(?:\s*#.*)?$/.exec(
+      line.trim(),
+    )
+    if (sm) setenv[sm[1]] = sm[2].trim()
+  }
+
   return {
     expectExit: m ? Number(m[1]) : undefined,
     expectOut: mOut ? mOut[1] : undefined,
@@ -130,6 +169,7 @@ export function readDirectives(src: string): Directives {
     xfail: Boolean(mXfail),
     skip: Boolean(mSkip),
     skipReason: mSkip?.[1]?.trim(),
+    setenv,
   }
 }
 

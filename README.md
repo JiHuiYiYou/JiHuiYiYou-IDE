@@ -7,7 +7,7 @@
 **Block-based. Code-based. Talks to Claude Code.**
 
 [![Version](https://img.shields.io/badge/version-v0.1.0-00d4aa)](CHANGELOG.md)
-[![Conformance](https://img.shields.io/badge/conformance-286%2F286-success)](tests/conformance)
+[![Conformance](https://img.shields.io/badge/conformance-277%2F277-success)](tests/conformance)
 [![Platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey)](#install)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![中文](https://img.shields.io/badge/lang-中文-red)](README.zh-CN.md)
@@ -170,18 +170,24 @@ tests/
 ## Testing
 
 The IDE's parser and printer have to say the same thing as the **real compiler**. That is
-enforced against the compiler repo's own 284 example programs:
+enforced against the compiler repo's own 277 example programs:
 
 | Suite | What it does | Count |
 |---|---|---|
-| `tests/conformance/examples.test.ts` | IDE parses → IDE prints → **real `jhyy.exe` compiles** | 287 |
-| `tests/conformance/run.test.ts` | …and then **runs** it, matching the `// EXPECT:` directives | 19 (full set: 286) |
-| everything else | unit tests | 54 |
+| `tests/conformance/examples.test.ts` | IDE parses → IDE prints → **real `jhyy.exe` compiles** | 278 |
+| `tests/conformance/run.test.ts` | …and then **runs** it, matching the `// EXPECT:` directives | 19 (full set: 277) |
+| everything else | unit tests | 62 |
+
+The corpus follows the compiler repo's own rule: files whose name starts with `_` are
+**not** part of it (`mcp-jhyy/jhyy_regress.py:786`, `mcp-jhyy/server.py:453`,
+`scripts/dev/audit_test_assertions.py:302` all exclude them). Those 9 files assert
+machine-specific facts — e.g. `_jh_gcc_p1.jhyy` expects the gcc at
+`C:\msys64\ucrt64\bin\gcc.exe`, a path that simply does not exist on a CI runner.
 
 ```bash
-npm test                                    # all 360
+npm test                                    # all 359
 npx vitest run tests/conformance            # conformance only
-JHY_CONFORMANCE_FULL=1 npx vitest run tests/conformance/run.test.ts   # full 286 (≈30 min)
+JHY_CONFORMANCE_FULL=1 npx vitest run tests/conformance/run.test.ts   # full 277 (≈25 min)
 ```
 
 The conformance suites need the compiler repo checked out **as a sibling** of this repo —

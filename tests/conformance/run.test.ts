@@ -108,6 +108,9 @@ describe('IDE 打印的代码跑起来行为一致', () => {
         // 跟语言仓库的回归 harness 一样：程序在**仓库根目录**下跑
         // （有些例子用相对路径读写 compiler/build/bin/…）
         cwd: repoRoot,
+        // `// SETENV: KEY=VALUE` —— 注入到编译 + 运行两个 env
+        // （跟 mcp-jhyy/jhyy_regress.py:470-471 同口径）
+        env: directives.setenv,
       })
 
       if (directives.expectError) {

@@ -103,6 +103,8 @@ describe('IDE 解析器与真实编译器的一致性', () => {
         file: printedPath,
         noLink: true,
         outBase: `conf-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        // `// SETENV: KEY=VALUE` —— 跟 mcp-jhyy/jhyy_regress.py 同口径
+        env: directives.setenv,
       })
 
       if (directives.expectError) {

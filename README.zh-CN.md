@@ -7,7 +7,7 @@
 **拖块写。写代码。跟 Claude Code 聊。**
 
 [![版本](https://img.shields.io/badge/版本-v0.1.0-00d4aa)](CHANGELOG.md)
-[![一致性](https://img.shields.io/badge/一致性-286%2F286-success)](tests/conformance)
+[![一致性](https://img.shields.io/badge/一致性-277%2F277-success)](tests/conformance)
 [![平台](https://img.shields.io/badge/平台-Windows%20x64-lightgrey)](#安装)
 [![协议](https://img.shields.io/badge/协议-MIT-blue)](LICENSE)
 [![English](https://img.shields.io/badge/lang-English-red)](README.md)
@@ -164,18 +164,24 @@ tests/
 ## 测试
 
 IDE 的解析器和打印器必须跟**真实编译器**说同样的话。这靠编译器仓库自己的
-284 个示例程序来保证：
+277 个示例程序来保证：
 
 | 套件 | 干什么 | 数量 |
 |---|---|---|
-| `tests/conformance/examples.test.ts` | IDE 解析 → IDE 打印 → **真实 `jhyy.exe` 编译** | 287 |
-| `tests/conformance/run.test.ts` | ……然后**真跑一遍**，比对 `// EXPECT:` 指令 | 19（全量：286） |
-| 其余 | 单测 | 54 |
+| `tests/conformance/examples.test.ts` | IDE 解析 → IDE 打印 → **真实 `jhyy.exe` 编译** | 278 |
+| `tests/conformance/run.test.ts` | ……然后**真跑一遍**，比对 `// EXPECT:` 指令 | 19（全量：277） |
+| 其余 | 单测 | 62 |
+
+语料口径跟语言仓库自己的规则一致：**以 `_` 开头的文件不进语料**
+（`mcp-jhyy/jhyy_regress.py:786`、`mcp-jhyy/server.py:453`、
+`scripts/dev/audit_test_assertions.py:302` 三处都排除）。那 9 个文件断言的是
+**跟机器绑定**的事实 —— 比如 `_jh_gcc_p1.jhyy` 期望 gcc 在
+`C:\msys64\ucrt64\bin\gcc.exe`，CI 机器上那个路径压根不存在。
 
 ```bash
-npm test                                    # 全部 360
+npm test                                    # 全部 359
 npx vitest run tests/conformance            # 只跑一致性
-JHY_CONFORMANCE_FULL=1 npx vitest run tests/conformance/run.test.ts   # 全量 286（约半小时）
+JHY_CONFORMANCE_FULL=1 npx vitest run tests/conformance/run.test.ts   # 全量 277（约 25 分钟）
 ```
 
 一致性套件需要把编译器仓库 checkout 在**本仓库的兄弟目录** —— CI 就是这么做的，

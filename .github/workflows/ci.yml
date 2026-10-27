@@ -3,7 +3,7 @@
 # | job          | 阻断? | 验的是                                                       |
 # |--------------|-------|--------------------------------------------------------------|
 # | check        | ✅ 是 | 类型检查 + 单元测试 + 快速一致性门（编译，不运行）              |
-# | conformance  | ✅ 是 | 语言仓库全部 284 个例子：IDE 解析→打印→**真实编译器编译→运行**   |
+# | conformance  | ✅ 是 | 语言仓库全部 277 个例子：IDE 解析→打印→**真实编译器编译→运行**   |
 # | release      | ✅ 是 | 打 tag 时构建 NSIS 安装包 + 创建 GitHub Release               |
 #
 # **一致性门需要编译器仓库。** 它被 checkout 到本仓库的**兄弟目录**
@@ -98,12 +98,12 @@ jobs:
 
       - name: 单元测试 + 快速一致性门
         working-directory: JiHuiYiYou-IDE
-        run: npx vitest run tests/lang tests/blocks tests/compiler tests/conformance/examples.test.ts
+        run: npx vitest run tests/lang tests/blocks tests/compiler tests/helpers tests/conformance/examples.test.ts
 
   conformance:
     name: 全量一致性门（编译 + 运行）
     runs-on: windows-latest
-    # 30 分钟是实测值附近的余量 —— 284 个例子每个都要 gcc 链接一遍。
+    # 30 分钟是实测值附近的余量 —— 277 个例子每个都要 gcc 链接一遍（实测约 7 分钟）。
     # 超时砍掉会留下半截产物，而 run 结论是 failure 且看不出原因。
     timeout-minutes: 45
     steps:
@@ -154,7 +154,7 @@ jobs:
         working-directory: JiHuiYiYou-IDE
         env:
           # 门必须真的走「编译 + 运行」那条路，不能只编译。
-          # 全程 284 个例子，每个都 gcc 链接一遍 —— 半小时。
+          # 全程 277 个例子，每个都 gcc 链接一遍 —— 实测约 7 分钟。
           JHY_CONFORMANCE_FULL: '1'
         run: npx vitest run tests/conformance/run.test.ts
 

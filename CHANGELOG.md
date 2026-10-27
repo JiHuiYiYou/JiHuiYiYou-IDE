@@ -24,10 +24,16 @@
 
 **一致性（本次的核心门）**：
 
-- **287/287** —— 语言仓库 `compiler/tests/examples/` 的每个例子走
+- **277/277** —— 语言仓库 `compiler/tests/examples/` 的每个例子走
   「IDE 解析 → IDE 打印 → 真实 `jhyy.exe` 编译」通过。
-- **286/286** —— 再加上「真跑一遍 + 比对 `// EXPECT:` 指令」也全过。
-- 单测合计 **360** 个全过。
+- **277/277** —— 再加上「真跑一遍 + 比对 `// EXPECT:` 指令」也全过。
+- 单测合计 **62** 个；`npm test` 全跑 **359** 个，加全量一致性门共 **617** 个。
+
+> **语料口径**：跟语言仓库自己的回归 harness 一致 —— 以 `_` 开头的文件
+> **不进语料**（`mcp-jhyy/jhyy_regress.py:786`、`mcp-jhyy/server.py:453`、
+> `scripts/dev/audit_test_assertions.py:302` 三处都排除）。那 9 个文件是
+> 环境相关 / 需手工准备的（如 `_jh_gcc_p1.jhyy` 断言的是**本机**的
+> `C:\msys64\ucrt64\bin\gcc.exe`，CI 上根本不存在 ⇒ 必假红）。
 
 **已知限制**：
 
