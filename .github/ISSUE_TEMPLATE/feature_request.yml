@@ -1,0 +1,52 @@
+name: Feature request（提需求）
+description: Suggest an idea or an improvement（想法和建议）
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        What should the IDE be able to do that it cannot do today?
+        If the idea touches the language itself, it may belong in the
+        [compiler repository](https://github.com/JiHuiYiYou/JiHuiYiYou-compiler) instead.
+
+        想让 IDE 能干什么它现在干不了的事？
+        如果这个想法其实是语言本身的，那是**编译器仓库**的事：
+        https://github.com/JiHuiYiYou/JiHuiYiYou-compiler
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem（你要解决的问题）
+      description: What are you trying to do that is hard today? Start from the problem, not the solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you have in mind（你想到的办法）
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives（别的路子）
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of the IDE（哪一块）
+      options:
+        - Block view（块视图）
+        - Text view（文本视图）
+        - Claude Code panel（Claude Code 面板）
+        - Compiler integration（编译器集成）
+        - Packaging / install（打包安装）
+        - Docs / wiki（文档）
+        - Something else（别的）
+    validations:
+      required: true

@@ -1,0 +1,75 @@
+name: Bug report（报 bug）
+description: Something does not work as expected（哪儿不对）
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Please fill in as much as you can —
+        the IDE is young, and a concrete report is the fastest way to a fix.
+
+        报 bug 请尽量填全 —— IDE 还年轻，具体的报告是修得最快的方式。
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened（发生了什么）
+      description: What did you do, and what did the IDE do instead?
+      placeholder: |
+        1. opened examples/demo.jhyy
+        2. pressed Run
+        3. the Problems panel stayed empty
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect（你期望什么）
+      placeholder: The Problems panel shows `2:5 type mismatch in let`
+    validations:
+      required: true
+
+  - type: textarea
+    id: code
+    attributes:
+      label: The code（最小复现代码）
+      description: The smallest program that shows the problem. Paste it as text, not a screenshot.
+      render: jhyy
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output / diagnostics（输出和诊断）
+      description: |
+        Paste what the Output and Problems panels showed.
+        贴一下「输出」和「问题」面板里的内容。
+      render: text
+
+  - type: input
+    id: version
+    attributes:
+      label: IDE version（IDE 版本）
+      placeholder: 0.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: compiler-version
+    attributes:
+      label: Compiler（编译器）
+      description: Which `jhyy.exe` the IDE found — the path, and whether it is the dev build or the official install.
+      placeholder: C:\msys64\...\JiHuiYiYou\compiler\build\bin\jhyy.exe
+    validations:
+      required: false
+
+  - type: input
+    id: os
+    attributes:
+      label: OS + Node（系统 + Node）
+      placeholder: Windows 10 x64, Node 24.14.1
+    validations:
+      required: false

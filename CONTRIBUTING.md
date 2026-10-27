@@ -76,6 +76,20 @@
 - 打 tag `vX.Y.Z` → CI 会构建安装包并创建 GitHub Release
 - **门没绿就发不出去** —— release 是 CI 的一个 job，不是独立 workflow
 
+### 6. Wiki
+
+Wiki 的页面正文是**仓库里的文件** —— `docs/wiki/*.md`（中英双语各一份，
+`xxx.zh-CN.md` 是 `xxx.md` 的中文版）。改完跑：
+
+```bash
+npm run publish:wiki
+```
+
+它把 `docs/wiki/` 推到 GitHub 的 wiki 仓库。
+
+> ⚠️ **第一次**要手动在网页上建一个 wiki 页面 —— GitHub 只从网页创建 wiki 仓库
+> （API 和 git push 都不行，我逐个试过）。之后 push 就好使了。
+
 ## 加一个新块
 
 详见 [`CLAUDE.md`](CLAUDE.md) 的"加一个新块"一节。要点：
@@ -99,6 +113,16 @@
 
 **CI 门必须真的走到它要验的路径。** 一道因为缺前置条件而**静默跳过**的门，
 比没有门更隐蔽 —— run 是绿的，但什么都没验。改 CI 时注意这一点。
+
+## GitHub 相关
+
+| 文件 | 干什么 |
+|---|---|
+| `.github/ISSUE_TEMPLATE/` | bug 报告 / 需求 两种表单（YAML form） |
+| `.github/PULL_REQUEST_TEMPLATE.md` | PR 模板 —— 重点是那三条自查（尤其是「改了 `src/lang/` 必须过全量一致性门」） |
+| `.github/dependabot.yml` | 构建期依赖自动升 patch/minor；**运行期依赖（blockly / codemirror / react）不自动升** —— 它们进产物，升级要人判断 |
+| `SECURITY.md` | 安全报告渠道（**不要**为安全问题开公开 issue） |
+| `docs/wiki/` | Wiki 页面正文（中英双语），`npm run publish:wiki` 发布 |
 
 ## AI agent 协作
 

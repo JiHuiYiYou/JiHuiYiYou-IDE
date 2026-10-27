@@ -35,6 +35,17 @@
 > 环境相关 / 需手工准备的（如 `_jh_gcc_p1.jhyy` 断言的是**本机**的
 > `C:\msys64\ucrt64\bin\gcc.exe`，CI 上根本不存在 ⇒ 必假红）。
 
+**GitHub 相关**：
+
+- **About** —— 描述、topics（9 个）、homepage 都填好了。
+- **Wiki** —— 7 个页面 × 中英双语 = 14 份，正文是**仓库里的文件**
+  （`docs/wiki/`），`npm run publish:wiki` 推到 GitHub wiki。
+- **Issue 表单 / PR 模板 / SECURITY.md / dependabot** —— 都补齐了。
+- **品牌资产** —— logo 延用编译器仓库那套（`assets/`），不再另做一个。
+  安装包也换上编译器的 `.ico`（之前是 Electron 默认图标）。
+- README 头部与「架构」章节改成跟编译器仓库同款（居中头图 + badge + 导航 +
+  mermaid 流程图）。
+
 **已知限制**：
 
 - 只构建和验证了 **Windows x64**。

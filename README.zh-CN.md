@@ -1,13 +1,17 @@
 <div align="center">
 
-<div><img src="assets/icon.svg" width="96" alt="JHYY IDE 标志"></div>
+<div><img src="assets/icon-animated.svg" width="96" alt="JHYY 标志"></div>
 
-### JHYY IDE —— 给机会翼游做的 IDE
+<div><img src="assets/jhyy-calligraphy.png" width="220" alt="机会翼游 书法 logo"></div>
+
+### JHYY IDE —— 给机会翼游（JHYY）做的桌面 IDE
 
 **拖块写。写代码。跟 Claude Code 聊。**
 
 [![版本](https://img.shields.io/badge/版本-v0.1.0-00d4aa)](CHANGELOG.md)
 [![一致性](https://img.shields.io/badge/一致性-277%2F277-success)](tests/conformance)
+[![CI](https://github.com/JiHuiYiYou/JiHuiYiYou-IDE/actions/workflows/ci.yml/badge.svg)](https://github.com/JiHuiYiYou/JiHuiYiYou-IDE/actions/workflows/ci.yml)
+[![技术栈](https://img.shields.io/badge/技术栈-Electron%20%7C%20Blockly%20%7C%20CodeMirror%206-blue)](#架构)
 [![平台](https://img.shields.io/badge/平台-Windows%20x64-lightgrey)](#安装)
 [![协议](https://img.shields.io/badge/协议-MIT-blue)](LICENSE)
 [![English](https://img.shields.io/badge/lang-English-red)](README.md)
@@ -100,36 +104,48 @@ Claude 拿到了 **jhyy MCP server** —— 它能调 `jhyy_check` 拿到**真�
 
 ## 架构
 
+三个视图，**一个 AST**。块视图和文本视图不可能对同一份程序有不同理解 —— 它们是
+同一棵树的两个投影。而裁判永远是真实编译器。
+
+```mermaid
+flowchart TB
+    file["<b>.jhyy 文件</b><br/>磁盘上"]
+    blocks["<b>块视图</b><br/>Blockly 13 工作区<br/>拖块写程序"]
+    text["<b>文本视图</b><br/>CodeMirror 6<br/>直接写代码"]
+    core["<b>src/lang/ —— 语言核心</b><br/>词法 · 语法 · 打印<br/>块: tree · decompile · compile<br/><i>纯 TypeScript</i>"]
+    tree["<b>块树</b><br/>AST 与 Blockly 之间的 IR"]
+    adapter["<b>Blockly 适配器</b><br/>块树 ⇄ 工作区 (XML)"]
+    main["<b>Electron 主进程</b><br/>编译器 · claude · 文件监听"]
+    jhyy["<b>jhyy.exe</b><br/>编译 · 运行"]
+    claude["<b>claude CLI</b><br/>stream-json · MCP"]
+
+    file -->|解析| core
+    core -->|打印| text
+    core -->|反编译| tree
+    tree -->|编译回| core
+    tree <--> adapter <--> blocks
+    blocks -->|重新生成源码| core
+    text -->|切回时解析| core
+    core -->|诊断| main
+    main -->|编译 · 运行| jhyy
+    main -->|对话| claude
 ```
-        ┌──────────────┐         ┌──────────────┐
-        │   块视图      │◄───────►│   文本视图    │
-        │  (Blockly)    │  BlockTree (CodeMirror)│
-        └───────┬───────┘         └───────┬───────┘
-                │                         │
-                └────────► AST ◄──────────┘
-                             │
-                        ┌────▼─────┐
-                        │  打印器   │  →  JHYY 源码
-                        └────┬─────┘
-                             ▼
-                     ┌───────────────┐
-                     │  jhyy.exe    │  编译 / 运行
-                     └───────────────┘
-```
+
+| 层 | 位置 | 干什么 |
+|---|---|---|
+| 语言核心 | `src/lang/` | 词法 · 语法 · 打印 · 块转换 —— **纯 TypeScript**，不依赖 Electron / Node / Blockly，所以能单测 |
+| 块树 | `src/lang/blocks/tree.ts` | AST 与 Blockly 之间的 IR + 块目录（块的唯一真相） |
+| 反编译器 / 编译器 | `src/lang/blocks/decompile.ts` / `compile.ts` | AST → 块树 / 块树 → AST |
+| Blockly 适配器 | `src/renderer/blocks/adapter.ts` | 块树 ⇄ Blockly 工作区（走 Blockly 的 XML 这条官方路径） |
+| 文本编辑器 | `src/renderer/editor/` | CodeMirror 6 + JHYY 语言模式 —— 高亮、补全、悬停、波浪线 |
+| 主进程 | `src/main/compiler/`、`src/main/claude/` | 驱动 `jhyy.exe` 和 `claude` CLI；所有特权操作都在这儿 |
+| 桥接 | `src/preload/index.ts` | `contextBridge` —— 渲染进程唯一的特权入口（`contextIsolation` 开，`nodeIntegration` 关） |
 
 AST 在 `src/lang/` 里，是**纯 TypeScript** —— 不依赖 Electron / Node / Blockly ——
 所以解析器、打印器、块转换器都能在 Node 里跑单测。
 
-块这一层分四块：
-
-| 层 | 位置 | 干什么 |
-|---|---|---|
-| 块树 | `src/lang/blocks/tree.ts` | AST 与 Blockly 之间的 IR + 块目录 |
-| 反编译器 | `src/lang/blocks/decompile.ts` | AST → 块树 |
-| 编译器 | `src/lang/blocks/compile.ts` | 块树 → AST |
-| 适配器 | `src/renderer/blocks/adapter.ts` | 块树 ⇄ Blockly 工作区 |
-
 两个写代码的视图**走同一个打印器** —— 所以它们不可能对同一份程序有不同理解。
+而且 IDE 从不猜程序对不对 —— 它去问 `jhyy.exe`，把编译器自己的诊断显示给你。
 
 ## 目录
 
@@ -214,8 +230,11 @@ coding/
 
 ## 文档
 
+- **[Wiki](https://github.com/JiHuiYiYou/JiHuiYiYou-IDE/wiki)** —— 长文版指南：快速上手、
+  架构、块子集、疑难排查、怎么加一个新块
 - [`CLAUDE.md`](CLAUDE.md) —— 架构、三条铁律、语言坑、加新块的流程
 - [`docs/blocks-subset.md`](docs/blocks-subset.md) —— 哪些语法有块，哪些没有，为什么
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) —— 怎么贡献，CI 的门验的是什么
 - [JHYY 语言规范](https://github.com/JiHuiYiYou/JiHuiYiYou-compiler/blob/main/docs/abis/jhyy-lang-spec-v4.0.0.md)
 - [JHYY 编译器](https://github.com/JiHuiYiYou/JiHuiYiYou-compiler)
 

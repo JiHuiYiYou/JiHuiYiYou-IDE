@@ -1,0 +1,44 @@
+# Dependabot —— 依赖自动升级
+#
+# 这个仓库的依赖分两类，风险不一样：
+#
+#   · **构建期**（electron / electron-builder / vite / vitest / typescript）——
+#     只影响开发机和 CI，不进产物。升级要跑一遍打包（`npm run dist`）才知道
+#     打包还成不成立 ⇒ 单独一个 group，攒一批再升。
+#   · **运行期**（blockly / codemirror / react）—— **进产物**。这些是 IDE 的
+#     脸面（块视图、文本视图），升级必须过一致性门 + 手动看一眼界面。
+#     ⇒ 不自动升，交给人判断。
+#
+# 只升 patch/minor，不升 major —— 大版本往往要改代码（Blockly 13 → 14 那种）。
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    groups:
+      # 构建期依赖：一起升，一起验
+      build-toolchain:
+        patterns:
+          - electron
+          - electron-builder
+          - electron-vite
+          - vite
+          - vitest
+          - typescript
+          - "@types/*"
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # 运行期依赖 —— 进产物，升级要人判断（见上面的注释）
+      - dependency-name: blockly
+      - dependency-name: react
+      - dependency-name: react-dom
+      - dependency-name: "@codemirror/*"

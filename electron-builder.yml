@@ -14,6 +14,9 @@ files:
 asar: true
 
 win:
+  # 延用编译器仓库的品牌图标（`assets/` 下那套就是从那儿拷来的）——
+  # electron-builder 要 256x256 起步，`.ico` 里带了 16/32/48/64/128/256 六档。
+  icon: assets/jhyy-icon.ico
   target:
     - target: nsis
       arch:

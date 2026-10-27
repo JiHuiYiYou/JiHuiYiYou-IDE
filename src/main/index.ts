@@ -25,6 +25,13 @@ const projectWatcher = new ProjectWatcher((path) => {
 })
 
 function createWindow(): void {
+  // 窗口图标 —— 延用编译器仓库的品牌图标。
+  //
+  // 打包后 exe 里已经嵌了同一张图标（见 electron-builder.yml 的 `win.icon`），
+  // 所以这个路径**只在开发模式下存在**（`npm run dev` 跑的是 Electron 默认
+  // 二进制，没有自己的图标）—— 用 existsSync 挡一下，打包版不受影响。
+  const windowIcon = join(__dirname, '../../assets/jhyy-icon-256.png')
+
   const win = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -33,6 +40,7 @@ function createWindow(): void {
     show: false,
     backgroundColor: '#14161c',
     title: 'JHYY IDE',
+    ...(existsSync(windowIcon) ? { icon: windowIcon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,

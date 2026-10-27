@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question（提问）
+    url: https://github.com/JiHuiYiYou/JiHuiYiYou-IDE/wiki/Getting-Started
+    about: Start here — the wiki covers install, the three views, and the common failures. 先看 wiki。
+  - name: Language issue（语言本身的问题）
+    url: https://github.com/JiHuiYiYou/JiHuiYiYou-compiler/issues
+    about: Bugs in the JHYY language or the compiler belong to the compiler repository.
+  - name: Wiki（Wiki）
+    url: https://github.com/JiHuiYiYou/JiHuiYiYou-IDE/wiki
+    about: The long-form guide — getting started, architecture, the block subset, troubleshooting.

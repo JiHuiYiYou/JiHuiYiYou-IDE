@@ -1,13 +1,17 @@
 <div align="center">
 
-<div><img src="assets/icon.svg" width="96" alt="JHYY IDE logo"></div>
+<div><img src="assets/icon-animated.svg" width="96" alt="JHYY logo"></div>
 
-### JHYY IDE — An IDE for the JHYY systems programming language
+<div><img src="assets/jhyy-calligraphy.png" width="220" alt="机会翼游 calligraphy logo"></div>
+
+### JHYY IDE — A desktop IDE for the JHYY (机会翼游) systems programming language
 
 **Block-based. Code-based. Talks to Claude Code.**
 
 [![Version](https://img.shields.io/badge/version-v0.1.0-00d4aa)](CHANGELOG.md)
 [![Conformance](https://img.shields.io/badge/conformance-277%2F277-success)](tests/conformance)
+[![CI](https://github.com/JiHuiYiYou/JiHuiYiYou-IDE/actions/workflows/ci.yml/badge.svg)](https://github.com/JiHuiYiYou/JiHuiYiYou-IDE/actions/workflows/ci.yml)
+[![Stack](https://img.shields.io/badge/stack-Electron%20%7C%20Blockly%20%7C%20CodeMirror%206-blue)](#architecture)
 [![Platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey)](#install)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![中文](https://img.shields.io/badge/lang-中文-red)](README.zh-CN.md)
@@ -104,38 +108,51 @@ read the errors, and fix them.
 
 ## Architecture
 
+Three views, **one AST**. The block view and the text view can never disagree about what
+a program means, because they are two projections of the same tree — and the referee is
+always the real compiler.
+
+```mermaid
+flowchart TB
+    file["<b>.jhyy file</b><br/>on disk"]
+    blocks["<b>Block view</b><br/>Blockly 13 workspace<br/>drag blocks to program"]
+    text["<b>Text view</b><br/>CodeMirror 6<br/>write code directly"]
+    core["<b>src/lang/ — the language core</b><br/>lexer · parser · printer<br/>blocks: tree · decompile · compile<br/><i>pure TypeScript</i>"]
+    tree["<b>BlockTree</b><br/>the IR between the AST and Blockly"]
+    adapter["<b>Blockly adapter</b><br/>block tree to workspace (XML)"]
+    main["<b>Electron main process</b><br/>compiler · claude · file watcher"]
+    jhyy["<b>jhyy.exe</b><br/>compile · run"]
+    claude["<b>claude CLI</b><br/>stream-json · MCP"]
+
+    file -->|parse| core
+    core -->|print| text
+    core -->|decompile| tree
+    tree -->|compile| core
+    tree <--> adapter <--> blocks
+    blocks -->|regenerate the source| core
+    text -->|parse on view switch| core
+    core -->|diagnostics| main
+    main -->|compile · run| jhyy
+    main -->|conversation| claude
 ```
-        ┌──────────────┐         ┌──────────────┐
-        │  Block view   │◄───────►│  Text view   │
-        │  (Blockly)    │  BlockTree  (CodeMirror)│
-        └───────┬───────┘         └───────┬───────┘
-                │                         │
-                └────────► AST ◄──────────┘
-                             │
-                        ┌────▼─────┐
-                        │  Printer  │  →  JHYY source
-                        └────┬─────┘
-                             ▼
-                     ┌───────────────┐
-                     │  jhyy.exe    │  compile / run
-                     └───────────────┘
-```
+
+| Layer | Where | Role |
+|---|---|---|
+| Language core | `src/lang/` | lexer · parser · printer · block transforms — **pure TypeScript**, no Electron / Node / Blockly, so it is unit-testable |
+| Block tree | `src/lang/blocks/tree.ts` | the IR between the AST and Blockly, plus the block catalogue (the single source of truth for blocks) |
+| Decompiler / compiler | `src/lang/blocks/decompile.ts` / `compile.ts` | AST → block tree / block tree → AST |
+| Blockly adapter | `src/renderer/blocks/adapter.ts` | block tree ⇄ Blockly workspace (Blockly's XML is the supported load path) |
+| Text editor | `src/renderer/editor/` | CodeMirror 6 + the JHYY language mode — highlight, completion, hover, lint |
+| Main process | `src/main/compiler/`, `src/main/claude/` | drives `jhyy.exe` and the `claude` CLI; owns every privileged operation |
+| Bridge | `src/preload/index.ts` | `contextBridge` — the renderer's only privileged surface (`contextIsolation` on, `nodeIntegration` off) |
 
 The AST lives in `src/lang/` as **plain TypeScript** — no Electron, no Node, no Blockly
 dependencies — so the parser, the printer and the block transforms are all unit-testable
 in Node.
 
-The block layer has three parts:
-
-| Layer | Where | What |
-|---|---|---|
-| Block tree | `src/lang/blocks/tree.ts` | The IR between AST and Blockly, plus the block catalogue |
-| Decompiler | `src/lang/blocks/decompile.ts` | AST → block tree |
-| Compiler | `src/lang/blocks/compile.ts` | Block tree → AST |
-| Adapter | `src/renderer/blocks/adapter.ts` | Block tree ⇄ Blockly workspace |
-
 Both coding views print through the **same printer**, so they can never disagree about
-what a program means.
+what a program means. And the IDE never guesses whether a program is valid — it asks
+`jhyy.exe`, and shows you the compiler's own diagnostics.
 
 ## Project layout
 
@@ -221,8 +238,11 @@ coding/
 
 ## Docs
 
+- **[Wiki](https://github.com/JiHuiYiYou/JiHuiYiYou-IDE/wiki)** — the long-form guide: getting
+  started, architecture, the block subset, troubleshooting, how to add a block
 - [`CLAUDE.md`](CLAUDE.md) — architecture, the three rules, language gotchas, how to add a block
 - [`docs/blocks-subset.md`](docs/blocks-subset.md) — what has blocks, what doesn't, and why
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to contribute, and what the CI gates check
 - [JHYY language spec](https://github.com/JiHuiYiYou/JiHuiYiYou-compiler/blob/main/docs/abis/jhyy-lang-spec-v4.0.0.md)
 - [JHYY compiler](https://github.com/JiHuiYiYou/JiHuiYiYou-compiler)
 
