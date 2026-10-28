@@ -9,14 +9,17 @@
 #     脸面（块视图、文本视图），升级必须过一致性门 + 手动看一眼界面。
 #     ⇒ 不自动升，交给人判断（见下面的 ignore）。
 #
-# ⚠️ **大版本会单独开 PR，不会并进 group。** Dependabot 的 group
-# `update-types` 只决定「哪些更新进这个组」，**不是**「大版本不许升」。
-# 所以 Electron 46 / Vite 8 / TypeScript 7 这类大版本照样会开 PR ——
-# 这是**故意的**：大版本要改代码（Blockly 13 → 14 那种），由人判断要不要接，
-# 但你得先知道它来了。CI 会告诉你它成不成立。
+# ⚠️ **只自动升 patch / minor。大版本一律不开 PR。**
 #
-# （想要「大版本一律不开」，得另加一条
-# `ignore: [{dependency-name: "*", update-types: ["version-update:semver-major"]}]`。）
+# 踩过的坑：group 里的 `update-types: [minor, patch]` **只决定「哪些更新并进这个组」**，
+# **不是**「大版本不许升」—— 大版本照样会单独开 PR。配置一落地就开了 5 个：
+# vite 8 / typescript 7 / electron-vite 6 / vitest 5 / @types/node 26，
+# 里头两个直接是红的。⇒ 真要挡住大版本，得用下面 ignore 里的
+# `version-update:semver-major`。
+#
+# 为什么挡住：大版本要改代码（Blockly 13 → 14、Electron 45 → 46 那种），
+# 该由**人**决定什么时候接、怎么接 —— 自动开一堆红 PR 只是噪音。
+# 真要升的时候手动改 package.json 就行，小版本会一直自动跟着。
 version: 2
 updates:
   - package-ecosystem: npm
@@ -44,6 +47,10 @@ updates:
           - minor
           - patch
     ignore:
+      # 大版本 —— 全都不自动开 PR（理由见上面的注释）
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-major
       # 运行期依赖 —— 进产物，升级要人判断（见上面的注释）
       - dependency-name: blockly
       - dependency-name: react
