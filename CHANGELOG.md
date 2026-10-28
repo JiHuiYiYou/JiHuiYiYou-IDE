@@ -40,7 +40,9 @@
 - **About** —— 描述、topics（9 个）、homepage 都填好了。
 - **Wiki** —— 7 个页面 × 中英双语 = 14 份，正文是**仓库里的文件**
   （`docs/wiki/`），`npm run publish:wiki` 推到 GitHub wiki。
-- **Issue 表单 / PR 模板 / SECURITY.md / dependabot** —— 都补齐了。
+- **Issue 表单 / PR 模板 / SECURITY.md** —— 都补齐了。
+- **依赖升级靠手动** —— 不配 dependabot（跟编译器仓库一致）：自动开一堆大版本 PR
+  是噪音，真要升（Electron 46 / TypeScript 7）手动改 `package.json`，小版本自己看。
 - **品牌资产** —— logo 延用编译器仓库那套（`assets/`），不再另做一个。
   安装包也换上编译器的 `.ico`（之前是 Electron 默认图标）。
 - README 头部与「架构」章节改成跟编译器仓库同款（居中头图 + badge + 导航 +

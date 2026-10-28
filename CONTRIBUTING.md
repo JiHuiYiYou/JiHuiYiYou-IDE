@@ -121,7 +121,6 @@ npm run publish:wiki
 |---|---|
 | `.github/ISSUE_TEMPLATE/` | bug 报告 / 需求 两种表单（YAML form） |
 | `.github/PULL_REQUEST_TEMPLATE.md` | PR 模板 —— 重点是那三条自查（尤其是「改了 `src/lang/` 必须过全量一致性门」） |
-| `.github/dependabot.yml` | 构建期依赖自动升 patch/minor；**运行期依赖（blockly / codemirror / react）不自动升** —— 它们进产物，升级要人判断 |
 | `SECURITY.md` | 安全报告渠道（**不要**为安全问题开公开 issue） |
 | `docs/wiki/` | Wiki 页面正文（中英双语），`npm run publish:wiki` 发布 |
 
