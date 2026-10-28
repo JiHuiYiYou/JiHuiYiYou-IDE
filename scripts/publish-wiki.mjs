@@ -30,7 +30,7 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -38,7 +38,13 @@ import { fileURLToPath } from 'node:url'
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const sourceDir = join(root, 'docs', 'wiki')
 
-/** 从 git remote 推出 wiki 的 URL：git@github.com:OWNER/REPO.git → …/REPO.wiki.git */
+/**
+ * 从 git remote 推出 wiki 的 URL：git@github.com:OWNER/REPO.git → …/REPO.wiki.git
+ *
+ * ⚠️ **ssh 形式必须连 `git@` 一起带上。**
+ * 早先写成 `${host}:${path}.wiki.git` —— 少了 `git@`，git 会把 `github.com:`
+ * 当成「主机 + 路径」而不是 scp 式的「用户@主机:路径」⇒ 连都连不上。
+ */
 function wikiUrl() {
   const remote = execFileSync('git', ['remote', 'get-url', 'origin'], {
     cwd: root,
@@ -48,10 +54,35 @@ function wikiUrl() {
   const https = remote.match(/^https?:\/\/[^/]+\/([^/]+)\/([^/]+?)(?:\.git)?$/)
   if (https) return `https://github.com/${https[1]}/${https[2]}.wiki.git`
 
-  const ssh = remote.match(/^[^@]+@([^:]+):(.+?)(?:\.git)?$/)
-  if (ssh) return `${ssh[1]}:${ssh[2]}.wiki.git`
+  const ssh = remote.match(/^([^@]+)@([^:]+):(.+?)(?:\.git)?$/)
+  if (ssh) return `${ssh[1]}@${ssh[2]}:${ssh[3]}.wiki.git`
 
   throw new Error(`看不出 remote 是什么形式：${remote}`)
+}
+
+/**
+ * 本仓库 local config 里的 `core.sshCommand`（指定用哪把私钥）。
+ *
+ * **必须显式带到 clone/push 上**：wiki 仓库 clone 到**临时目录**，
+ * 那里没有本仓库的 local config ⇒ SSH 认证会失败
+ * （`~/.ssh` 在 MSYS2 下是空的，见 git-push.md）。
+ */
+function sshCommand() {
+  try {
+    const v = execFileSync('git', ['config', '--local', '--get', 'core.sshCommand'], {
+      cwd: root,
+      encoding: 'utf8',
+    }).trim()
+    return v || null
+  } catch {
+    return null
+  }
+}
+
+/** 把 `-c core.sshCommand=…` 塞到 git 参数前面（如果有的话）。 */
+function withSsh(args) {
+  const cmd = sshCommand()
+  return cmd ? ['-c', `core.sshCommand=${cmd}`, ...args] : args
 }
 
 function git(args, cwd, opts = {}) {
@@ -80,7 +111,7 @@ console.log(`[publish-wiki] 页面数：${pages.length}（${pages.join(', ')}）
 console.log(`[publish-wiki] 目标：${url}`)
 
 try {
-  git(['clone', '--depth', '1', url, work], root)
+  git(withSsh(['clone', '--depth', '1', url, work]), root)
 } catch (err) {
   const out = `${err.stdout ?? ''}${err.stderr ?? ''}`
   if (/Repository not found|Could not read from remote/i.test(out)) {
@@ -97,12 +128,78 @@ try {
   fail(`clone 失败：\n${out}`)
 }
 
+/**
+ * 页面标题表 —— 侧栏里显示的名字（不是文件名）。
+ *
+ * GitHub 的 wiki 拿**文件名**当页面标题：`Architecture.zh-CN.md` ⇒ 标题
+ * "Architecture.zh CN"，侧栏里就一堆这种 ugly 的条目（它不认 linguist 那套
+ * locale 变体分组）。⇒ 自己生成 `_Sidebar.md`（GitHub wiki 的侧栏约定），
+ * 把两套语言分开列，名字用这里的中英文标题。
+ */
+const WIKI_TITLES = {
+  Home: ['Home', '首页'],
+  'Getting-Started': ['Getting Started', '快速上手'],
+  Architecture: ['Architecture', '架构'],
+  'Block-Subset': ['Block Subset', '块子集'],
+  'Claude-Code': ['Claude Code', 'Claude Code'],
+  Troubleshooting: ['Troubleshooting', '疑难排查'],
+  Contributing: ['Contributing', '贡献指南'],
+}
+
+/**
+ * 生成 `_Sidebar.md`。
+ *
+ * **从文件列表生成，不手写** —— 手写的侧栏会漏（加了页面忘了更新）。
+ */
+function buildSidebar(pages) {
+  const base = pages.filter((p) => !p.endsWith('.zh-CN.md')).map((p) => p.replace(/\.md$/, ''))
+  const zh = pages.filter((p) => p.endsWith('.zh-CN.md')).map((p) => p.replace(/\.zh-CN\.md$/, ''))
+
+  // 顺序按 WIKI_TITLES 的声明顺序（Home → 快速上手 → 架构 …），不是字母序。
+  // 表里没有的页面（新增的）按文件名排在后面 —— 不能悄悄丢掉。
+  const known = Object.keys(WIKI_TITLES)
+  const order = (list) => [
+    ...known.filter((k) => list.includes(k)),
+    ...list.filter((k) => !known.includes(k)).sort(),
+  ]
+
+  const line = (names, idx) =>
+    order(names)
+      .map((n) => {
+        const t = WIKI_TITLES[n]
+        const label = t ? t[idx] : n
+        return `[${label}](${n}${idx === 1 ? '.zh-CN' : ''})`
+      })
+      .join(' · ')
+
+  return [
+    '## JHYY IDE',
+    '',
+    line(base, 0),
+    '',
+    '## 中文',
+    '',
+    line(zh, 1),
+    '',
+    '---',
+    '',
+    '[仓库](https://github.com/JiHuiYiYou/JiHuiYiYou-IDE) · ' +
+      '[Releases](https://github.com/JiHuiYiYou/JiHuiYiYou-IDE/releases) · ' +
+      '[问题](https://github.com/JiHuiYiYou/JiHuiYiYou-IDE/issues) · ' +
+      '[编译器仓库](https://github.com/JiHuiYiYou/JiHuiYiYou-compiler)',
+    '',
+  ].join('\n')
+}
+
 try {
   // 只清 .md —— wiki 仓库里可能有别的文件（比如 .github 之类），别误删。
   for (const entry of readdirSync(work)) {
     if (entry.endsWith('.md')) rmSync(join(work, entry), { force: true })
   }
   cpSync(sourceDir, work, { recursive: true, force: true })
+
+  // 侧栏是**生成**的 —— 不在 docs/wiki/ 里，免得它被当成一个页面发布出去。
+  writeFileSync(join(work, '_Sidebar.md'), buildSidebar(pages), 'utf8')
 
   git(['add', '--all'], work)
   const status = git(['status', '--porcelain'], work).trim()
@@ -113,7 +210,7 @@ try {
 
   git(['-c', 'user.name=JHYY', '-c', 'user.email=15901598712@163.com', 'commit', '-m',
     'docs(wiki): 从 docs/wiki/ 同步',], work)
-  git(['push', 'origin', 'HEAD'], work)
+  git(withSsh(['push', 'origin', 'HEAD']), work)
   console.log('[publish-wiki] ✅ 已发布。')
 } catch (err) {
   const out = `${err.stdout ?? ''}${err.stderr ?? ''}`

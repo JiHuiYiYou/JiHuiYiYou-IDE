@@ -56,15 +56,18 @@ JHY_CONFORMANCE_FULL=1 npx vitest run tests/conformance/run.test.ts   # 全量�
 
 ## wiki 从哪来
 
-wiki 的页面是**本仓库里的文件**，在 `docs/wiki/` 下 —— 所以它们跟别的代码一样被 review。
+wiki 的页面正文是**本仓库里的文件**，在 `docs/wiki/` 下 —— 所以它们跟别的代码一样被 review。
 改了之后发布一下：
 
 ```bash
 npm run publish:wiki
 ```
 
-它把 `docs/wiki/*.md` 推到 GitHub 的 wiki 仓库。（**第一个** wiki 页面得在浏览器里
-创建一次 —— GitHub 只从网页创建 wiki 仓库；之后 push 就好使了。）
+它把 `docs/wiki/*.md` 推到 GitHub 的 wiki 仓库，并且**按文件列表生成 wiki 侧栏**
+（`_Sidebar.md`）—— 侧栏不会跟正文脱节。
+
+> wiki 仓库本身是在网页上建过一次（GitHub 只从网页创建它 —— API 根本没有 wiki 端点，
+> 光 `git push` 也会被拒）。本仓库已经建过了，往后 `npm run publish:wiki` 就够了。
 
 ## 提交信息
 

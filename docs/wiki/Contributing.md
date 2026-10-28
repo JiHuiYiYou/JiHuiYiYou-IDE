@@ -69,9 +69,12 @@ reviewed like everything else. When you change one, publish it:
 npm run publish:wiki
 ```
 
-That pushes `docs/wiki/*.md` to the GitHub wiki repository. (The very first wiki page has
-to be created once in the browser — GitHub only creates the wiki repository from the web
-UI; afterwards pushing works.)
+That pushes `docs/wiki/*.md` to the GitHub wiki repository, and **generates the wiki
+sidebar** (`_Sidebar.md`) from the file list — so the sidebar never goes stale.
+
+> The wiki repository itself was created once from the web UI (GitHub only creates it
+> there — the API has no wiki endpoints and a bare `git push` is rejected). That has
+> already been done for this repo; from here on, `npm run publish:wiki` is enough.
 
 ## Commit messages
 

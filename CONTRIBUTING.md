@@ -87,8 +87,9 @@ npm run publish:wiki
 
 它把 `docs/wiki/` 推到 GitHub 的 wiki 仓库。
 
-> ⚠️ **第一次**要手动在网页上建一个 wiki 页面 —— GitHub 只从网页创建 wiki 仓库
-> （API 和 git push 都不行，我逐个试过）。之后 push 就好使了。
+> wiki 仓库本身是在网页上建过一次（GitHub 只从网页创建它 —— API 根本没有 wiki 端点，
+> 光 `git push` 也会被拒）。本仓库已经建过了，往后 `npm run publish:wiki` 就够了。
+> 脚本还会**按文件列表生成侧栏**（`_Sidebar.md`），侧栏不会跟正文脱节。
 
 ## 加一个新块
 

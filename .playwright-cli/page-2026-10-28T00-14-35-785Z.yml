@@ -1,0 +1,362 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - link "Skip to content" [ref=e4] [cursor=pointer]:
+      - /url: "#start-of-content"
+    - banner [ref=e9]:
+      - heading "Navigation Menu" [level=2] [ref=e10]
+      - generic [ref=e11]:
+        - link "Homepage" [ref=e13] [cursor=pointer]:
+          - /url: /
+        - generic [ref=e16]:
+          - navigation "Global" [ref=e17]:
+            - list [ref=e18]:
+              - listitem [ref=e19]:
+                - button "Platform" [ref=e21] [cursor=pointer]
+              - listitem [ref=e24]:
+                - button "Solutions" [ref=e26] [cursor=pointer]
+              - listitem [ref=e29]:
+                - button "Resources" [ref=e31] [cursor=pointer]
+              - listitem [ref=e34]:
+                - button "Open Source" [ref=e36] [cursor=pointer]
+              - listitem [ref=e39]:
+                - button "Enterprise" [ref=e41] [cursor=pointer]
+              - listitem [ref=e44]:
+                - link "Pricing" [ref=e45] [cursor=pointer]:
+                  - /url: https://github.com/pricing
+          - generic [ref=e46]:
+            - button "Search or jump to, type / to search" [ref=e48] [cursor=pointer]
+            - generic [ref=e54]:
+              - link "Sign in" [ref=e56] [cursor=pointer]:
+                - /url: /login?return_to=https%3A%2F%2Fgithub.com%2FJiHuiYiYou%2FJiHuiYiYou-IDE%2Fwiki
+              - link "Sign up" [ref=e59] [cursor=pointer]:
+                - /url: /signup?ref_cta=Sign+up&ref_loc=header+logged+out&ref_page=%2F%3Cuser-name%3E%2F%3Crepo-name%3E%2Fwiki%2Findex&source=header-repo&source_repo=JiHuiYiYou%2FJiHuiYiYou-IDE
+              - button "Appearance settings" [ref=e62] [cursor=pointer]
+  - main [ref=e69]:
+    - generic "Global navigation menu" [ref=e72]:
+      - navigation "Breadcrumbs" [ref=e75]:
+        - list [ref=e76]:
+          - listitem [ref=e77]:
+            - link "JiHuiYiYou" [ref=e78] [cursor=pointer]:
+              - /url: /JiHuiYiYou
+          - listitem [ref=e80]:
+            - link "JiHuiYiYou-IDE" [ref=e81] [cursor=pointer]:
+              - /url: /JiHuiYiYou/JiHuiYiYou-IDE
+      - heading "Repository navigation" [level=2] [ref=e84]
+      - navigation "Repository" [ref=e85]:
+        - list [ref=e86]:
+          - listitem [ref=e87]:
+            - link "Code" [ref=e88] [cursor=pointer]:
+              - /url: /JiHuiYiYou/JiHuiYiYou-IDE
+          - listitem [ref=e93]:
+            - link "Issues" [ref=e94] [cursor=pointer]:
+              - /url: /JiHuiYiYou/JiHuiYiYou-IDE/issues
+          - listitem [ref=e100]:
+            - link "Pull requests (5)" [ref=e101] [cursor=pointer]:
+              - /url: /JiHuiYiYou/JiHuiYiYou-IDE/pulls
+              - generic [ref=e105]: Pull requests
+              - generic [ref=e106]:
+                - generic [aria-hidden] [ref=e107]: "5"
+                - generic [ref=e108]: (5)
+          - listitem [ref=e109]:
+            - link "Actions" [ref=e110] [cursor=pointer]:
+              - /url: /JiHuiYiYou/JiHuiYiYou-IDE/actions
+          - listitem [ref=e115]:
+            - link "Projects" [ref=e116] [cursor=pointer]:
+              - /url: /JiHuiYiYou/JiHuiYiYou-IDE/projects
+          - listitem [ref=e121]:
+            - link "Wiki" [ref=e122] [cursor=pointer]:
+              - /url: /JiHuiYiYou/JiHuiYiYou-IDE/wiki
+          - listitem [ref=e127]:
+            - link "Security and quality" [ref=e128] [cursor=pointer]:
+              - /url: /JiHuiYiYou/JiHuiYiYou-IDE/security
+          - listitem [ref=e133]:
+            - link "Insights" [ref=e134] [cursor=pointer]:
+              - /url: /JiHuiYiYou/JiHuiYiYou-IDE/pulse
+    - generic [ref=e141]:
+      - heading "Home" [level=1] [ref=e143]
+      - generic [ref=e144]:
+        - text: JHYY edited this page Oct 28, 2026now ·
+        - link "2 revisions" [ref=e145] [cursor=pointer]:
+          - /url: /JiHuiYiYou/JiHuiYiYou-IDE/wiki/Home/_history
+      - generic [ref=e147]:
+        - generic [ref=e150]:
+          - generic [ref=e151]:
+            - heading "JHYY IDE — Wiki" [level=1] [ref=e152]
+            - 'link "Permalink: JHYY IDE — Wiki" [ref=e153] [cursor=pointer]':
+              - /url: "#jhyy-ide--wiki"
+          - paragraph [ref=e156]:
+            - strong [ref=e157]: Block-based. Code-based. Talks to Claude Code.
+          - paragraph [ref=e158]:
+            - link "JHYY IDE" [ref=e159] [cursor=pointer]:
+              - /url: https://github.com/JiHuiYiYou/JiHuiYiYou-IDE
+            - text: is a desktop IDE for
+            - link "JHYY (机会翼游)" [ref=e160] [cursor=pointer]:
+              - /url: https://github.com/JiHuiYiYou/JiHuiYiYou-compiler
+            - text: — a self-hosted, statically typed, expression-oriented systems programming language.
+          - paragraph [ref=e161]: "It puts three things side by side:"
+          - table [ref=e162]:
+            - rowgroup [ref=e163]:
+              - row [ref=e164]:
+                - columnheader "View" [ref=e165]
+                - columnheader "What it is" [ref=e166]
+                - columnheader "Who it is for" [ref=e167]
+            - rowgroup [ref=e168]:
+              - row [ref=e169]:
+                - cell [ref=e170]:
+                  - strong [ref=e171]: Block view
+                - cell [ref=e172]:
+                  - link "Blockly" [ref=e173] [cursor=pointer]:
+                    - /url: https://blockly.google.com/
+                  - text: workspace — drag blocks to program
+                - cell "beginners, and anyone who prefers a visual surface" [ref=e174]
+              - row [ref=e175]:
+                - cell [ref=e176]:
+                  - strong [ref=e177]: Text view
+                - cell [ref=e178]:
+                  - link "CodeMirror 6" [ref=e179] [cursor=pointer]:
+                    - /url: https://codemirror.net/
+                  - text: — write code like in any editor
+                - cell "anyone who wants the full language" [ref=e180]
+              - row [ref=e181]:
+                - cell [ref=e182]:
+                  - strong [ref=e183]: Claude Code
+                - cell [ref=e184]:
+                  - text: the
+                  - code [ref=e185]: claude
+                  - text: CLI that is already on your machine, embedded
+                - cell "anyone who wants an AI pair programmer" [ref=e186]
+          - generic [ref=e187]:
+            - heading "The one rule that makes it work" [level=2] [ref=e188]
+            - 'link "Permalink: The one rule that makes it work" [ref=e189] [cursor=pointer]':
+              - /url: "#the-one-rule-that-makes-it-work"
+          - blockquote [ref=e192]:
+            - paragraph [ref=e193]:
+              - strong [ref=e194]: The block view and the text view share one AST.
+              - text: Change a block and the text updates; change the text and the blocks rebuild. They can never disagree about what a program means.
+          - paragraph [ref=e195]:
+            - text: Code that blocks cannot express (generics, closures, pointers, borrows, slices,
+            - code [ref=e196]: defer
+            - text: ","
+            - code [ref=e197]: asm!
+            - text: ", attributes) survives as an"
+            - strong [ref=e198]: opaque block
+            - text: holding the original source text — it never silently disappears.
+          - paragraph [ref=e199]:
+            - text: "And the referee is always the real compiler: the IDE never guesses whether a program is valid — it asks"
+            - code [ref=e200]: jhyy.exe
+            - text: and shows you the compiler's own diagnostics.
+          - generic [ref=e201]:
+            - heading "Pages" [level=2] [ref=e202]
+            - 'link "Permalink: Pages" [ref=e203] [cursor=pointer]':
+              - /url: "#pages"
+          - table [ref=e206]:
+            - rowgroup [ref=e207]:
+              - row [ref=e208]:
+                - columnheader "Page" [ref=e209]
+                - columnheader "What's in it" [ref=e210]
+            - rowgroup [ref=e211]:
+              - row [ref=e212]:
+                - cell [ref=e213]:
+                  - link "Getting Started" [ref=e214] [cursor=pointer]:
+                    - /url: wiki/Getting-Started
+                - cell "install, open a file, run it, the three views in practice" [ref=e215]
+              - row [ref=e216]:
+                - cell [ref=e217]:
+                  - link "Architecture" [ref=e218] [cursor=pointer]:
+                    - /url: wiki/Architecture
+                - cell "the layers, the data flow, and where to change what" [ref=e219]
+              - row [ref=e220]:
+                - cell [ref=e221]:
+                  - link "Block Subset" [ref=e222] [cursor=pointer]:
+                    - /url: wiki/Block-Subset
+                - cell "what has blocks, what is the escape hatch, how to add a block" [ref=e223]
+              - row [ref=e224]:
+                - cell [ref=e225]:
+                  - link "Claude Code" [ref=e226] [cursor=pointer]:
+                    - /url: wiki/Claude-Code
+                - cell "the embedded session, the MCP wiring, permissions" [ref=e227]
+              - row [ref=e228]:
+                - cell [ref=e229]:
+                  - link "Troubleshooting" [ref=e230] [cursor=pointer]:
+                    - /url: wiki/Troubleshooting
+                - cell "the failure modes you will actually hit" [ref=e231]
+              - row [ref=e232]:
+                - cell [ref=e233]:
+                  - link "Contributing" [ref=e234] [cursor=pointer]:
+                    - /url: wiki/Contributing
+                - cell "dev setup, the gates, the conventions" [ref=e235]
+          - generic [ref=e236]:
+            - heading "In one command" [level=2] [ref=e237]
+            - 'link "Permalink: In one command" [ref=e238] [cursor=pointer]':
+              - /url: "#in-one-command"
+          - generic [ref=e241]:
+            - generic [ref=e242]: git clone https://github.com/JiHuiYiYou/JiHuiYiYou-IDE.git cd JiHuiYiYou-IDE && npm install && npm run dev
+            - button "Copy code to clipboard" [ref=e244] [cursor=pointer]
+          - paragraph [ref=e248]:
+            - text: You also need the
+            - strong [ref=e249]: JHYY compiler
+            - text: — the IDE looks for it automatically (see
+            - link "Getting Started" [ref=e250] [cursor=pointer]:
+              - /url: wiki/Getting-Started#the-compiler
+            - text: ).
+          - generic [ref=e251]:
+            - heading "Links" [level=2] [ref=e252]
+            - 'link "Permalink: Links" [ref=e253] [cursor=pointer]':
+              - /url: "#links"
+          - list [ref=e256]:
+            - listitem [ref=e257]:
+              - link "Repository" [ref=e258] [cursor=pointer]:
+                - /url: https://github.com/JiHuiYiYou/JiHuiYiYou-IDE
+              - text: ·
+              - link "Releases" [ref=e259] [cursor=pointer]:
+                - /url: https://github.com/JiHuiYiYou/JiHuiYiYou-IDE/releases
+              - text: ·
+              - link "Issues" [ref=e260] [cursor=pointer]:
+                - /url: https://github.com/JiHuiYiYou/JiHuiYiYou-IDE/issues
+            - listitem [ref=e261]:
+              - link "The JHYY compiler" [ref=e262] [cursor=pointer]:
+                - /url: https://github.com/JiHuiYiYou/JiHuiYiYou-compiler
+              - text: ·
+              - link "Language spec" [ref=e263] [cursor=pointer]:
+                - /url: https://github.com/JiHuiYiYou/JiHuiYiYou-compiler/blob/main/docs/abis/jhyy-lang-spec-v4.0.0.md
+            - listitem [ref=e264]:
+              - link "中文" [ref=e265] [cursor=pointer]:
+                - /url: wiki/Home.zh-CN
+        - generic [ref=e267]:
+          - navigation [ref=e268]:
+            - generic [ref=e269]:
+              - heading "Wiki pages Pages 14" [level=2] [ref=e271] [cursor=pointer]:
+                - button "Wiki pages" [expanded] [ref=e272]
+                - generic [ref=e273]:
+                  - text: Pages
+                  - generic "14" [ref=e274]
+              - generic [ref=e275]:
+                - textbox "Find a page or section" [ref=e277]:
+                  - /placeholder: Find a page or section…
+                - list [ref=e278]:
+                  - listitem [ref=e279]:
+                    - generic [ref=e280]:
+                      - generic [ref=e281]:
+                        - button "Structure for Home" [expanded] [ref=e282] [cursor=pointer]
+                        - link "Home" [ref=e287] [cursor=pointer]:
+                          - /url: /JiHuiYiYou/JiHuiYiYou-IDE/wiki
+                      - list [ref=e290]:
+                        - listitem [ref=e291]:
+                          - link "JHYY IDE — Wiki" [ref=e292] [cursor=pointer]:
+                            - /url: /JiHuiYiYou/JiHuiYiYou-IDE/wiki#jhyy-ide--wiki
+                        - listitem [ref=e293]:
+                          - link "The one rule that makes it work" [ref=e294] [cursor=pointer]:
+                            - /url: /JiHuiYiYou/JiHuiYiYou-IDE/wiki#the-one-rule-that-makes-it-work
+                        - listitem [ref=e295]:
+                          - link "Pages" [ref=e296] [cursor=pointer]:
+                            - /url: /JiHuiYiYou/JiHuiYiYou-IDE/wiki#pages
+                        - listitem [ref=e297]:
+                          - link "In one command" [ref=e298] [cursor=pointer]:
+                            - /url: /JiHuiYiYou/JiHuiYiYou-IDE/wiki#in-one-command
+                        - listitem [ref=e299]:
+                          - link "Links" [ref=e300] [cursor=pointer]:
+                            - /url: /JiHuiYiYou/JiHuiYiYou-IDE/wiki#links
+                  - listitem [ref=e301]:
+                    - generic [ref=e303]:
+                      - button "Structure for Architecture" [ref=e304] [cursor=pointer]
+                      - link "Architecture" [ref=e309] [cursor=pointer]:
+                        - /url: /JiHuiYiYou/JiHuiYiYou-IDE/wiki/Architecture
+                  - listitem [ref=e311]:
+                    - generic [ref=e313]:
+                      - button "Structure for Architecture.zh CN" [ref=e314] [cursor=pointer]
+                      - link "Architecture.zh CN" [ref=e319] [cursor=pointer]:
+                        - /url: /JiHuiYiYou/JiHuiYiYou-IDE/wiki/Architecture.zh-CN
+                  - listitem [ref=e321]:
+                    - generic [ref=e323]:
+                      - button "Structure for Block Subset" [ref=e324] [cursor=pointer]
+                      - link "Block Subset" [ref=e329] [cursor=pointer]:
+                        - /url: /JiHuiYiYou/JiHuiYiYou-IDE/wiki/Block-Subset
+                  - listitem [ref=e331]:
+                    - generic [ref=e333]:
+                      - button "Structure for Block Subset.zh CN" [ref=e334] [cursor=pointer]
+                      - link "Block Subset.zh CN" [ref=e339] [cursor=pointer]:
+                        - /url: /JiHuiYiYou/JiHuiYiYou-IDE/wiki/Block-Subset.zh-CN
+                  - listitem [ref=e341]:
+                    - generic [ref=e343]:
+                      - button "Structure for Claude Code" [ref=e344] [cursor=pointer]
+                      - link "Claude Code" [ref=e349] [cursor=pointer]:
+                        - /url: /JiHuiYiYou/JiHuiYiYou-IDE/wiki/Claude-Code
+                  - listitem [ref=e351]:
+                    - generic [ref=e353]:
+                      - button "Structure for Claude Code.zh CN" [ref=e354] [cursor=pointer]
+                      - link "Claude Code.zh CN" [ref=e359] [cursor=pointer]:
+                        - /url: /JiHuiYiYou/JiHuiYiYou-IDE/wiki/Claude-Code.zh-CN
+                  - listitem [ref=e361]:
+                    - generic [ref=e363]:
+                      - button "Structure for Contributing" [ref=e364] [cursor=pointer]
+                      - link "Contributing" [ref=e369] [cursor=pointer]:
+                        - /url: /JiHuiYiYou/JiHuiYiYou-IDE/wiki/Contributing
+                  - listitem [ref=e371]:
+                    - generic [ref=e373]:
+                      - button "Structure for Contributing.zh CN" [ref=e374] [cursor=pointer]
+                      - link "Contributing.zh CN" [ref=e379] [cursor=pointer]:
+                        - /url: /JiHuiYiYou/JiHuiYiYou-IDE/wiki/Contributing.zh-CN
+                  - listitem [ref=e381]:
+                    - generic [ref=e383]:
+                      - button "Structure for Getting Started" [ref=e384] [cursor=pointer]
+                      - link "Getting Started" [ref=e389] [cursor=pointer]:
+                        - /url: /JiHuiYiYou/JiHuiYiYou-IDE/wiki/Getting-Started
+                  - listitem [ref=e391]:
+                    - generic [ref=e393]:
+                      - button "Structure for Getting Started.zh CN" [ref=e394] [cursor=pointer]
+                      - link "Getting Started.zh CN" [ref=e399] [cursor=pointer]:
+                        - /url: /JiHuiYiYou/JiHuiYiYou-IDE/wiki/Getting-Started.zh-CN
+                  - listitem [ref=e401]:
+                    - generic [ref=e403]:
+                      - button "Structure for Home.zh CN" [ref=e404] [cursor=pointer]
+                      - link "Home.zh CN" [ref=e409] [cursor=pointer]:
+                        - /url: /JiHuiYiYou/JiHuiYiYou-IDE/wiki/Home.zh-CN
+                  - listitem [ref=e411]:
+                    - generic [ref=e413]:
+                      - button "Structure for Troubleshooting" [ref=e414] [cursor=pointer]
+                      - link "Troubleshooting" [ref=e419] [cursor=pointer]:
+                        - /url: /JiHuiYiYou/JiHuiYiYou-IDE/wiki/Troubleshooting
+                  - listitem [ref=e421]:
+                    - generic [ref=e423]:
+                      - button "Structure for Troubleshooting.zh CN" [ref=e424] [cursor=pointer]
+                      - link "Troubleshooting.zh CN" [ref=e429] [cursor=pointer]:
+                        - /url: /JiHuiYiYou/JiHuiYiYou-IDE/wiki/Troubleshooting.zh-CN
+          - heading "Clone this wiki locally" [level=3] [ref=e431]
+          - generic [ref=e432]:
+            - textbox "Clone URL for this wiki" [ref=e433]: https://github.com/JiHuiYiYou/JiHuiYiYou-IDE.wiki.git
+            - button "Copy to clipboard" [ref=e436] [cursor=pointer]
+  - contentinfo [ref=e441]:
+    - heading "Footer" [level=2] [ref=e442]
+    - generic [ref=e443]:
+      - generic [ref=e444]:
+        - link "GitHub Homepage" [ref=e445] [cursor=pointer]:
+          - /url: https://github.com
+        - generic [ref=e448]: © 2026 GitHub, Inc.
+      - navigation "Footer" [ref=e449]:
+        - heading "Footer navigation" [level=3] [ref=e450]
+        - list "Footer navigation" [ref=e451]:
+          - listitem [ref=e452]:
+            - link "Terms" [ref=e453] [cursor=pointer]:
+              - /url: https://docs.github.com/site-policy/github-terms/github-terms-of-service
+          - listitem [ref=e454]:
+            - link "Privacy" [ref=e455] [cursor=pointer]:
+              - /url: https://docs.github.com/site-policy/privacy-policies/github-privacy-statement
+          - listitem [ref=e456]:
+            - link "Security" [ref=e457] [cursor=pointer]:
+              - /url: https://github.com/security
+          - listitem [ref=e458]:
+            - link "Status" [ref=e459] [cursor=pointer]:
+              - /url: https://www.githubstatus.com/
+          - listitem [ref=e460]:
+            - link "Community" [ref=e461] [cursor=pointer]:
+              - /url: https://github.community/
+          - listitem [ref=e462]:
+            - link "Docs" [ref=e463] [cursor=pointer]:
+              - /url: https://docs.github.com/
+          - listitem [ref=e464]:
+            - link "Contact" [ref=e465] [cursor=pointer]:
+              - /url: https://support.github.com?tags=dotcom-footer
+          - listitem [ref=e466]:
+            - button "Manage cookies" [ref=e468] [cursor=pointer]
+          - listitem [ref=e469]:
+            - button "Do not share my personal information" [ref=e471] [cursor=pointer]
