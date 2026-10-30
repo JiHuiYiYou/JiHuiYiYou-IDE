@@ -199,6 +199,8 @@ export class TerminalSession {
   private exited = false
   /** 正在跑的程序 stdin 的写入器（跑程序时，终端的输入喂给它） */
   private programInput: ((text: string) => void) | null = null
+  /** 回显用的当前行内容（喂给程序的输入在屏幕上回显出来） */
+  private programEchoLine = ''
   /**
    * 用户当前这一行**有没有输入**。
    *
@@ -278,9 +280,54 @@ export class TerminalSession {
     //   跟 VS Code 的「在终端里运行」一个意思 ✓。
     if (this.programInput) {
       this.programInput(data)
+      this.echoProgramInput(data)
       return
     }
     this.writeToShell(data)
+  }
+
+  /**
+   * 回显「喂给程序的输入」。
+   *
+   * ⚠️ **必须回显** —— 程序从**管道**读 stdin，它自己**没有 TTY、不会回显**；
+   * 而 xterm.js 只负责把按键发出去，也不管回显 ⇒ 用户敲的字**屏幕上一个字都不出现**。
+   * 不回显的话，「程序在等我输入」看着就跟「`scanf` 还是坏的」一模一样
+   * （用户报过「scanf 是坏的，他根本就不会让我读」）。
+   *
+   * 只回显**可打印字符**，回车换行、退格擦除 —— 够用就行。
+   */
+  private echoProgramInput(data: string): void {
+    let out = ''
+    let inEscape = false
+    for (const ch of data) {
+      // ESC 序列（方向键、Home/End…）整体跳过 —— 只跳过 ESC 会把 '[A' 当正文回显出来
+      if (inEscape) {
+        if (ch !== '[' && ch !== 'O') inEscape = false
+        continue
+      }
+      if (ch === '\x1b') {
+        inEscape = true
+        continue
+      }
+      if (ch === '\r' || ch === '\n') {
+        out += '\r\n'
+        this.programEchoLine = ''
+        continue
+      }
+      if (ch === '\x7f' || ch === '\b') {
+        // 退格：把屏幕上最后那个字符擦掉（程序那边收到的是原始字节）
+        if (this.programEchoLine.length > 0) {
+          this.programEchoLine = this.programEchoLine.slice(0, -1)
+          out += '\b \b'
+        }
+        continue
+      }
+      // 其它控制字符（Ctrl+C…）不回显
+      if (ch < ' ') continue
+      this.programEchoLine += ch
+      out += ch
+    }
+    if (out) this.display(out)
   }
 
   /** 往 **shell** 的 stdin 写（不管当前有没有程序在跑）。 */
@@ -301,6 +348,8 @@ export class TerminalSession {
    */
   setProgramInput(write: ((text: string) => void) | null): void {
     this.programInput = write
+    // 回显状态清掉 —— 下一次接管是从新的一行开始
+    if (!write) this.programEchoLine = ''
   }
 
   /**

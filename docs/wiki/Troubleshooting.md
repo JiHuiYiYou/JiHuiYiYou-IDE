@@ -131,7 +131,9 @@ you type in the terminal** ✓ (like VS Code's "run in terminal") — switch to 
 **Terminal** tab, type, press Enter, and the program receives it ✓.
 
 ⚠️ Type into the **terminal** tab, not the **Output** tab — the output tab is the
-read-only program output.
+read-only program output. What you type is **echoed** in the terminal: the program
+reads stdin from a **pipe** and has no TTY of its own, so without the echo it would
+look like nothing was happening.
 A program that has not finished after 60 seconds is **killed by the timeout**
 (waiting for input has to leave you time to type); a program that prints forever is
 killed by the **output cap** (512 KB) ✓.
