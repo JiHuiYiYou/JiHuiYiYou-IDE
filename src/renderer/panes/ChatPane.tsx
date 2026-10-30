@@ -38,6 +38,9 @@ interface SavedSession {
 
 const SESSIONS_KEY = 'jhyy-ide.claude-sessions.v1'
 
+/** 思考中的提示词 —— 轮着换，别一直杵着同一个（用户提的）。 */
+const THINKING_WORDS = ['正在思考…', '思考中…', '让我想想…', '正在琢磨…', '嗯…']
+
 /**
  * 一轮对话里的一个**过程**条目。
  *
@@ -165,6 +168,16 @@ export default function ChatPane({
      */
     const lastTurnClosed = (): boolean => !!turnsRef.current[turnsRef.current.length - 1]?.collapsed
 
+    /** 应用一次状态更新（两条通道共用）。 */
+    const applyStatus = (s: ClaudeStatus): void => {
+      setStatus(s)
+      if (s.sessionId) sessionIdRef.current = s.sessionId
+      // 本轮结束 ⇒ 过程折叠起来（哪怕没有最终回答）
+      if (s.turnComplete) {
+        updateLastTurn((t) => ({ ...t, collapsed: true, activity: undefined }))
+      }
+    }
+
     const offEvent = window.jhyyIde.claude.onEvent((event: ClaudeEvent) => {
       switch (event.type) {
         case 'delta':
@@ -197,14 +210,20 @@ export default function ChatPane({
                 }
               }
               if (m.text !== undefined) {
-                // 最终回答到了 —— 过程整个折叠成一行「已完成」
+                /*
+                  ⚠️ **这里不能把这一轮标成「已完成」** ——
+                  模型可能先写一段文字、再调工具、再写一段。
+                  提前折叠 ⇒ 后面的工具调用和思考就都看不见了
+                  （用户报过「先显示正在思考，状态就变成已完成，然后才输出那句话，
+                  但实际上还没干完活」）。
+
+                  ⇒ 折叠只发生在**这一轮真的结束**时（`status.turnComplete`）✓。
+                */
                 return {
                   ...t,
                   steps,
                   answer: m.text,
                   streaming: '',
-                  activity: undefined,
-                  collapsed: true,
                 }
               }
               return { ...t, steps }
@@ -267,16 +286,13 @@ export default function ChatPane({
           setStatus((prev) => ({ ...prev, state: 'error', error: event.message }))
           break
         case 'status':
-          setStatus(event.status)
-          if (event.status.sessionId) sessionIdRef.current = event.status.sessionId
-          // 本轮结束 ⇒ 过程折叠起来（哪怕没有最终回答）
-          if (event.status.turnComplete) {
-            updateLastTurn((t) => ({ ...t, collapsed: true, activity: undefined }))
-          }
+          applyStatus(event.status)
           break
       }
     })
-    const offStatus = window.jhyyIde.claude.onStatus((s) => setStatus(s))
+    // ⚠️ 两条通道都要处理 —— 主进程平时走 ，
+    //    出错时走  ⇒ 「本轮结束」不能只在一条通道里认。
+    const offStatus = window.jhyyIde.claude.onStatus((s) => applyStatus(s))
     return () => {
       offEvent()
       offStatus()
@@ -287,6 +303,26 @@ export default function ChatPane({
   useEffect(() => {
     turnsRef.current = turns
   }, [turns])
+
+  /*
+    思考中的提示**换个花样** —— 用户提的：「思考的时候加点颜文字变化没那么单调」。
+
+    只有一个「正在思考…」杵在那儿 ⇒ 看起来像卡住了。隔一会儿换个说法，
+    让人知道**它还在动** ✓。
+  */
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setTurns((prev) => {
+        if (prev.length === 0) return prev
+        const last = prev[prev.length - 1]
+        if (!last.activity?.startsWith('正在思考')) return prev
+        const idx = THINKING_WORDS.indexOf(last.activity)
+        const next = THINKING_WORDS[(idx + 1) % THINKING_WORDS.length]
+        return [...prev.slice(0, -1), { ...last, activity: next }]
+      })
+    }, 1400)
+    return () => clearInterval(timer)
+  }, [])
 
   // 自动滚到底
   useEffect(() => {
@@ -518,18 +554,18 @@ export default function ChatPane({
                     ))}
                   </div>
                 </details>
-                {turn.answer && (
+                {answerOf(turn) && (
                   <div className="bubble assistant">
-                    <Markdown text={turn.answer} />
+                    <Markdown text={answerOf(turn)!} />
                   </div>
                 )}
               </>
             ) : (
               <>
-                {/* 进行中 —— 只留一行状态，不刷屏 */}
+                {/* 进行中 —— 一行状态 + 已经写出来的正文 */}
                 {turn.activity && <div className="bubble activity">{turn.activity}</div>}
-                {turn.streaming && (
-                  <div className="bubble assistant streaming">{turn.streaming}</div>
+                {answerOf(turn) && (
+                  <div className="bubble assistant streaming">{answerOf(turn)}</div>
                 )}
               </>
             )}
@@ -619,6 +655,18 @@ export default function ChatPane({
 function dirnameOf(p: string): string {
   const i = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/'))
   return i > 0 ? p.slice(0, i) : p
+}
+
+/**
+ * 这一轮已经写出来的正文。
+ *
+ * ⚠️ 优先用 `answer`（完整的 assistant 消息），
+ * 拿不到就退回 `streaming`（流式增量）——
+ * 有些 CLI 版本**只发增量、不发完整消息** ⇒ 只看 `answer` 的话
+ * **回答会被整个吞掉**（用户报过「有时候根本就没有最终的回复，也被吞了」）。
+ */
+function answerOf(turn: ChatTurn): string {
+  return turn.answer ?? turn.streaming
 }
 
 /** 折叠块里的一个「过程」条目。 */

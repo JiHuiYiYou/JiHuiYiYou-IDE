@@ -120,12 +120,20 @@ describe('聊天面板的折叠', () => {
     // 工具调用**没有**被一条条打出来
     expect(host.querySelector('.bubble.tool')).toBeNull()
 
-    // 最终回答到了 ⇒ 过程折叠成一行「已完成」，回答照常显示
+    // 最终回答到了 ⇒ **这一轮还没结束**（模型可能接着调工具）
+    //    ⇒ 此刻**不能**标「已完成」
     await act(async () => {
       bridge.emit({
         type: 'message',
         message: { role: 'assistant', text: '收到' },
       })
+    })
+    expect(host.querySelector('details.chat-turn-steps'), '还没结束就不该折叠').toBeNull()
+    expect(host.querySelector('.bubble.assistant')?.textContent).toBe('收到')
+
+    // 这一轮真的结束了（CLI 的 result 事件）⇒ 折叠成一行「已完成」
+    await act(async () => {
+      bridge.status({ state: 'waiting', turnComplete: true })
     })
     const details = host.querySelector('details.chat-turn-steps')
     expect(details).toBeTruthy()
@@ -138,16 +146,31 @@ describe('聊天面板的折叠', () => {
     expect(details!.textContent).toContain('Read')
   })
 
+  it('回答还没来就结束了 ⇒ 流式文本也要显示出来（别被吞）', async () => {
+    const { host, bridge } = await mount()
+    await send(host, '你好')
+    // 有些 CLI 版本只发增量、不发完整消息
+    await act(async () => {
+      bridge.emit({ type: 'delta', text: '半句回答' })
+    })
+    await act(async () => {
+      bridge.status({ state: 'waiting', turnComplete: true })
+    })
+    expect(host.querySelector('.bubble.assistant')?.textContent).toContain('半句回答')
+  })
+
   it('多轮对话各自折叠', async () => {
     const { host, bridge } = await mount()
 
     await send(host, '第一句')
     await act(async () => {
       bridge.emit({ type: 'message', message: { role: 'assistant', text: '回答一' } })
+      bridge.status({ state: 'waiting', turnComplete: true })
     })
     await send(host, '第二句')
     await act(async () => {
       bridge.emit({ type: 'message', message: { role: 'assistant', text: '回答二' } })
+      bridge.status({ state: 'waiting', turnComplete: true })
     })
 
     const turns = host.querySelectorAll('.chat-turn')

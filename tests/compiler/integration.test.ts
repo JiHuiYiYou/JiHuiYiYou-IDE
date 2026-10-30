@@ -82,4 +82,47 @@ describe('编译器链路', () => {
     const produced = readdirSync(scratch).filter((f) => f.endsWith('.exe') || f.endsWith('.s'))
     expect(produced).toEqual([])
   })
+
+  /**
+   * 程序的 stdin 得是**一根管道**，而且外面能往里写。
+   *
+   * ⚠️ 以前 stdin 接到的是**空设备** ⇒ 读 stdin 的程序立刻拿到 EOF ⇒
+   * `scanf` 直接返回、程序跑过去了（用户报过「scanf 是坏的，
+   * 他根本就不会让我读，直接就跳到后面了」）。
+   */
+  it('程序的 stdin 能收到输入（scanf 能读）', async () => {
+    const file = writeSource(
+      'scanfin.jhyy',
+      [
+        'extern fn scanf(fmt: *u8, val: *i32) -> i32;',
+        'extern fn printf(fmt: *u8, val: i32) -> i32;',
+        '',
+        'fn main_jhyy() -> i32 {',
+        '    let mut n: i32 = 0;',
+        '    scanf("%d", &n);',
+        '    printf("got %d\\n", n);',
+        '    0',
+        '}',
+        '',
+      ].join('\n'),
+    )
+
+    let fed = false
+    const result = await runFile({
+      exePath,
+      file,
+      timeoutMs: 20_000,
+      onProgramStart: (writeStdin) => {
+        // 程序刚起来 ⇒ 喂一行进去（模拟用户在终端里敲字）
+        setTimeout(() => {
+          writeStdin('42\n')
+          fed = true
+        }, 300)
+      },
+    })
+
+    expect(fed, '程序启动后应该拿到写 stdin 的能力').toBe(true)
+    expect(result.exitCode).toBe(0)
+    expect(result.programStdout).toContain('got 42')
+  })
 })

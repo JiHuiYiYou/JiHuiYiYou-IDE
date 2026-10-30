@@ -72,6 +72,8 @@ interface SpawnOutcome {
   /** 输出太多被截断了（程序在疯狂打印） */
   truncated?: boolean
   spawnError?: string
+  /** 往程序的 stdin 写（`stdin: 'pipe'` 时才有） */
+  writeStdin?: (text: string) => void
 }
 
 /**
@@ -103,6 +105,18 @@ function runProcess(
     env?: Record<string, string>
     /** 输出**边产生边**回调（不是等程序结束） */
     onOutput?: OutputListener
+    /**
+     * 程序的 stdin 要不要**接管一根管道**。
+     *
+     * ⚠️ 默认是「空设备」—— 读 stdin 的程序立刻拿到 EOF，而不是一直阻塞。
+     *   语言仓库的回归 harness 也是这么做的（subprocess.DEVNULL）。
+     *   **但这样 `scanf` 根本读不到东西**（用户报过「scanf 是坏的，
+     *   他根本就不会让我读，直接就跳到后面了」）⇒ 跑**程序**时要接管管道，
+     *   把终端里敲的字喂进去 ✓。
+     */
+    stdinPipe?: boolean
+    /** 进程刚起来时的回调（拿到写 stdin 的能力） */
+    onStart?: (writeStdin: (text: string) => void) => void
   },
 ): Promise<SpawnOutcome> {
   return new Promise((resolvePromise) => {
@@ -116,11 +130,22 @@ function runProcess(
       cwd: opts.cwd,
       windowsHide: true,
       shell: false,
-      // stdin 接到"空设备" —— 读 stdin 的程序立刻拿到 EOF，而不是一直阻塞。
-      // 语言仓库的回归 harness 也是这么做的（subprocess.DEVNULL）。
-      stdio: ['ignore', 'pipe', 'pipe'],
+      // stdin 默认接到"空设备"；跑程序时接管一根管道（见上面 stdinPipe 的说明）
+      stdio: [opts.stdinPipe ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       env: buildSubprocessEnv(opts.env),
     })
+
+    /** 往程序的 stdin 写。 */
+    const writeStdin = (text: string): void => {
+      try {
+        child.stdin?.write(text)
+      } catch {
+        /* 程序已经退出了 */
+      }
+    }
+    // 程序**刚起来**就把写 stdin 的能力交出去 ——
+    // 等 promise resolve 就太晚了（那时程序已经跑完，scanf 早就 EOF 了）。
+    if (opts.stdinPipe) opts.onStart?.(writeStdin)
 
     activeChild = child
 
@@ -176,6 +201,7 @@ function runProcess(
         timedOut,
         truncated,
         spawnError: err.message,
+        writeStdin: opts.stdinPipe ? writeStdin : undefined,
       })
     })
 
@@ -184,7 +210,14 @@ function runProcess(
       settled = true
       clearTimeout(timer)
       activeChild = undefined
-      resolvePromise({ code, stdout, stderr, timedOut, truncated })
+      resolvePromise({
+        code,
+        stdout,
+        stderr,
+        timedOut,
+        truncated,
+        writeStdin: opts.stdinPipe ? writeStdin : undefined,
+      })
     })
   })
 }
@@ -289,6 +322,17 @@ export interface RunOptions {
   env?: Record<string, string>
   /** 程序的输出**边跑边**回调（让用户像 VS Code 那样实时看到） */
   onOutput?: OutputListener
+  /**
+   * 程序启动时的回调 —— 拿到「往程序 stdin 写」的能力。
+   *
+   * ⚠️ **必须有它**，否则 `scanf` 读不到东西：程序的 stdin 默认是**空设备**
+   * （立刻 EOF ⇒ `scanf` 直接返回 ⇒ 程序就跑过去了 —— 用户报过
+   * 「scanf 是坏的，他根本就不会让我读，直接就提到后面了」）。
+   *
+   * IDE 把这个写入器接到**终端**上 ⇒ 用户在终端里敲的字就喂给程序 ✓
+   * （跟 VS Code 的「在终端里运行」一个意思）。
+   */
+  onProgramStart?: (writeStdin: (text: string) => void) => void
 }
 
 /**
@@ -340,11 +384,19 @@ export async function runFile(opts: RunOptions): Promise<RunResult> {
   // 程序的 CWD = 源文件所在目录（用户直觉：程序里的相对路径操作指向源码旁边）
   const outcome = await runProcess(exePath, [], {
     cwd: opts.cwd ?? dirname(file),
-    timeoutMs: opts.timeoutMs ?? 10_000,
+    // ⚠️ **默认 60 秒**（原来 10 秒）——
+    //   程序可能在等输入（`scanf`）⇒ 得给用户时间打字。
+    //   疯狂打印的那种由**输出上限**秒杀 ✓（不用靠超时）。
+    timeoutMs: opts.timeoutMs ?? 60_000,
     env: opts.env,
     // ⚠️ **边跑边送** —— 用户像 VS Code 那样实时看到输出（VS Code 那边是
     // PTY + xterm 增量渲染，我们没 PTY，就自己推）。
     onOutput: opts.onOutput,
+    // ⚠️ **接管 stdin** —— 否则 `scanf` 读不到东西（空设备 = 立刻 EOF）。
+    stdinPipe: true,
+    // 程序**刚起来**就把写 stdin 的能力交给 IDE（它接到终端上）——
+    // 等 promise resolve 就太晚了（那时程序已经跑完）。
+    onStart: opts.onProgramStart,
   })
 
   const crash = ntstatusName(outcome.code)

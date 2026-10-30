@@ -250,9 +250,17 @@ export function compileExpr(tree: BlockTree | null | undefined): Expr | null {
     }
 
     case BLOCK.print: {
-      const value = compileExpr(tree.inputs?.VALUE)
-      if (!value) return null
       const fmt = tree.fields?.FMT ?? '%d\\n'
+      // ⚠️ **值可以留空** —— `printf` 的签名是固定的（`fmt: *u8, val: i32`），
+      //   所以格式串里**没有**占位符时，那个值就是个摆设。
+      //   用户以前每次都得拖一个「实参 + number 0」（用户报过「很复杂」），
+      //   现在留空 ⇒ 自动补 0 ✓。
+      const value = compileExpr(tree.inputs?.VALUE) ?? {
+        kind: 'int' as const,
+        ...NO_POS,
+        value: 0n,
+        raw: '0',
+      }
       return {
         kind: 'call',
         ...NO_POS,

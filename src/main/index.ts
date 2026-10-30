@@ -245,18 +245,32 @@ function registerIpc(): void {
     return { path, content }
   })
 
-  ipcMain.handle(IPC.fileSaveDialog, async (_e, defaultName?: string) => {
+  ipcMain.handle(IPC.fileSaveDialog, async (_e, _defaultName?: string) => {
     const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
     const options: Electron.SaveDialogOptions = {
       title: '保存 JHYY 源文件',
       filters: [{ name: 'JHYY 源文件', extensions: ['jhyy'] }],
     }
-    // 落在上次那个文件夹里（文件名还是当前那个）
-    if (lastOpenDir) {
-      options.defaultPath = defaultName ? join(lastOpenDir, defaultName) : lastOpenDir
-    } else if (defaultName) {
-      options.defaultPath = defaultName
-    }
+    /*
+      ⚠️ **故意不给「文件名」的默认值**（只给**目录**）。
+
+      Windows 的保存对话框会把「文件名」框里的内容**整段选中**（含后缀）。
+      用户报过：「ctrl+n 以后另存为的时候，会自动把整个文件名包括后缀一同选上，
+      要是能不选后缀就好了」。
+
+      实测（三种都试过）：
+      - 默认名**带**后缀（`未命名-1.jhyy`）⇒ 整段选中 ✗
+      - 默认名**不带**后缀 ⇒ 对话框按过滤器**自动补**一个 ⇒ 补上的那段
+        **跟着一起选中** ⇒ 还是整段 ✗
+      - **不给默认名** ⇒ 框是空的 ⇒ 没有「被选中的后缀」✓
+
+      ⇒ 干脆不给默认名。**其它一切不变**：过滤器还在（文件列表照样只显示
+      `.jhyy`）、扩展名照样自动补（"hello" ⇒ "hello.jhyy"）✓。
+      少掉的只是那个预填的名字 —— 标签页上写着「未命名-1.jhyy」，
+      想保留就把它抄进文件名框即可。
+    */
+    options.defaultPath = lastOpenDir ?? undefined
+
     const result = win
       ? await dialog.showSaveDialog(win, options)
       : await dialog.showSaveDialog(options)
@@ -360,7 +374,14 @@ function registerIpc(): void {
         // 走 `write()` 会被 shell 当成**输入的命令**执行掉。
         terminalSession?.display(text)
       },
+      // ⚠️ **程序的 stdin 接到终端上** —— 否则 `scanf` 读不到东西
+      //   （用户报过「scanf 是坏的，他根本就不会让我读，直接就跳到后面了」）。
+      onProgramStart: (writeStdin) => {
+        terminalSession?.setProgramInput(writeStdin)
+      },
     })
+    // 程序跑完了 ⇒ 终端的输入还给 shell
+    terminalSession?.setProgramInput(null)
     // 让 shell 重打一遍提示符 —— 否则终端里少 `user@host ~/dir` 那一行
     terminalSession?.prompt()
     return result

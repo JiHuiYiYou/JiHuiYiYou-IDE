@@ -197,6 +197,8 @@ export class TerminalSession {
   private shell: TerminalShell
   private cwd: string
   private exited = false
+  /** 正在跑的程序 stdin 的写入器（跑程序时，终端的输入喂给它） */
+  private programInput: ((text: string) => void) | null = null
   /**
    * 用户当前这一行**有没有输入**。
    *
@@ -270,6 +272,19 @@ export class TerminalSession {
 
   /** 往 stdin 写（这是**给 shell 的输入**）。 */
   write(data: string): void {
+    // ⚠️ **正在跑程序时，输入要喂给程序** ——
+    //   程序自己的 stdin 默认是**空设备** ⇒ `scanf` 立刻拿到 EOF ⇒
+    //   用户报过「scanf 是坏的，他根本就不会让我读，直接就跳到后面了」。
+    //   跟 VS Code 的「在终端里运行」一个意思 ✓。
+    if (this.programInput) {
+      this.programInput(data)
+      return
+    }
+    this.writeToShell(data)
+  }
+
+  /** 往 **shell** 的 stdin 写（不管当前有没有程序在跑）。 */
+  private writeToShell(data: string): void {
     if (!this.child?.stdin || this.exited) return
     this.trackInput(data)
     try {
@@ -277,6 +292,15 @@ export class TerminalSession {
     } catch {
       // 管道已经断了 —— 忽略，退出事件会跟上
     }
+  }
+
+  /**
+   * 设置「正在跑的程序」的输入去向。
+   *
+   * 传 `null` 表示程序跑完了 ⇒ 输入还给 shell ✓。
+   */
+  setProgramInput(write: ((text: string) => void) | null): void {
+    this.programInput = write
   }
 
   /**
@@ -348,7 +372,8 @@ export class TerminalSession {
   /** 换目录。管道改不了 cwd，只能往 shell 里发一条 cd 命令。 */
   cd(dir: string): void {
     this.cwd = dir
-    this.write(shellSpec(this.shell).cdCommand(dir))
+    // ⚠️ 直接给 shell —— 不能走 write()（那会喂给正在跑的程序 ✗）
+    this.writeToShell(shellSpec(this.shell).cdCommand(dir))
   }
 
   /**

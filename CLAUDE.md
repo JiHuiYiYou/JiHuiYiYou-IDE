@@ -39,7 +39,7 @@ JHYY IDE —— 给 **JHYY（机会翼游）** 做的桌面 IDE。
 `jhyy.exe` 是唯一的裁判。任何改动 `src/lang/` 之后，必须跑：
 
 ```bash
-npm test          # 427 个测试，含 278 个真实编译器的往返验证
+npm test          # 432 个测试，含 278 个真实编译器的往返验证
 ```
 
 `tests/conformance/examples.test.ts` 会把语言仓库的 **277 个示例**逐个走
@@ -122,7 +122,7 @@ src/
 npm run dev          # 开发
 npm run build        # 构建
 npm run typecheck    # 类型检查
-npm test             # 测试（427 个）
+npm test             # 测试（432 个）
 npm run conformance  # 只跑一致性测试
 npm run dist         # 打 NSIS 安装包
 npx vite-node scripts/claude-smoke.ts   # Claude 集成冒烟（会消耗 API 额度）
@@ -235,6 +235,11 @@ npx vite-node scripts/claude-smoke.ts   # Claude 集成冒烟（会消耗 API �
   用 `--max-budget-usd` 和 `--allowedTools` 代替。
 - **Claude Code 的 `--system-prompt` 会替换掉内置 system prompt**（工具用法说明会丢）——
   要用 `--append-system-prompt`。
+- **Claude 的一轮结束 = `status.turnComplete`**，**不是**「收到带 text 的
+  assistant 消息」—— 模型可能先写一段文字、再调工具、再写一段（用户报过
+  「ai 没处理完也会标已完成」）。⇒ 折叠「已完成」只发生在 `turnComplete` 时 ✓。
+  而且正文要**兜底**用流式增量（有些 CLI 版本只发增量、不发完整消息 ⇒
+  只看完整消息会把回答**整个吞掉**）。
 - **Claude 会话的 sessionId 是「后到的」** —— 第一条消息是在 `claude.start()`
   返回**之后**才发出去的，而 CLI 的 `system/init` 事件（带 sessionId）**那时候
   还没到**。所以「有消息就存历史」必须**同时等 sessionId**，否则历史一次都存不下来
@@ -249,6 +254,13 @@ npx vite-node scripts/claude-smoke.ts   # Claude 集成冒烟（会消耗 API �
   IDE 卡死」。原因是程序无限打印，而我们在**无上限地拼接**输出 ⇒ 内存被吃光 ⇒
   机器开始换页。⇒ 每个流的上限（`MAX_CAPTURE`），超了**立刻杀掉程序**。
   VS Code 不会卡是因为它跑的是**真 PTY**（输出比读快时写端会阻塞）。
+- **程序的 stdin 必须接管成管道** —— 默认接的是**空设备** ⇒ 读 stdin 的程序
+  立刻拿到 EOF ⇒ `scanf` 直接返回、程序跑过去了（用户报过「scanf 是坏的，
+  他根本就不会让我读，直接就跳到后面了」）。
+  ⇒ 跑程序时 `stdinPipe: true`，并把 `writeStdin` 接到**终端**上
+  （`TerminalSession.setProgramInput`）—— 用户在终端里敲的字就喂给程序 ✓。
+  ⚠️ 写 stdin 的能力要在**进程刚起来**时交出去（等 promise resolve 就太晚了 ——
+  那时程序已经跑完，scanf 早就 EOF 了）。
 - **Blockly 的字段渲染在「自己那个孔」的前面** —— 所以「运算符放中间」的正确做法是
   **把它挂到右边那个输入上**（`[a] [+] [b]`）；挂左边就变成 `[+] [a] [b]` ✗。
   只有一个孔的块（类型转换 / 取字段）没法把字段排在孔后面 ⇒ 只能两行。

@@ -336,8 +336,16 @@ function printfBlock(expr: Expr, source: string): BlockTree | null {
   if (!value) return null
   return block(BLOCK.print, {
     fields: { FMT: content },
-    inputs: { VALUE: value },
+    // ⚠️ 格式串里**没有占位符**时，第二个参数就是个摆设（`printf` 的签名是
+    //   固定的）⇒ 别把它拖成一个「实参 + number 0」（用户报过「很复杂」），
+    //   留空即可（编出来会自动补 0 ✓）。
+    inputs: { VALUE: hasPlaceholder(content) ? value : null },
   })
+}
+
+/** 格式串里有没有 `%` 占位符。 */
+function hasPlaceholder(fmt: string): boolean {
+  return /%[-+ #0]*[0-9*]*(?:\.[0-9*]+)?[hlL]?[diouxXeEfFgGaAcspn]/.test(fmt)
 }
 
 /**

@@ -314,3 +314,72 @@ fn main_jhyy() -> i32 {
     expect(kinds).toBe(1)
   })
 })
+
+/**
+ * 打印块的值**可以留空**。
+ *
+ * ⚠️ `printf` 的签名是固定的（`fmt: *u8, val: i32`）⇒ 格式串里**没有**
+ * 占位符时，第二个参数就是个摆设 ⇒ 用户以前每次都得拖一个
+ * 「实参 + number 0」（用户报过「很复杂」）。现在留空 ⇒ 自动补 0 ✓。
+ */
+describe('打印块', () => {
+  it('格式串里没有占位符 ⇒ 值留空（不用拖实参）', () => {
+    const src = `extern fn printf(fmt: *u8, val: i32) -> i32;
+
+fn main_jhyy() -> i32 {
+    printf("你好: ", 0);
+    0
+}
+`
+    const parsed = parse(src)
+    const trees = decompileModule(parsed.module!, src)
+    const fn = trees.find((t) => t.type === 'jhyy_func') as unknown as {
+      statements: { BODY: { type: string; inputs?: Record<string, unknown> }[] }
+    }
+    const printBlock = fn.statements.BODY.find((b) => b.type === 'jhyy_print')
+    expect(printBlock, 'printf 应该变成打印块').toBeTruthy()
+    // 值是空的（不是 number 0）⇒ 不用拖实参
+    expect(printBlock!.inputs?.VALUE ?? null).toBeNull()
+    // 编回来还是对的
+    const out = print(compileModule(trees))
+    expect(out).toContain('printf("你好: ", 0)')
+  })
+
+  it('格式串里有占位符 ⇒ 值要留着', () => {
+    const src = `extern fn printf(fmt: *u8, val: i32) -> i32;
+
+fn main_jhyy() -> i32 {
+    printf("%d\\n", 42);
+    0
+}
+`
+    const parsed = parse(src)
+    const trees = decompileModule(parsed.module!, src)
+    expect(JSON.stringify(trees)).toContain('"VALUE":"42"')
+    expect(print(compileModule(trees))).toContain('printf("%d\\n", 42)')
+  })
+
+  it('值留空也能编出合法的 printf（自动补 0）', () => {
+    const out = print(
+      compileModule([
+        {
+          type: 'jhyy_func',
+          fields: { NAME: 'main_jhyy', RET: 'i32' },
+          inputs: {},
+          statements: {
+            PARAMS: [],
+            BODY: [
+              {
+                type: 'jhyy_print',
+                fields: { FMT: 'hi' },
+                inputs: { VALUE: null },
+                statements: {},
+              },
+            ],
+          },
+        },
+      ]),
+    )
+    expect(out).toContain('printf("hi", 0)')
+  })
+})
