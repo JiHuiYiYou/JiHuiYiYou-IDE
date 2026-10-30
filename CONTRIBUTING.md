@@ -65,7 +65,7 @@
 - 结尾带 trailer：
 
   ```
-  Co-Authored-By: MiniMax-M3 <noreply@MiniMax>
+  Co-Authored-By: MiniMax-M3.1-Flash <noreply@MiniMax>
   ```
 
 - 提交完**直接 push**，不用问"要 push 吗"
