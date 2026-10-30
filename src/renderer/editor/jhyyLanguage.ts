@@ -74,13 +74,15 @@ const OPERATORS = [
 interface JhyyState {
   /** 处在跨行的块注释里 */
   inBlockComment: boolean
+  /** 在字符串/字符字面量里（记着引号是哪个） */
+  inString: '' | '"' | "'"
 }
 
 const jhyyParser: StreamParser<JhyyState> = {
   name: 'jhyy',
 
   startState(): JhyyState {
-    return { inBlockComment: false }
+    return { inBlockComment: false, inString: '' }
   },
 
   token(stream, state): string | null {
@@ -91,6 +93,25 @@ const jhyyParser: StreamParser<JhyyState> = {
         return 'comment'
       }
       state.inBlockComment = false
+    }
+
+    /*
+      字符串 / 字符字面量 —— **逐段吐**，好让转义序列单独一个 token。
+
+      ⚠️ 用户提的：「换行 \n 这种还没有特殊颜色」。
+      以前整个字符串是一个 token ⇒ `\n` 跟普通文字一个颜色 ✗。
+      现在：转义序列（`\n` `\t` `\\` `\u{...}` …）单独标成 `escape` ✓。
+    */
+    if (state.inString) {
+      const quote = state.inString
+      // 转义序列：`\` + 下一个字符（`\u{1F600}` 的 `{…}` 也算一段）
+      if (stream.match(/\\u\{[0-9A-Fa-f]+\}|\\./)) return 'escape'
+      if (stream.eat(quote)) {
+        state.inString = ''
+        return 'string'
+      }
+      stream.next()
+      return 'string'
     }
 
     if (stream.eatSpace()) return null
@@ -108,23 +129,11 @@ const jhyyParser: StreamParser<JhyyState> = {
       return 'comment'
     }
 
-    // 字符串 / 字符字面量
+    // 字符串 / 字符字面量的开头
     const quote = stream.peek()
     if (quote === '"' || quote === "'") {
       stream.next()
-      let escaped = false
-      while (!stream.eol()) {
-        const ch = stream.next()
-        if (escaped) {
-          escaped = false
-          continue
-        }
-        if (ch === '\\') {
-          escaped = true
-          continue
-        }
-        if (ch === quote) break
-      }
+      state.inString = quote
       return 'string'
     }
 
@@ -163,7 +172,20 @@ const jhyyParser: StreamParser<JhyyState> = {
   languageData: {
     commentTokens: { line: '//', block: { open: '/*', close: '*/' } },
     closeBrackets: { brackets: ['(', '[', '{', '"', "'"] },
-    indentOnInput: true,
+    /*
+      ⚠️ **这里必须是「正则表达式」，不能写 `true`。**
+      CodeMirror 的 `indentOnInput()` 扩展是个**事务过滤器**：每次输入都读
+      语言数据里的这个字段，然后 `rules.some(r => r.test(lineStart))`。
+      写成 `true` ⇒ `true.test` 不是函数 ⇒ **抛 TypeError** ⇒
+      整个事务被丢掉 ⇒ **编辑器里的字打不进去**（看着跟只读一模一样）。
+      用户报过「编译器又变成只读的了」—— 就是这一行。
+      文档原文：*which must hold a regular expression*。
+
+      规则本身：在一行开头打「}」时，把这一行缩进到外层缩进级别
+      （跟 CM6 自带的 JavaScript StreamLanguage 一个路子）。
+      回车自动缩进是 `insertNewlineAndIndent` 干的，不靠这里。
+    */
+    indentOnInput: /^\s*\}$/,
     bracketMatching: true,
     wordChars: '_',
   },
@@ -180,6 +202,7 @@ const jhyyParser: StreamParser<JhyyState> = {
     typeName: tags.typeName,
     number: tags.number,
     string: tags.string,
+    escape: tags.escape,
     comment: tags.comment,
     operator: tags.operator,
     bracket: tags.bracket,
@@ -202,6 +225,8 @@ export const jhyyHighlightStyle = HighlightStyle.define([
   { tag: tags.typeName, color: '#ffcb6b' },
   { tag: tags.number, color: '#f78c6c' },
   { tag: tags.string, color: '#c3e88d' },
+  // 转义序列（`\n` `\t` …）—— 单独一个颜色（用户提的）
+  { tag: tags.escape, color: '#ffcb6b' },
   { tag: tags.comment, color: '#5f6b7a', fontStyle: 'italic' },
   { tag: tags.operator, color: '#89ddff' },
   { tag: tags.bracket, color: '#a6accd' },

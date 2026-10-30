@@ -19,9 +19,21 @@ import { BLOCK, block, encodeOpaque, type BlockTree } from './tree'
  * 不透明块时，那部分才会变。
  */
 
-/** 不透明块：装一段原始源码。 */
+/** 不透明块（**语句形态**）：装一段原始源码。 */
 function opaque(node: { start: number; end: number }, source: string): BlockTree {
   return block(BLOCK.opaque, {
+    fields: { CODE: encodeOpaque(source.slice(node.start, node.end)) },
+  })
+}
+
+/**
+ * 不透明块（**值形态**）：表达式位置的逃生舱。
+ *
+ * ⚠️ 必须跟语句形态**分开** —— 见 `tree.ts` 里 `BLOCK` 上那段说明：
+ * Blockly 里一个块不能既有输出连接又有前后连接。
+ */
+function opaqueValue(node: { start: number; end: number }, source: string): BlockTree {
+  return block(BLOCK.opaqueValue, {
     fields: { CODE: encodeOpaque(source.slice(node.start, node.end)) },
   })
 }
@@ -133,7 +145,10 @@ export function decompileExpr(expr: Expr, source: string): BlockTree | null {
       })
 
     case 'assign':
-      return block(BLOCK.set, {
+      // ⚠️ **值形态**的赋值（`jhyy_set_val`）——
+      // 这里是**表达式**位置，语句形态的 `jhyy_set` 放这儿会崩
+      // （见 `tree.ts` 里 `BLOCK` 上那段说明）。
+      return block(BLOCK.setValue, {
         inputs: {
           TARGET: decompileExpr(expr.target, source),
           VALUE: decompileExpr(expr.value, source),
@@ -211,23 +226,25 @@ export function decompileExpr(expr: Expr, source: string): BlockTree | null {
       })
 
     case 'if':
-      return block(BLOCK.if, {
+      // ⚠️ **值形态**的 if（`jhyy_if_val`）—— 这里是表达式位置。
+      return block(BLOCK.ifValue, {
         inputs: { COND: decompileExpr(expr.cond, source) },
         statements: {
           THEN: decompileStmtList(expr.thenBody.statements, source),
-          ELSE: expr.elseBody ? decompileElse(expr.elseBody, source) : [],
+          ELSE: expr.elseBody ? decompileElse(expr.elseBody, source, 'value') : [],
         },
       })
 
     case 'match':
-      return block(BLOCK.match, {
+      // ⚠️ **值形态**的 match（`jhyy_match_val`）。
+      return block(BLOCK.matchValue, {
         inputs: { SUBJECT: decompileExpr(expr.subject, source) },
         statements: { ARMS: expr.arms.map((a) => decompileArm(a, source)) },
       })
 
     default:
-      // 逃生舱：不在块子集里的语法 → 不透明块
-      return opaque(expr, source)
+      // 逃生舱：不在块子集里的语法 → 不透明块（**值形态**）
+      return opaqueValue(expr, source)
   }
 }
 
@@ -246,7 +263,15 @@ function decompileExprStmt(expr: Expr, source: string): BlockTree | null {
           VALUE: decompileExpr(expr.value, source),
         },
       })
-    case 'call':
+    case 'call': {
+      // ⚠️ `printf(格式串, 值)` → **专用的打印块**（一个格式下拉 + 一个值孔）。
+      //   否则会变成「调用函数 + 实参 + 实参」三层 —— 用户报过
+      //   「printf 每次还得拖实参 number 0，很复杂」。
+      const printed = printfBlock(expr, source)
+      if (printed) return printed
+      // ⚠️ `scanf("%d", &x)` → **专用的输入块**（省得新手手写取地址）。
+      const scanned = scanfBlock(expr, source)
+      if (scanned) return scanned
       return block(BLOCK.callStmt, {
         fields: { NAME: calleeName(expr.callee, source) },
         statements: {
@@ -255,6 +280,7 @@ function decompileExprStmt(expr: Expr, source: string): BlockTree | null {
             .filter((a): a is BlockTree => a !== null),
         },
       })
+    }
     case 'qualified_call':
       return block(BLOCK.qualifiedCallStmt, {
         fields: { MODULE: expr.module, NAME: expr.function },
@@ -269,7 +295,7 @@ function decompileExprStmt(expr: Expr, source: string): BlockTree | null {
         inputs: { COND: decompileExpr(expr.cond, source) },
         statements: {
           THEN: decompileStmtList(expr.thenBody.statements, source),
-          ELSE: expr.elseBody ? decompileElse(expr.elseBody, source) : [],
+          ELSE: expr.elseBody ? decompileElse(expr.elseBody, source, 'stmt') : [],
         },
       })
     case 'match':
@@ -291,18 +317,105 @@ function argSlot(expr: BlockTree | null): BlockTree | null {
   return block(BLOCK.arg, { inputs: { ARG: expr } })
 }
 
+/**
+ * `printf(格式串, 值)` → 打印块（格式下拉 + 一个值孔）。
+ *
+ * ⚠️ 不是 printf 就返回 null（走普通的「调用函数」块）。
+ * 格式串要是**字面量**才行 —— 否则不知道该选哪个格式。
+ */
+function printfBlock(expr: Expr, source: string): BlockTree | null {
+  if (expr.kind !== 'call') return null
+  if (expr.callee.kind !== 'ident' || expr.callee.name !== 'printf') return null
+  if (expr.args.length !== 2) return null
+  const fmt = expr.args[0]
+  if (fmt.kind !== 'string') return null
+  // 格式串的内容（**去掉引号**，保留 `\n` 这种转义的原文）
+  const raw = fmt.raw ?? ''
+  const content = raw.length >= 2 ? raw.slice(1, -1) : raw
+  const value = decompileExpr(expr.args[1], source)
+  if (!value) return null
+  return block(BLOCK.print, {
+    fields: { FMT: content },
+    inputs: { VALUE: value },
+  })
+}
+
+/**
+ * `scanf("%d", &x)` → 输入块（一个格式下拉 + 一个变量孔）。
+ *
+ * ⚠️ 只有「格式是 `%d`、第二个参数是取地址」时才认 —— 别的 scanf 用法
+ * 走普通的「调用函数」块（不丢代码 ✓）。
+ */
+function scanfBlock(expr: Expr, source: string): BlockTree | null {
+  if (expr.kind !== 'call') return null
+  if (expr.callee.kind !== 'ident' || expr.callee.name !== 'scanf') return null
+  if (expr.args.length !== 2) return null
+  const fmt = expr.args[0]
+  if (fmt.kind !== 'string') return null
+  const raw = fmt.raw ?? ''
+  const content = raw.length >= 2 ? raw.slice(1, -1) : raw
+  if (content !== '%d') return null
+  const target = expr.args[1]
+  if (target.kind !== 'addr_of' || target.isMutable) return null
+  const value = decompileExpr(target.expr, source)
+  if (!value) return null
+  return block(BLOCK.input, {
+    fields: { KIND: '整数' },
+    inputs: { VALUE: value },
+  })
+}
+
 /** 调用块里的被调函数名（只支持简单名字）。 */
 function calleeName(callee: Expr, source: string): string {
   if (callee.kind === 'ident') return callee.name
   return source.slice(callee.start, callee.end)
 }
 
-function decompileElse(elseBody: BlockNode | IfNode, source: string): BlockTree[] {
+/**
+ * else 分支。
+ *
+ * ⚠️ `form` 决定 else-if 链用哪种形态：
+ * - `'stmt'` —— 语句形态的 `jhyy_if`（有前后连接），直接放进语句容器。
+ * - `'value'` —— 值形态的 `jhyy_if_val`（只有输出连接）。**语句容器放不下
+ *   值块**（Blockly 会拿它的输出连接去接语句口 ⇒ 类型不兼容）⇒
+ *   用「表达式语句」块包一层。
+ */
+function decompileElse(
+  elseBody: BlockNode | IfNode,
+  source: string,
+  form: 'stmt' | 'value',
+): BlockTree[] {
   if (elseBody.kind === 'if') {
-    const inner = decompileExpr(elseBody, source)
-    return inner ? [inner] : []
+    if (form === 'stmt') {
+      const inner = decompileIfStmt(elseBody, source)
+      return inner ? [inner] : []
+    }
+    const inner = decompileIfValue(elseBody, source)
+    return inner ? [block(BLOCK.exprStmt, { inputs: { VALUE: inner } })] : []
   }
   return decompileStmtList(elseBody.statements, source)
+}
+
+/** 语句形态的 if。 */
+function decompileIfStmt(node: IfNode, source: string): BlockTree {
+  return block(BLOCK.if, {
+    inputs: { COND: decompileExpr(node.cond, source) },
+    statements: {
+      THEN: decompileStmtList(node.thenBody.statements, source),
+      ELSE: node.elseBody ? decompileElse(node.elseBody, source, 'stmt') : [],
+    },
+  })
+}
+
+/** 值形态的 if。 */
+function decompileIfValue(node: IfNode, source: string): BlockTree {
+  return block(BLOCK.ifValue, {
+    inputs: { COND: decompileExpr(node.cond, source) },
+    statements: {
+      THEN: decompileStmtList(node.thenBody.statements, source),
+      ELSE: node.elseBody ? decompileElse(node.elseBody, source, 'value') : [],
+    },
+  })
 }
 
 function decompileArm(arm: MatchArm, source: string): BlockTree {
@@ -339,13 +452,7 @@ export function decompileStmt(stmt: Stmt, source: string): BlockTree | null {
       return decompileExprStmt(stmt.expr, source)
 
     case 'if':
-      return block(BLOCK.if, {
-        inputs: { COND: decompileExpr(stmt.cond, source) },
-        statements: {
-          THEN: decompileStmtList(stmt.thenBody.statements, source),
-          ELSE: stmt.elseBody ? decompileElse(stmt.elseBody, source) : [],
-        },
-      })
+      return decompileIfStmt(stmt, source)
 
     case 'while':
       return block(BLOCK.while, {
@@ -442,6 +549,19 @@ export function decompileDecl(decl: Decl, source: string): BlockTree | null {
 
     case 'import_decl':
       return block(BLOCK.import, { fields: { MODULE: decl.name } })
+
+    case 'extern_decl': {
+      // C 函数声明 —— 参数表用**文本**表示（`fmt: *u8, val: i32`）
+      return block(BLOCK.externFn, {
+        fields: {
+          NAME: decl.name,
+          PARAMS: decl.params
+            .map((p) => `${p.name}: ${typeText(p.typeAnnotation, source)}`)
+            .join(', '),
+          RET: decl.returnType ? typeText(decl.returnType, source) : '',
+        },
+      })
+    }
 
     case 'let':
       return decompileStmt(decl, source)

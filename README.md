@@ -16,7 +16,7 @@
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![中文](https://img.shields.io/badge/lang-中文-red)](README.zh-CN.md)
 
-[What it is](#what-it-is) · [Install](#install) · [Quick start](#quick-start) · [The three views](#the-three-views) · [Architecture](#architecture) · [Testing](#testing) · [Status](#status) · [Docs](#docs)
+[What it is](#what-it-is) · [Install](#install) · [Quick start](#quick-start) · [The workbench](#the-workbench) · [Architecture](#architecture) · [Testing](#testing) · [Status](#status) · [Docs](#docs)
 
 </div>
 
@@ -26,15 +26,23 @@
 
 **JHYY IDE** is a desktop IDE for [JHYY (机会翼游)](https://github.com/JiHuiYiYou/JiHuiYiYou-compiler) — a self-hosted, statically typed, expression-oriented systems language.
 
-It puts three things side by side:
+It is a **VS Code-style workbench** for [JHYY (机会翼游)](https://github.com/JiHuiYiYou/JiHuiYiYou-compiler) —
+a self-hosted, statically typed, expression-oriented systems language:
 
-1. **Block view** (Blockly) — drag blocks to program. Beginner-friendly.
-2. **Text view** (CodeMirror 6) — write code like in any editor. Full language power.
-3. **Claude Code** — talk to the `claude` CLI that is already on your machine.
+- **Text view** (CodeMirror 6) — write code like in any editor. Full language power.
+- **Block view** (Blockly) — drag blocks to program. Beginner-friendly. **Full-screen and
+  mutually exclusive with the text view** — one at a time, toggled with `Ctrl+Shift+B`.
+- **Claude Code** — a chat panel in the right sidebar, talking to the `claude` CLI that is
+  already on your machine.
+- **Bottom panel** — Problems / Output / **a real terminal**. Hidden by default; it pops
+  open when you hit **Check** or **Run**.
 
 The two coding views **share one AST**. Change a block and the text updates; change the
 text and the blocks rebuild. Code that blocks can't express (generics, closures, pointers)
 survives as an **opaque block** holding the original source — it never silently disappears.
+
+The shell is drawn to match VS Code: a self-drawn title bar (menu bar, command centre,
+layout toggles), a command palette on `Ctrl+Shift+P`, a status bar, and the usual chords.
 
 ## Install
 
@@ -74,7 +82,25 @@ npm run build
 npm run dist
 ```
 
-## The three views
+## The workbench
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│ ◈ 文件 编辑 选择 查看 转到  ← →  ┌🔍 搜索文件 / 输入命令 ──────┐ 💬 🧩 ▣ │ ← 自绘标题栏
+├──────────────────────────────────────────────────────┬─────────────────┤
+│ [📄 demo.jhyy ×]                        [✓][▶][■][🧩] │ 聊天            │
+│ C: › Users › liuzhen › … › demo.jhyy                  │  ┌───────────┐  │
+│ ──────────────────────────────────────────────────── │  │ 会话列表  │  │
+│                                                      │  └───────────┘  │
+│              文本编辑器（CodeMirror 6）                 │  ┌───────────┐  │
+│         ⇅ Ctrl+Shift+B 切到拖块，画布满屏                │  │ 输入框    │  │
+│                                                      │  └───────────┘  │
+├──────────────────────────────────────────────────────┴─────────────────┤
+│ 问题 │ 输出 │ 终端                     [🗑][⛶][✕]  ← 默认隐藏            │
+├────────────────────────────────────────────────────────────────────────┤
+│ ◈ JHYY │ Ln 11, Col 10 │ 空格:4 │ UTF-8 │ JHY          编译器: 就绪    │
+└────────────────────────────────────────────────────────────────────────┘
+```
 
 ### Block view
 
@@ -82,11 +108,22 @@ Drag blocks to write programs. The block set covers the language's everyday core
 variables, operators, `if`/`else`, `while`, `for`, functions, structs, enums, `match`,
 `printf`.
 
+**The first toolbox category is "Getting started"** — function, print, call,
+number/string, variable, return and **C function declaration**. The first line of every
+JHYY program (`extern fn printf(...)`) now has a block of its own (pick `printf` /
+`puts` / `malloc` / … from the dropdown and the parameter list fills itself in), so you
+no longer have to type it into a raw-code escape hatch.
+
 Everything else — generics, turbofish, closures, pointers, borrows, slices, `defer`,
 `asm!`, attributes — lands in an **opaque block** that holds the original source text.
 Round-tripping is lossless: the escape hatch only changes if *you* edit it.
 
 See [`docs/blocks-subset.md`](docs/blocks-subset.md) for the exact boundary.
+
+**The block view and the text view never share the screen.** The block canvas fills the
+whole editor area, and the code editor is gone — toggle with the 🧩 button in the title
+bar, `Ctrl+Shift+B`, or the command palette. Both keep their state while you switch
+(zoom and pan on the canvas, undo history and cursor in the editor).
 
 ### Text view
 
@@ -96,33 +133,75 @@ modules), and hover that cites the language spec section.
 
 Diagnostics come from the **real compiler** — the IDE runs `jhyy.exe` and parses its
 `file:line:col: error: …` output. A "check" pass takes ~185 ms because it skips linking.
+Click a diagnostic in the Problems panel to jump straight to that line and column.
+
+Files open in **tabs** — opening a second file keeps the first one around, and each tab
+remembers its own content, dirty state and blocks. The dirty dot is derived from the
+content (like VS Code), so undoing back to the last saved version clears it.
 
 ### Claude Code
 
-An embedded chat panel that drives the `claude` CLI already installed on your machine.
-It runs in streaming mode over stdin, so the conversation keeps its context across turns.
+An embedded chat panel in the right sidebar that drives the `claude` CLI already
+installed on your machine. It runs in streaming mode over stdin, so the conversation keeps
+its context across turns.
 
 Claude is given the **jhyy MCP server**, so it can call `jhyy_check` and get the real
 compiler's diagnostics instead of guessing. Point it at a file and it will compile it,
 read the errors, and fix them.
 
+### Panel, terminal, and the shell
+
+The bottom panel holds **Problems**, **Output** (the program's stdout/stderr and the
+compiler's own log) and a **terminal**. It is **collapsed every time the IDE starts** and
+springs open on **Check** (Problems) or **Run** (Output) — `Ctrl+J` toggles it. It sits
+under the editor only; the chat sidebar keeps its full height.
+
+The terminal is a real shell — **MSYS2 bash** by default (PowerShell and `cmd` are one
+`TerminalShell` away). ⚠️ It runs over **pipes, not a PTY** (this machine has no MSVC, so
+`node-pty` cannot be built for Electron) — so full-screen TUI programs like `vim` and
+`top` won't run. Everything else works: bash's readline gives you real line editing over
+a pipe (backspace, arrow keys, history, incremental echo), and the output is UTF-8 on a
+Chinese Windows.
+
+Like VS Code's integrated terminal, it also **mirrors the commands the IDE runs**: press
+**Run** and the terminal shows `> jhyy compile "…"` followed by the program's output.
+
+With no file open, the editor shows a **welcome page** (open / new file) rather than a
+sample program.
+
+### Keyboard shortcuts
+
+| Chord | Action | | Chord | Action |
+|---|---|---|---|---|
+| `Ctrl+Shift+P` | 命令面板 | | `Ctrl+J` | 显示/隐藏 底部面板 |
+| `Ctrl+Shift+B` | 切换 块视图 / 文本视图 | | `Ctrl+Shift+M` | 问题 |
+| `Ctrl+S` / `Ctrl+O` | 保存 / 打开 | | `Ctrl+Shift+U` | 输出 |
+| `F5` / `Shift+F5` | 运行 / 停止 | | ``Ctrl+` `` | 终端 |
+| `Ctrl+Shift+D` | 检查 | | `Ctrl+Alt+I` | 聊天 |
+| `Ctrl+B` | 显示/隐藏 聊天侧栏 | | `Ctrl+Alt+B` | 显示/隐藏 辅助侧边栏 |
+
+The full table lives in the **查看** menu and in the command palette — the menus and the
+shortcuts are generated from one command table, so they can never drift apart.
+
 ## Architecture
 
-Three views, **one AST**. The block view and the text view can never disagree about what
-a program means, because they are two projections of the same tree — and the referee is
-always the real compiler.
+Two coding views, **one AST**. The block view and the text view can never disagree about
+what a program means, because they are two projections of the same tree — and the referee
+is always the real compiler.
 
 ```mermaid
 flowchart TB
     file["<b>.jhyy file</b><br/>on disk"]
-    blocks["<b>Block view</b><br/>Blockly 13 workspace<br/>drag blocks to program"]
+    blocks["<b>Block view</b><br/>Blockly 13 workspace<br/>drag blocks to program<br/><i>full-screen, exclusive</i>"]
     text["<b>Text view</b><br/>CodeMirror 6<br/>write code directly"]
     core["<b>src/lang/ — the language core</b><br/>lexer · parser · printer<br/>blocks: tree · decompile · compile<br/><i>pure TypeScript</i>"]
     tree["<b>BlockTree</b><br/>the IR between the AST and Blockly"]
-    adapter["<b>Blockly adapter</b><br/>block tree to workspace (XML)"]
-    main["<b>Electron main process</b><br/>compiler · claude · file watcher"]
+    adapter["<b>Blockly adapter</b><br/>block tree ⇄ workspace (XML)"]
+    shell["<b>Workbench shell</b><br/>title bar · command table · palette<br/>status bar · panel · sidebar"]
+    main["<b>Electron main process</b><br/>compiler · claude · terminal · watcher"]
     jhyy["<b>jhyy.exe</b><br/>compile · run"]
     claude["<b>claude CLI</b><br/>stream-json · MCP"]
+    sh["<b>shell</b><br/>powershell · cmd · bash"]
 
     file -->|parse| core
     core -->|print| text
@@ -134,6 +213,9 @@ flowchart TB
     core -->|diagnostics| main
     main -->|compile · run| jhyy
     main -->|conversation| claude
+    main -->|spawn| sh
+    shell -->|drives| text
+    shell -->|drives| blocks
 ```
 
 | Layer | Where | Role |
@@ -141,9 +223,10 @@ flowchart TB
 | Language core | `src/lang/` | lexer · parser · printer · block transforms — **pure TypeScript**, no Electron / Node / Blockly, so it is unit-testable |
 | Block tree | `src/lang/blocks/tree.ts` | the IR between the AST and Blockly, plus the block catalogue (the single source of truth for blocks) |
 | Decompiler / compiler | `src/lang/blocks/decompile.ts` / `compile.ts` | AST → block tree / block tree → AST |
-| Blockly adapter | `src/renderer/blocks/adapter.ts` | block tree ⇄ Blockly workspace (Blockly's XML is the supported load path) |
+| Blockly adapter | `src/renderer/blocks/adapter.ts` + `xml.ts` | block tree ⇄ Blockly workspace; the XML half is pure DOM and unit-tested |
+| Workbench shell | `src/renderer/workbench/`, `src/renderer/commands/` | title bar · menu bar · command palette · panel · status bar — **one command table** feeds the menus, the palette and the keybindings |
 | Text editor | `src/renderer/editor/` | CodeMirror 6 + the JHYY language mode — highlight, completion, hover, lint |
-| Main process | `src/main/compiler/`, `src/main/claude/` | drives `jhyy.exe` and the `claude` CLI; owns every privileged operation |
+| Main process | `src/main/compiler/`, `src/main/claude/`, `src/main/terminal.ts` | drives `jhyy.exe`, the `claude` CLI and the terminal shell; owns every privileged operation |
 | Bridge | `src/preload/index.ts` | `contextBridge` — the renderer's only privileged surface (`contextIsolation` on, `nodeIntegration` off) |
 
 The AST lives in `src/lang/` as **plain TypeScript** — no Electron, no Node, no Blockly
@@ -169,17 +252,22 @@ src/
   main/                Electron main process (privileged)
     compiler/            locate / compile / run jhyy.exe, parse diagnostics
     claude/              locate / drive the claude CLI, MCP config
+    terminal.ts          the terminal session (shell over pipes)
     watcher.ts           detect files changed outside the IDE
   preload/             contextBridge — the renderer's only way to the main process
   renderer/            UI
+    workbench/           title bar · menu bar · command palette · panel · status bar
+    commands/            ★ the command table (menus + palette + keybindings)
     editor/              CodeMirror 6 + the JHYY language mode
-    blocks/              Blockly block definitions + adapter
-    panes/               block / code / chat / output / problems panels
+    blocks/              Blockly block definitions + adapter (+ the pure-DOM XML half)
+    panes/               code / block / chat / output / problems / terminal panels
+    state/               layout state (persisted to localStorage)
     sync/                block ⇄ text synchronisation
   shared/              types shared by main and renderer
 tests/
   lang/                lexer + parser + printer unit tests
   blocks/              block round-trip tests
+  renderer/            workbench unit tests (shortcut chords, block XML round-trip)
   compiler/            diagnostics, NTSTATUS, real-compiler integration
   conformance/         ★ the real-compiler gates (see below)
 ```
@@ -193,7 +281,7 @@ enforced against the compiler repo's own 277 example programs:
 |---|---|---|
 | `tests/conformance/examples.test.ts` | IDE parses → IDE prints → **real `jhyy.exe` compiles** | 278 |
 | `tests/conformance/run.test.ts` | …and then **runs** it, matching the `// EXPECT:` directives | 19 (full set: 277) |
-| everything else | unit tests | 62 |
+| everything else | unit tests | 88 |
 
 The corpus follows the compiler repo's own rule: files whose name starts with `_` are
 **not** part of it (`mcp-jhyy/jhyy_regress.py:786`, `mcp-jhyy/server.py:453`,
@@ -202,7 +290,7 @@ machine-specific facts — e.g. `_jh_gcc_p1.jhyy` expects the gcc at
 `C:\msys64\ucrt64\bin\gcc.exe`, a path that simply does not exist on a CI runner.
 
 ```bash
-npm test                                    # all 359
+npm test                                    # all 385
 npx vitest run tests/conformance            # conformance only
 JHY_CONFORMANCE_FULL=1 npx vitest run tests/conformance/run.test.ts   # full 277 (≈25 min)
 ```
@@ -226,6 +314,8 @@ coding/
 | Block view | ✅ done (intro subset + escape hatch) |
 | Bidirectional sync | ✅ done |
 | Claude Code panel | ✅ done |
+| VS Code-style workbench | ✅ done (title bar · palette · panel · status bar · shortcuts) |
+| Terminal | ✅ done (pipes, **no PTY** — no full-screen TUI apps) |
 | Linux / macOS | ❌ not built (Windows-only toolchain so far) |
 | Code signing | ❌ not configured |
 

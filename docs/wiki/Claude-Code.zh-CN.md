@@ -1,6 +1,6 @@
 # Claude Code
 
-IDE 右边的面板在跟你机器上**已经装好的** `claude` CLI 说话。它不是另做的一套 API
+IDE 右侧栏里的聊天在跟你机器上**已经装好的** `claude` CLI 说话。它不是另做的一套 API
 集成 —— 就是你在终端里用的那个 Claude Code，同一个账号、同一批 MCP server、同一套
 skills。
 

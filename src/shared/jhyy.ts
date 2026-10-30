@@ -30,6 +30,13 @@ export interface CompileResult {
   durationMs: number
   /** 本次是否跳过了链接（--no-link，只做诊断） */
   noLink: boolean
+  /**
+   * 输出太多被**截断**了 —— 程序（或编译器）在疯狂打印，IDE 已经把它杀了。
+   *
+   * ⚠️ 没有上限的话，`while true { printf(...) }` 那种程序会把内存吃光，
+   * 整台机器卡死（用户报过）。
+   */
+  truncated?: boolean
 }
 
 /** 一次「编译 + 运行」的结果。 */

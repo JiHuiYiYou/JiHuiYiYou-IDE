@@ -17,7 +17,7 @@ import {
 } from '@codemirror/language'
 import { lintKeymap, linter, type Diagnostic as CmDiagnostic } from '@codemirror/lint'
 import { highlightSelectionMatches, searchKeymap } from '@codemirror/search'
-import { EditorState, type Text } from '@codemirror/state'
+import { EditorState, Compartment, type Text } from '@codemirror/state'
 import {
   crosshairCursor,
   drawSelection,
@@ -43,12 +43,42 @@ const theme = EditorView.theme(
     '&': { color: '#d7dce5', backgroundColor: '#101219', height: '100%' },
     '.cm-content': { caretColor: '#00d4aa', fontFamily: 'var(--mono)' },
     '.cm-cursor, .cm-dropCursor': { borderLeftColor: '#00d4aa' },
-    '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection': {
-      backgroundColor: '#2b4a52',
+    '& > .cm-scroller > .cm-selectionLayer .cm-selectionBackground': {
+      /*
+        ⚠️ **必须写 `!important`**，而且**不能**要求 `.cm-focused` ——
+
+        - CodeMirror 自带的 base theme 用的是
+          `.cm-editor.dark .cm-selectionBackground`（`#222`）和
+          `.cm-editor.dark.cm-focused > … .cm-selectionBackground`（`#233`）——
+          两个都是**深蓝灰**，在深色背景上几乎看不见
+          （用户报过「同一行内的选区特别不明显」）。
+        - 编辑器**没焦点**时压根没有 `.cm-focused` ⇒ 带 `:focus` 的选择器不生效。
+
+        而且 `drawSelection()` 会把**浏览器原生**的选区设成 transparent
+        （免得两层叠在一起）⇒ 看得见的选区**只有** CM6 自己画的那一层 ⇒
+        这一条的颜色就是全部。
+      */
+      backgroundColor: 'rgba(0, 212, 170, 0.34) !important',
+    },
+    '.cm-content ::selection': {
+      backgroundColor: 'rgba(0, 212, 170, 0.34)',
     },
     '.cm-gutters': { backgroundColor: '#101219', color: '#5f6b7a', border: 'none' },
-    '.cm-activeLine': { backgroundColor: '#171a22' },
-    '.cm-activeLineGutter': { backgroundColor: '#171a22', color: '#a6accd' },
+    /*
+      ⚠️ **当前行的高亮必须是半透明的** ——
+
+      `highlightActiveLine()` 是给**行本身**加一个 `.cm-activeLine` 的背景，
+      而这个行 div 在**内容层**里 —— **画在选区层的上面**（选区层的 z-index 是 -1）。
+
+      不透明的话 ⇒ 当前行的选区被**整个盖住** ⇒
+      「光标在哪一行，那一行的选区就看不见」（用户报过两次：
+      「同一行内选中的字特别不明显」/「即使你选中了部分文字仍然不会变」）。
+
+      CodeMirror 自带的 base theme 用的是半透明色（`#99eeff33`），
+      就是为了这个 —— 半透明 ⇒ 选区透上来 ✓。
+    */
+    '.cm-activeLine': { backgroundColor: 'rgba(255, 255, 255, 0.035)' },
+    '.cm-activeLineGutter': { backgroundColor: 'rgba(255, 255, 255, 0.035)', color: '#a6accd' },
     '.cm-scroller': { overflow: 'auto' },
     '.cm-tooltip': {
       backgroundColor: '#1b1e26',
@@ -240,6 +270,39 @@ export interface CreateEditorOptions {
   /** 诊断来源（来自真实编译器的 stderr） */
   linter?: ReturnType<typeof linter>
   placeholder?: string
+  /** 光标位置 / 选区变了 —— 状态栏的 "Ln x, Col y" 用 */
+  onCursorChange?: (info: CursorInfo) => void
+}
+
+/** 光标位置（行列都是 **1-based**，跟编译器一致）。 */
+export interface CursorInfo {
+  line: number
+  col: number
+  /** 选区跨了几行（没有选区时是 0） */
+  selectedLines: number
+}
+
+/**
+ * 可重配的槽位。
+ *
+ * `EditorState.readOnly` 和 `EditorView.lineWrapping` 都只在**建视图时**生效，
+ * 直接 `view.dispatch({ effects: [] })` 是空操作 —— 想在运行时切换（比如
+ * 「自动换行」快捷键），必须用 compartment 重配。
+ */
+export const readOnlyCompartment = new Compartment()
+export const lineWrapCompartment = new Compartment()
+
+/** 从编辑器状态里算出光标位置。 */
+export function cursorInfoOf(state: EditorState): CursorInfo {
+  const range = state.selection.main
+  const head = state.doc.lineAt(range.head)
+  const from = state.doc.lineAt(range.from)
+  const to = state.doc.lineAt(range.to)
+  return {
+    line: head.number,
+    col: range.head - head.from + 1,
+    selectedLines: range.empty ? 0 : to.number - from.number + 1,
+  }
 }
 
 /** 创建一个 JHYY 代码编辑器。 */
@@ -263,7 +326,7 @@ export function createCodeEditor(parent: HTMLElement, opts: CreateEditorOptions)
     syntaxHighlighting(jhyyHighlightStyle),
     jhyyLanguage,
     theme,
-    EditorView.lineWrapping,
+    lineWrapCompartment.of(EditorView.lineWrapping),
     keymap.of([
       ...closeBracketsKeymap,
       ...defaultKeymap,
@@ -284,8 +347,11 @@ export function createCodeEditor(parent: HTMLElement, opts: CreateEditorOptions)
     hoverTooltip(jhyyHover()),
     EditorView.updateListener.of((update) => {
       if (update.docChanged) opts.onChange?.(update.state.doc.toString())
+      if (update.docChanged || update.selectionSet) {
+        opts.onCursorChange?.(cursorInfoOf(update.state))
+      }
     }),
-    EditorState.readOnly.of(Boolean(opts.readOnly)),
+    readOnlyCompartment.of(EditorState.readOnly.of(Boolean(opts.readOnly))),
   ]
 
   if (opts.placeholder) extensions.push(placeholderExt(opts.placeholder))

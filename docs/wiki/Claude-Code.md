@@ -1,8 +1,8 @@
 # Claude Code
 
-The right-hand panel of the IDE talks to the **`claude` CLI that is already on your
-machine**. It is not a separate API integration — it is the same Claude Code you use in
-the terminal, with the same account, the same MCP servers and the same skills.
+The chat in the right-hand sidebar of the IDE talks to the **`claude` CLI that is already
+on your machine**. It is not a separate API integration — it is the same Claude Code you
+use in the terminal, with the same account, the same MCP servers and the same skills.
 
 That means: it can read and write your project files, run commands, and — because the IDE
 mounts the `jhyy` MCP server — **check JHYY code against the real compiler** and fix its

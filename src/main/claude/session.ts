@@ -114,6 +114,17 @@ export class ClaudeSession {
   /** 启动 CLI 进程。 */
   async start(exePath: string): Promise<void> {
     if (this.child) return
+
+    /*
+      ⚠️ **先把 sessionId 定下来**（而且是**我们自己**生成的）——
+      不要等 CLI 的 `system/init` 事件。
+
+      原因：CLI 可能因为别的原因**根本没初始化**（比如模型名不被它认，
+      实测就见过 `[claude-code:unrecognized_model]`）⇒ 那个事件永远不来
+      ⇒ 渲染进程拿不到 sessionId ⇒ **历史会话一次都存不下来**
+      （用户报过「还是看不到历史会话」）。
+    */
+    this.sessionId = this.resumeSessionId ?? randomUUID()
     this.setState('starting')
 
     const args: string[] = [
@@ -124,7 +135,10 @@ export class ClaudeSession {
       'stream-json',
       '--verbose',
       '--include-partial-messages',
-      '--replay-user-messages',
+      // ⚠️ **不要** `--replay-user-messages` —— 它的作用只是
+      // 「把用户消息从 stdin 再吐回 stdout 确认一下」（CLI 自己的 help 原文）。
+      // 留着它 ⇒ 我们刚发出去的话会被回显一遍 ⇒ 界面上多出重复的一轮。
+      // 模型的上下文来自 `--resume` 加载的 transcript ✓，不受影响。
       '--permission-mode',
       'acceptEdits',
       '--permission-prompts',
@@ -137,7 +151,7 @@ export class ClaudeSession {
       args.push('--resume', this.resumeSessionId)
     } else {
       // 自己生成 session id —— 进程还没起就知道会话 id，重启后可以直接恢复
-      args.push('--session-id', randomUUID())
+      args.push('--session-id', this.sessionId)
     }
 
     args.push('--add-dir', this.cwd)

@@ -51,6 +51,13 @@ export const BLOCK = {
   break: 'jhyy_break',
   continue: 'jhyy_continue',
   print: 'jhyy_print',
+  /**
+   * 读入一个整数（`scanf("%d", &x)`）。
+   *
+   * ⚠️ **给新人的现成块** —— 以前要手写 `extern fn scanf(...)` 声明 +
+   * `scanf("%d", &x)`，而「取地址」在块子集里根本没有（只能靠逃生舱）。
+   */
+  input: 'jhyy_input',
   func: 'jhyy_func',
   param: 'jhyy_param',
   structDef: 'jhyy_struct_def',
@@ -64,17 +71,34 @@ export const BLOCK = {
   enumVariant: 'jhyy_enum_variant',
   typedef: 'jhyy_typedef',
   import: 'jhyy_import',
+  /**
+   * C 函数声明（`extern fn`）。
+   *
+   * ⚠️ **没有这个块，新人写 hello world 就得用「原始代码」逃生舱** ——
+   * 而 `extern fn printf(fmt: *u8, val: i32) -> i32;` 是每个 JHYY 程序的
+   * 第一行 ⇒ 一开始就让人面对逃生舱，对新人极其不友好。
+   */
+  externFn: 'jhyy_extern',
   opaque: 'jhyy_opaque',
   /** 容器里的值槽位（调用实参 / 数组元素） */
   arg: 'jhyy_arg',
   // 「语句形态」和「值形态」是**两种不同的块** —— Blockly 里一个块不能既是
   // 值块（有输出连接）又是语句块（有前后连接）。JHYY 里调用 / 赋值 / if /
   // match 两种位置都能出现，所以各给一个变体。
+  //
+  // ⚠️ 这不是「洁癖」，是 Blockly 的**硬约束**：
+  // `Blockly.Xml.domToWorkspace` 灌块时，给子块挑连接口的顺序是
+  // **先 output、再 previous** —— 它分不清 `<statement>` 和 `<value>`。
+  // 所以一个「既有输出又有前后连接」的块，放进**语句容器**时会被拿输出连接
+  // 去接语句口 ⇒ 类型不匹配 ⇒
+  // **"Attempt to connect incompatible types."**（块视图直接崩）。
   callStmt: 'jhyy_call_stmt',
   qualifiedCallStmt: 'jhyy_qcall_stmt',
   setValue: 'jhyy_set_val',
   ifValue: 'jhyy_if_val',
   matchValue: 'jhyy_match_val',
+  /** 不透明块的「值形态」—— 表达式位置用（语句形态见 `opaque`） */
+  opaqueValue: 'jhyy_opaque_val',
   /** 表达式语句（求值但丢弃结果）—— 值块没法直接放在语句位置，用它包一层 */
   exprStmt: 'jhyy_expr_stmt',
 } as const
@@ -108,6 +132,7 @@ export const BLOCK_FIELDS: Record<string, string[]> = {
   [BLOCK.break]: [],
   [BLOCK.continue]: [],
   [BLOCK.print]: ['FMT'],
+  [BLOCK.input]: ['KIND'],
   [BLOCK.func]: ['NAME', 'RET'],
   [BLOCK.param]: ['NAME', 'TYPE'],
   [BLOCK.structDef]: ['NAME'],
@@ -121,7 +146,9 @@ export const BLOCK_FIELDS: Record<string, string[]> = {
   [BLOCK.enumVariant]: ['TYPE', 'VARIANT'],
   [BLOCK.typedef]: ['NAME', 'TYPE'],
   [BLOCK.import]: ['MODULE'],
+  [BLOCK.externFn]: ['NAME', 'PARAMS', 'RET'],
   [BLOCK.opaque]: ['CODE'],
+  [BLOCK.opaqueValue]: ['CODE'],
   [BLOCK.arg]: [],
   [BLOCK.callStmt]: ['NAME'],
   [BLOCK.qualifiedCallStmt]: ['MODULE', 'NAME'],
@@ -147,6 +174,7 @@ export const BLOCK_INPUTS: Record<string, string[]> = {
   [BLOCK.for]: ['START', 'END'],
   [BLOCK.return]: ['VALUE'],
   [BLOCK.print]: ['VALUE'],
+  [BLOCK.input]: ['VALUE'],
   [BLOCK.structLit]: [],
   [BLOCK.fieldInit]: ['VALUE'],
   [BLOCK.match]: ['SUBJECT'],

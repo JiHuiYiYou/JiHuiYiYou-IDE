@@ -69,18 +69,47 @@ interface SpawnOutcome {
   stdout: string
   stderr: string
   timedOut: boolean
+  /** 输出太多被截断了（程序在疯狂打印） */
+  truncated?: boolean
   spawnError?: string
 }
+
+/**
+ * 捕获输出的**上限**（每个流）。
+ *
+ * ⚠️ **必须有上限** —— 用户报过「运行类似 `while true` 的程序时，
+ * 整个 IDE 会直接卡死」。原因是程序在无限打印，而我们在**无上限地拼接**
+ * 它的输出 ⇒ 内存被吃光 ⇒ 机器开始换页 ⇒ 谁都动不了。
+ *
+ * 超了怎么办：**立刻杀掉程序**（runaway 的循环没有停下来的道理），
+ * 并且只保留**开头**的一部分（前面那几行往往才是有用的）。
+ *
+ * ⚠️ VS Code 为什么不会卡？因为它跑的是**真 PTY**（Windows 上是 ConPTY）：
+ * 伪终端有固定大小的缓冲，输出比读快的时候**写端会阻塞**（程序自己慢下来），
+ * 而且 xterm.js 是**边收边渲染**、滚动缓冲有上限 ⇒ 内存始终有界。
+ * 我们没有 PTY（见 `src/main/terminal.ts` 的说明）⇒ 得自己加这个上限。
+ */
+const MAX_CAPTURE = 512 * 1024
+
+/** 子进程的输出回调（流式 —— 让用户像 VS Code 那样边跑边看）。 */
+export type OutputListener = (stream: 'stdout' | 'stderr', text: string) => void
 
 function runProcess(
   exe: string,
   args: string[],
-  opts: { cwd: string; timeoutMs: number; env?: Record<string, string> },
+  opts: {
+    cwd: string
+    timeoutMs: number
+    env?: Record<string, string>
+    /** 输出**边产生边**回调（不是等程序结束） */
+    onOutput?: OutputListener
+  },
 ): Promise<SpawnOutcome> {
   return new Promise((resolvePromise) => {
     let stdout = ''
     let stderr = ''
     let timedOut = false
+    let truncated = false
     let settled = false
 
     const child = spawn(exe, args, {
@@ -97,11 +126,37 @@ function runProcess(
 
     child.stdout?.setEncoding('utf8')
     child.stderr?.setEncoding('utf8')
+
+    /** 超量了就杀掉程序（别让它继续吃内存）。 */
+    const killIfRunaway = () => {
+      if (truncated) return
+      truncated = true
+      try {
+        child.kill()
+      } catch {
+        /* 已经退出了 */
+      }
+    }
+
     child.stdout?.on('data', (d: string) => {
+      if (truncated) return
       stdout += d
+      if (stdout.length > MAX_CAPTURE) {
+        stdout = stdout.slice(0, MAX_CAPTURE)
+        killIfRunaway()
+        return
+      }
+      opts.onOutput?.('stdout', d)
     })
     child.stderr?.on('data', (d: string) => {
+      if (truncated) return
       stderr += d
+      if (stderr.length > MAX_CAPTURE) {
+        stderr = stderr.slice(0, MAX_CAPTURE)
+        killIfRunaway()
+        return
+      }
+      opts.onOutput?.('stderr', d)
     })
 
     const timer = setTimeout(() => {
@@ -114,7 +169,14 @@ function runProcess(
       settled = true
       clearTimeout(timer)
       activeChild = undefined
-      resolvePromise({ code: null, stdout, stderr, timedOut, spawnError: err.message })
+      resolvePromise({
+        code: null,
+        stdout,
+        stderr,
+        timedOut,
+        truncated,
+        spawnError: err.message,
+      })
     })
 
     child.on('close', (code) => {
@@ -122,7 +184,7 @@ function runProcess(
       settled = true
       clearTimeout(timer)
       activeChild = undefined
-      resolvePromise({ code, stdout, stderr, timedOut })
+      resolvePromise({ code, stdout, stderr, timedOut, truncated })
     })
   })
 }
@@ -201,6 +263,7 @@ export async function compileFile(opts: CompileOptions): Promise<CompileResult> 
     raw: outcome.spawnError ? [outcome.spawnError, ...raw] : raw,
     durationMs: Date.now() - started,
     noLink: Boolean(opts.noLink),
+    truncated: outcome.truncated,
   }
 }
 
@@ -224,6 +287,8 @@ export interface RunOptions {
    * 少一边的话测试的语义就跟上游对不上了。
    */
   env?: Record<string, string>
+  /** 程序的输出**边跑边**回调（让用户像 VS Code 那样实时看到） */
+  onOutput?: OutputListener
 }
 
 /**
@@ -277,6 +342,9 @@ export async function runFile(opts: RunOptions): Promise<RunResult> {
     cwd: opts.cwd ?? dirname(file),
     timeoutMs: opts.timeoutMs ?? 10_000,
     env: opts.env,
+    // ⚠️ **边跑边送** —— 用户像 VS Code 那样实时看到输出（VS Code 那边是
+    // PTY + xterm 增量渲染，我们没 PTY，就自己推）。
+    onOutput: opts.onOutput,
   })
 
   const crash = ntstatusName(outcome.code)

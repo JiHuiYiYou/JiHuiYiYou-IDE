@@ -1,48 +1,40 @@
-interface Props {
-  /** 程序的 stdout */
-  programStdout: string
-  /** 程序的 stderr */
-  programStderr: string
-  /** 编译器的原始 stderr 行（进度噪声等） */
-  compilerRaw: string[]
-  /** 状态行（退出码、耗时等） */
-  status?: { text: string; kind: 'ok' | 'bad' | 'info' }
+/** 输出面板里的一行。 */
+export interface OutputLine {
+  kind: 'stdout' | 'stderr' | 'compiler' | 'error'
+  text: string
 }
 
-/** 输出面板：程序输出 + 编译器原始输出 + 状态行。 */
-export default function OutputPane({ programStdout, programStderr, compilerRaw, status }: Props) {
-  const hasContent = programStdout || programStderr || compilerRaw.length > 0
+interface Props {
+  /** 累积的输出行（跨多次运行） */
+  lines: OutputLine[]
+}
+
+/**
+ * 输出面板 —— 程序输出 + 编译器原始输出。
+ *
+ * ⚠️ 以前这里是「把 stdout/stderr 当纯文本塞进一个 `<pre>`」，而
+ * `styles.css` 里定义的 `.output-line.stderr` / `.output-line.error`
+ * **从来没被用过**。现在改成**逐行渲染**，每行按来源上色。
+ */
+export default function OutputPane({ lines }: Props) {
+  if (lines.length === 0) {
+    return (
+      <div className="pane-body output-body">
+        <div className="empty">还没有输出。点「运行」试试。</div>
+      </div>
+    )
+  }
 
   return (
-    <>
-      <div className="pane-header">输出</div>
-      <div className="pane-body">
-        {!hasContent ? (
-          <div className="empty">还没有输出。点「运行」试试。</div>
-        ) : (
-          <pre>
-            {programStdout}
-            {programStderr && (
-              <>
-                {programStdout && '\n'}
-                {programStderr}
-              </>
-            )}
-            {compilerRaw.length > 0 && (
-              <>
-                {(programStdout || programStderr) && '\n'}
-                {compilerRaw.map((line, i) => (
-                  <span key={i} className="output-line dim">
-                    {line}
-                    {'\n'}
-                  </span>
-                ))}
-              </>
-            )}
-          </pre>
-        )}
-      </div>
-      {status && <div className={`status-line ${status.kind}`}>{status.text}</div>}
-    </>
+    <div className="pane-body output-body">
+      <pre className="output-pre">
+        {lines.map((line, i) => (
+          <span key={i} className={`output-line ${line.kind}`}>
+            {line.text}
+            {'\n'}
+          </span>
+        ))}
+      </pre>
+    </div>
   )
 }

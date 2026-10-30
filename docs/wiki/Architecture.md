@@ -5,14 +5,16 @@
 ```mermaid
 flowchart TB
     file["<b>.jhyy file</b><br/>on disk"]
-    blocks["<b>Block view</b><br/>Blockly 13 workspace"]
+    blocks["<b>Block view</b><br/>Blockly 13 workspace<br/><i>full-screen, exclusive</i>"]
     text["<b>Text view</b><br/>CodeMirror 6"]
     core["<b>src/lang/ — the language core</b><br/>lexer · parser · printer<br/>blocks: tree · decompile · compile"]
     tree["<b>BlockTree</b><br/>the IR between the AST and Blockly"]
-    adapter["<b>Blockly adapter</b><br/>block tree to workspace (XML)"]
-    main["<b>Electron main process</b><br/>compiler · claude · file watcher"]
+    adapter["<b>Blockly adapter</b><br/>block tree ⇄ workspace (XML)"]
+    shell["<b>Workbench shell</b><br/>title bar · command table · palette<br/>status bar · panel · sidebar"]
+    main["<b>Electron main process</b><br/>compiler · claude · terminal · file watcher"]
     jhyy["<b>jhyy.exe</b><br/>compile · run"]
     claude["<b>claude CLI</b><br/>stream-json · MCP"]
+    sh["<b>shell</b><br/>powershell · cmd · bash"]
 
     file -->|parse| core
     core -->|print| text
@@ -24,6 +26,9 @@ flowchart TB
     core -->|diagnostics| main
     main -->|compile · run| jhyy
     main -->|conversation| claude
+    main -->|spawn| sh
+    shell -->|drives| text
+    shell -->|drives| blocks
 ```
 
 ## The layers
@@ -33,9 +38,10 @@ flowchart TB
 | Language core | `src/lang/` | lexer · parser · printer · block transforms |
 | Block tree | `src/lang/blocks/tree.ts` | the IR between the AST and Blockly, plus the block catalogue |
 | Decompiler / compiler | `src/lang/blocks/decompile.ts` / `compile.ts` | AST → block tree / block tree → AST |
-| Blockly adapter | `src/renderer/blocks/adapter.ts` | block tree ⇄ Blockly workspace |
+| Blockly adapter | `src/renderer/blocks/adapter.ts` + `xml.ts` | block tree ⇄ Blockly workspace; the XML half is pure DOM and unit-tested |
+| Workbench shell | `src/renderer/workbench/`, `src/renderer/commands/` | title bar · menu bar · command palette · panel · status bar — **one command table** feeds the menus, the palette and the keybindings |
 | Text editor | `src/renderer/editor/` | CodeMirror 6 + the JHYY language mode |
-| Main process | `src/main/compiler/`, `src/main/claude/` | drives `jhyy.exe` and the `claude` CLI |
+| Main process | `src/main/compiler/`, `src/main/claude/`, `src/main/terminal.ts` | drives `jhyy.exe`, the `claude` CLI and the terminal shell |
 | Bridge | `src/preload/index.ts` | `contextBridge` — the renderer's only privileged surface |
 
 ## Three rules
@@ -82,10 +88,25 @@ When the documentation and the compiler disagree, the compiler wins.
 | give a construct a block | `src/lang/blocks/tree.ts` → `src/renderer/blocks/definitions.ts` → `decompile.ts` → `compile.ts` → `buildToolbox()` |
 | change how the compiler is invoked | `src/main/compiler/` |
 | change how Claude is invoked | `src/main/claude/` |
-| change what the UI looks like | `src/renderer/` |
+| change how the terminal shell is spawned | `src/main/terminal.ts` |
+| add a command, a menu entry or a shortcut | `src/renderer/commands/registry.ts` — **one table, three consumers** |
+| change what the UI looks like | `src/renderer/workbench/`, `src/renderer/styles.css` |
 
 The IDE never re-implements the language. It parses the source, prints it back, and lets
 the real compiler decide.
+
+## The one command table
+
+The menu bar, the command palette and the keyboard shortcuts are **three views of one
+array** (`src/renderer/commands/registry.ts`). A command declares its own shortcut, and
+the menu renders that shortcut next to the label — so the two can never drift apart.
+
+> ⚠️ Two things to know before you add one:
+> - The shortcut string must match `chordOf()`'s normalisation exactly
+>   (`Ctrl+Shift+P`, single letters **upper-case**, `` ` `` spelled `Backquote`).
+>   `tests/renderer/chord.test.ts` pins that format down.
+> - `scope: 'editor'` commands only fire when the CodeMirror view has focus, so the
+>   clipboard and undo keys keep working in the chat box.
 
 ## Synchronisation semantics
 
@@ -98,10 +119,22 @@ Rebuilding blocks on every keystroke would make the canvas jitter and be unusabl
 only happens on the view switch. Anything that cannot be expressed as blocks becomes an
 opaque block — and the IDE tells you when that happened.
 
+The block canvas and the text editor are **both mounted at all times**; the inactive one
+is hidden with `visibility: hidden` + `inert`, not `display: none` — `display: none` would
+give Blockly a zero-sized container and break its coordinate system. See
+`src/renderer/styles.css` and `src/renderer/panes/BlockPane.tsx`.
+
 ## Process model
 
 The Electron **main process** owns every privileged operation: running the compiler,
-spawning the compiler's output, driving the `claude` CLI, watching files. The **renderer**
-only draws and runs the pure-TypeScript language core. They talk through a narrow
-`contextBridge` surface in `src/preload/index.ts` — `contextIsolation` on,
-`nodeIntegration` off.
+spawning the compiler's output, driving the `claude` CLI, spawning the terminal shell,
+watching files. The **renderer** only draws and runs the pure-TypeScript language core.
+They talk through a narrow `contextBridge` surface in `src/preload/index.ts` —
+`contextIsolation` on, `nodeIntegration` off.
+
+> ⚠️ The window has **no native frame** (`titleBarStyle: 'hidden'` +
+> `titleBarOverlay`), so the title bar is drawn by the renderer — including the drag
+> region (`-webkit-app-region: drag`) and the ~138px the OS window buttons sit on top of.
+> And `Menu.setApplicationMenu(null)` in the main process is **mandatory**: the default
+> Electron menu's accelerators (`F5`, `Ctrl+R`, `Ctrl+W`, `Ctrl+C/V/Z/A`) are consumed
+> before the renderer ever sees the key.

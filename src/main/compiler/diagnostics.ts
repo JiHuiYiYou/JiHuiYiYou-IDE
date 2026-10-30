@@ -15,6 +15,24 @@ const DIAG_RE = /^(.*):(\d+):(\d+):\s*(error|warning)\s*:\s*(.*)$/
  * 否则会灌进问题面板。
  */
 const PROGRESS_RE = /^\[\d+[a-z]?\]\s/
+
+/**
+ * IDE 自己传 `--no-link` 时，编译器会回执一行：
+ *
+ * ```
+ * compile: --no-link set, skipping gcc link (.s kept at C:\...\jhyy-ide-work\x.s)
+ * ```
+ *
+ * ⚠️ 这是**编译器有意打的**（不是它坏了），但对 IDE 的用户来说是纯噪声：
+ * - `--no-link` 是 **IDE 自己**传的 —— 用户没要求，状态栏也已经写着「仅检查」；
+ * - `.s kept at` 指的那个目录是 **IDE 自己的临时目录**（`%TEMP%\jhyy-ide-work`），
+ *   用户拿它没用。
+ *
+ * 所以在 IDE 这一侧滤掉。完整 stderr 仍然保留在 `CompileResult.stderr` 里
+ * （一致性门匹配 EXPECT-ERROR 关键词靠的就是它），不会丢信息。
+ */
+const NO_LINK_NOTICE_RE = /^compile:\s*--no-link set\b/
+
 const SUMMARY_LINES = new Set(['parse errors', 'semantic errors', 'import resolution failed'])
 
 export interface ParsedDiagnostics {
@@ -34,6 +52,7 @@ export function parseDiagnostics(stderr: string): ParsedDiagnostics {
 
     // 进度噪声与结尾摘要
     if (PROGRESS_RE.test(trimmed)) continue
+    if (NO_LINK_NOTICE_RE.test(trimmed)) continue
     if (SUMMARY_LINES.has(trimmed)) continue
 
     const m = DIAG_RE.exec(trimmed)

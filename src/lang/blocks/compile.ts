@@ -158,8 +158,17 @@ export function compileExpr(tree: BlockTree | null | undefined): Expr | null {
       const thenBody = makeBlock(compileStmtList(tree.statements?.THEN ?? []))
       const elseList = tree.statements?.ELSE ?? []
       let elseBody: BlockNode | IfNode | null = null
-      if (elseList.length === 1 && elseList[0].type === BLOCK.ifValue) {
-        const nested = compileExpr(elseList[0])
+      // 值形态的 else-if 链：语句容器里放的是「表达式语句」块包着的 if
+      //
+      // ⚠️ **必须看里面装的是不是 if** —— 只看「是不是 exprStmt」不够：
+      // 普通的 `else { 3 }` 也是 exprStmt 包着一个值表达式，
+      // 要是把它当成 else-if 链，**整个 else 分支就被丢了**。
+      if (
+        elseList.length === 1 &&
+        elseList[0].type === BLOCK.exprStmt &&
+        elseList[0].inputs?.VALUE?.type === BLOCK.ifValue
+      ) {
+        const nested = compileExpr(elseList[0].inputs?.VALUE)
         elseBody = nested && nested.kind === 'if' ? nested : null
       } else if (elseList.length > 0) {
         elseBody = makeBlock(compileStmtList(elseList))
@@ -248,7 +257,37 @@ export function compileExpr(tree: BlockTree | null | undefined): Expr | null {
         kind: 'call',
         ...NO_POS,
         callee: { kind: 'ident', ...NO_POS, name: 'printf' },
-        args: [{ kind: 'string', ...NO_POS, value: fmt, raw: JSON.stringify(fmt) }, value],
+        args: [
+          {
+            kind: 'string',
+            ...NO_POS,
+            value: fmt,
+            // ⚠️ **不能**用 JSON.stringify —— 它会把 `\n` 里的反斜杠也转义成
+            //   `\\n`，打印出来就多了个反斜杠。格式串里的 `\n` 要**原样**保留 ✓。
+            raw: `"${fmt}"`,
+          },
+          value,
+        ],
+      }
+    }
+
+    /*
+      读入一个整数 —— `scanf("%d", &x)`。
+
+      ⚠️ **取地址由块自己加** —— 「取地址」在块子集里没有对应的块
+      （以前只能靠「原始代码」逃生舱），新手根本用不了 ✓。
+    */
+    case BLOCK.input: {
+      const value = compileExpr(tree.inputs?.VALUE)
+      if (!value) return null
+      return {
+        kind: 'call',
+        ...NO_POS,
+        callee: { kind: 'ident', ...NO_POS, name: 'scanf' },
+        args: [
+          { kind: 'string', ...NO_POS, value: '%d', raw: '"%d"' },
+          { kind: 'addr_of', ...NO_POS, expr: value, isMutable: false },
+        ],
       }
     }
 
@@ -274,7 +313,8 @@ export function compileExpr(tree: BlockTree | null | undefined): Expr | null {
       return { kind: 'match', ...NO_POS, subject, arms: compileArms(tree) }
     }
 
-    case BLOCK.opaque: {
+    case BLOCK.opaque:
+    case BLOCK.opaqueValue: {
       // 不透明块 → 重新解析里面的源码
       const { decls, stmts } = parseSnippet(decodeOpaque(tree.fields?.CODE ?? ''))
       const first = decls[0]
@@ -548,6 +588,27 @@ export function compileDecl(tree: BlockTree): Decl | null {
 
     case BLOCK.import:
       return { kind: 'import_decl', ...NO_POS, name: tree.fields?.MODULE ?? '' }
+
+    case BLOCK.externFn: {
+      const name = (tree.fields?.NAME ?? '').trim()
+      if (!name) return null
+      const params = (tree.fields?.PARAMS ?? '').trim()
+      const ret = (tree.fields?.RET ?? '').trim()
+      // 借用一个**最小语法**来解析参数表 ——
+      // `fn __p(fmt: *u8, val: i32) -> i32 { 0 }` 的参数表就是要的东西。
+      const parsed = parse(`fn __p(${params}) -> ${ret || 'i32'} { 0 }`)
+      if (parsed.errors.length > 0) return null
+      const fn = parsed.module?.declarations[0]
+      if (!fn || fn.kind !== 'func_decl') return null
+      return {
+        kind: 'extern_decl',
+        ...NO_POS,
+        name,
+        params: fn.params,
+        // 返回类型留空 ⇒ `extern fn free(p: *u8);`（没有返回值）
+        returnType: ret ? fn.returnType : null,
+      }
+    }
 
     case BLOCK.let: {
       const stmt = compileStmt(tree)

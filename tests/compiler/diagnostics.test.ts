@@ -64,12 +64,19 @@ describe('parseDiagnostics', () => {
     expect(parseDiagnostics('\r\n\r\n')).toEqual({ diagnostics: [], raw: [] })
   })
 
-  it('--no-link 的提示行不会被误判成诊断', () => {
-    // 这行的路径里可能带冒号，但没有 :数字:数字: 结构
+  it('--no-link 的提示行不会被误判成诊断，也会被当噪声滤掉', () => {
+    // 这行的路径里可能带冒号，但没有 :数字:数字: 结构 ⇒ 不是诊断。
+    // 而且它是 IDE 自己传 --no-link 的回执，对用户是纯噪声 ⇒ 连 raw 都不该进。
     const { diagnostics, raw } = parseDiagnostics(
       'compile: --no-link set, skipping gcc link (.s kept at C:\\tmp\\out.s)\n',
     )
     expect(diagnostics).toHaveLength(0)
+    expect(raw).toHaveLength(0)
+  })
+
+  it('真的用法错误（compile: no input file）不会被当成噪声滤掉', () => {
+    // 跟 --no-link 的回执不同 —— 这是真的错了，用户得看见
+    const { raw } = parseDiagnostics('compile: no input file\n')
     expect(raw).toHaveLength(1)
   })
 })

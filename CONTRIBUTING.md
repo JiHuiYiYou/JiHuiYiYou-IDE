@@ -51,6 +51,7 @@
 |----------|------|
 | `src/lang/**`（解析器 / 打印器 / 块转换） | `npm test`（**含 278 个真实编译器一致性门**） |
 | `src/renderer/**` | `npm run typecheck` + `npm test` + 手动起 `npm run dev` 看一眼 |
+| `src/renderer/blocks/xml.ts`、`src/renderer/commands/**` | `npm test` —— 这两块有单测（`tests/renderer/`） |
 | `src/main/**` | `npm run typecheck` + `npm test`（含真实编译器集成测试） |
 | `tests/**` | `npm test` |
 | `docs/**` | `npm run typecheck`（代码引用变了要同步） |

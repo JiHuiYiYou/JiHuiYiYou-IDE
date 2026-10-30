@@ -6,13 +6,17 @@
 [JHYY (机会翼游)](https://github.com/JiHuiYiYou/JiHuiYiYou-compiler) — a self-hosted,
 statically typed, expression-oriented systems programming language.
 
-It puts three things side by side:
+It is a **VS Code-style workbench**:
 
-| View | What it is | Who it is for |
+| Piece | What it is | Who it is for |
 |---|---|---|
-| **Block view** | [Blockly](https://blockly.google.com/) workspace — drag blocks to program | beginners, and anyone who prefers a visual surface |
 | **Text view** | [CodeMirror 6](https://codemirror.net/) — write code like in any editor | anyone who wants the full language |
-| **Claude Code** | the `claude` CLI that is already on your machine, embedded | anyone who wants an AI pair programmer |
+| **Block view** | [Blockly](https://blockly.google.com/) workspace — drag blocks to program. **Full-screen and exclusive with the text view** (`Ctrl+Shift+B`) | beginners, and anyone who prefers a visual surface |
+| **Claude Code** | the `claude` CLI that is already on your machine, embedded in the right sidebar | anyone who wants an AI pair programmer |
+| **Bottom panel** | Problems / Output / a **terminal**. Hidden by default — it opens on **Check** or **Run** | anyone who wants to see what the compiler said |
+
+The shell is drawn to match VS Code: a self-drawn title bar (menu bar, command centre,
+layout toggles), a command palette on `Ctrl+Shift+P`, a status bar, and the usual chords.
 
 ## The one rule that makes it work
 
@@ -31,7 +35,7 @@ valid — it asks `jhyy.exe` and shows you the compiler's own diagnostics.
 
 | Page | What's in it |
 |---|---|
-| [Getting Started](Getting-Started) | install, open a file, run it, the three views in practice |
+| [Getting Started](Getting-Started) | install, open a file, run it, the workbench in practice |
 | [Architecture](Architecture) | the layers, the data flow, and where to change what |
 | [Block Subset](Block-Subset) | what has blocks, what is the escape hatch, how to add a block |
 | [Claude Code](Claude-Code) | the embedded session, the MCP wiring, permissions |
