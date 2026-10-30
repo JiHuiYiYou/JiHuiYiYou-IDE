@@ -120,6 +120,22 @@ differently, so drawing it by hand would never match).
 ⚠️ The IDE does **not** do this while you are **typing a command** — that would run
 your half-typed command.
 
+### The program does not wait for input — `scanf` reads nothing
+
+The IDE used to give the program the **null device** on stdin (immediate EOF) ⇒
+any program reading stdin got EOF right away ⇒ `scanf` returned at once and the
+program carried on.
+
+Now the IDE takes over a **pipe** while running a program and **feeds it whatever
+you type in the terminal** ✓ (like VS Code's "run in terminal") — switch to the
+**Terminal** tab, type, press Enter, and the program receives it ✓.
+
+⚠️ Type into the **terminal** tab, not the **Output** tab — the output tab is the
+read-only program output.
+A program that has not finished after 60 seconds is **killed by the timeout**
+(waiting for input has to leave you time to type); a program that prints forever is
+killed by the **output cap** (512 KB) ✓.
+
 ## The window and the shell
 
 ### `Ctrl+C` / `Ctrl+V` / `Ctrl+Z` do nothing, or `F5` reloads the window
@@ -173,6 +189,15 @@ the transaction throws and the whole editor goes down.
 
 The IDE **normalises to LF when reading and restores the original line endings
 when saving** — no crash, and your files keep their line endings.
+
+### "Save As" selects the whole file name (extension included)
+
+The Windows save dialog selects the **entire contents** of the "File name" box
+(extension included) ⇒ you cannot edit just the base name.
+
+The IDE now passes **only the directory, no default name** ⇒ the box starts empty
+⇒ there is no selected extension ✓. **Everything else is unchanged**: the filter
+still applies and the extension is still appended — type "hello" ⇒ "hello.jhyy".
 
 ### The chat's history list is always empty
 
