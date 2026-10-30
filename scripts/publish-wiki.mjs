@@ -114,7 +114,11 @@ try {
   git(withSsh(['clone', '--depth', '1', url, work]), root)
 } catch (err) {
   const out = `${err.stdout ?? ''}${err.stderr ?? ''}`
-  if (/Repository not found|Could not read from remote/i.test(out)) {
+  // ⚠️ **只有「Repository not found」才说明 wiki 仓库真的没建。**
+  // 「Could not read from remote repository」在**权限不对 / 网络抽风 / GitHub 500**
+  // 时也会出现 —— 实测 GitHub 抽风时 clone 报的是 `Permission denied (publickey)`，
+  // 脚本却判成「仓库不存在」⇒ 白叫用户去网页建页面（仓库本来就在那儿）。
+  if (/Repository not found/i.test(out)) {
     fail(
       [
         'GitHub 上还没有这个 wiki 仓库 —— 它只能从**网页**创建（API / git 都不行）。',
@@ -125,7 +129,14 @@ try {
       ].join('\n'),
     )
   }
-  fail(`clone 失败：\n${out}`)
+  fail(
+    [
+      'clone 失败 —— **不是**「wiki 仓库没建」，多半是网络 / 权限 / GitHub 服务端抽风：',
+      '过一会儿重试多半就好了（实测 GitHub 500 时会报 `Permission denied (publickey)`）。',
+      '',
+      out.trim(),
+    ].join('\n'),
+  )
 }
 
 /**
