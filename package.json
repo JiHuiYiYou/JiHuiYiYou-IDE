@@ -1,6 +1,6 @@
 {
   "name": "jihuiyiyou-ide",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "JHYY (机会翼游) IDE — 拖块编程 + 文本编辑 + 内嵌 Claude Code",
   "main": "./out/main/index.js",
   "author": "JHYY",
