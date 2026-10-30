@@ -261,6 +261,13 @@ npx vite-node scripts/claude-smoke.ts   # Claude 集成冒烟（会消耗 API �
   （`TerminalSession.setProgramInput`）—— 用户在终端里敲的字就喂给程序 ✓。
   ⚠️ 写 stdin 的能力要在**进程刚起来**时交出去（等 promise resolve 就太晚了 ——
   那时程序已经跑完，scanf 早就 EOF 了）。
+  ⚠️⚠️ **但一致性门必须显式 `stdinPipe: false`**（接空设备 = EOF）——
+  语料的判据就取 **EOF 路径**（`compiler/tests/examples/input.jhyy` 的注释：
+  「regress harness 跑测试时 stdin=subprocess.DEVNULL，所以 `scanf("%d", &x)`
+  恒立刻读到 EOF，返回 EOF(-1) 且**不写** x」）⇒ 接管管道的话 `scanf` 一直等
+  ⇒ 程序跑到超时被杀 ⇒ stdout 空 ⇒ **门红**（v0.2.1 的 CI 就是这么红的）。
+  ⇒ 而且**读 stdin 的例子必须留在默认子集里**（`REPRESENTATIVE`）——
+  那次红的时候子集里一个都没有 ⇒ `npm test` 全绿、放出去才炸。
 - **Blockly 的字段渲染在「自己那个孔」的前面** —— 所以「运算符放中间」的正确做法是
   **把它挂到右边那个输入上**（`[a] [+] [b]`）；挂左边就变成 `[+] [a] [b]` ✗。
   只有一个孔的块（类型转换 / 取字段）没法把字段排在孔后面 ⇒ 只能两行。

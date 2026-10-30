@@ -333,6 +333,20 @@ export interface RunOptions {
    * （跟 VS Code 的「在终端里运行」一个意思）。
    */
   onProgramStart?: (writeStdin: (text: string) => void) => void
+  /**
+   * 程序的 stdin 要不要**接管一根管道**（默认 **true** = 接管）。
+   *
+   * ⚠️ **一致性门必须显式关掉**（`stdinPipe: false` ⇒ stdin 接空设备 ⇒
+   * 立刻 EOF）—— 语料的判据就取 **EOF 路径**，不是「有输入」路径：
+   *   `compiler/tests/examples/input.jhyy` 的注释原文 ——
+   *   「regress harness 跑测试时 stdin=subprocess.DEVNULL，所以
+   *   `scanf("%d", &x)` 恒立刻读到 EOF，返回 EOF(-1) 且**不写** x。
+   *   x 保持初值 0 → stdout 必须是 "你输入的是: 0"」。
+   * 语言仓库的 harness 也确实是 `stdin=subprocess.DEVNULL`
+   * （`mcp-jhyy/jhyy_regress.py:141`）⇒ 我们必须同口径。
+   * 接管管道的话 `scanf` 会**一直等** ⇒ 程序跑到超时被杀 ⇒ stdout 空 ⇒ 门红。
+   */
+  stdinPipe?: boolean
 }
 
 /**
@@ -393,7 +407,9 @@ export async function runFile(opts: RunOptions): Promise<RunResult> {
     // PTY + xterm 增量渲染，我们没 PTY，就自己推）。
     onOutput: opts.onOutput,
     // ⚠️ **接管 stdin** —— 否则 `scanf` 读不到东西（空设备 = 立刻 EOF）。
-    stdinPipe: true,
+    //    一致性门要**关掉**（见 RunOptions.stdinPipe 的说明）——
+    //    语料的判据取 EOF 路径，跟上游 harness 的 DEVNULL 同口径。
+    stdinPipe: opts.stdinPipe ?? true,
     // 程序**刚起来**就把写 stdin 的能力交给 IDE（它接到终端上）——
     // 等 promise resolve 就太晚了（那时程序已经跑完）。
     onStart: opts.onProgramStart,
