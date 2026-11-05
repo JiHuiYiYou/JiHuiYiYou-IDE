@@ -10,34 +10,9 @@ import type { Diagnostic } from '@shared/jhyy'
  */
 const DIAG_RE = /^(.*):(\d+):(\d+):\s*(error|warning)\s*:\s*(.*)$/
 
-/**
- * 编译成功时 stderr 上也有进度噪声。这些不是诊断，得滤掉，
- * 否则会灌进问题面板。
- */
-const PROGRESS_RE = /^\[\d+[a-z]?\]\s/
-
-/**
- * IDE 自己传 `--no-link` 时，编译器会回执一行：
- *
- * ```
- * compile: --no-link set, skipping gcc link (.s kept at C:\...\jhyy-ide-work\x.s)
- * ```
- *
- * ⚠️ 这是**编译器有意打的**（不是它坏了），但对 IDE 的用户来说是纯噪声：
- * - `--no-link` 是 **IDE 自己**传的 —— 用户没要求，状态栏也已经写着「仅检查」；
- * - `.s kept at` 指的那个目录是 **IDE 自己的临时目录**（`%TEMP%\jhyy-ide-work`），
- *   用户拿它没用。
- *
- * 所以在 IDE 这一侧滤掉。完整 stderr 仍然保留在 `CompileResult.stderr` 里
- * （一致性门匹配 EXPECT-ERROR 关键词靠的就是它），不会丢信息。
- */
-const NO_LINK_NOTICE_RE = /^compile:\s*--no-link set\b/
-
-const SUMMARY_LINES = new Set(['parse errors', 'semantic errors', 'import resolution failed'])
-
 export interface ParsedDiagnostics {
   diagnostics: Diagnostic[]
-  /** 没被识别成诊断的行 */
+  /** 没被识别成诊断的行 —— **包括编译器的进度噪声**（用户要看见全部输出）✓ */
   raw: string[]
 }
 
@@ -49,11 +24,6 @@ export function parseDiagnostics(stderr: string): ParsedDiagnostics {
   for (const line of stderr.split(/\r?\n/)) {
     const trimmed = line.trim()
     if (!trimmed) continue
-
-    // 进度噪声与结尾摘要
-    if (PROGRESS_RE.test(trimmed)) continue
-    if (NO_LINK_NOTICE_RE.test(trimmed)) continue
-    if (SUMMARY_LINES.has(trimmed)) continue
 
     const m = DIAG_RE.exec(trimmed)
     if (m) {
@@ -67,6 +37,10 @@ export function parseDiagnostics(stderr: string): ParsedDiagnostics {
       continue
     }
 
+    // ⚠️ **噪声也留着** —— 用户要看见编译器的**全部**输出
+    //    （用户明说：「你是不是过滤编译器输出了，其实不用的」）⇒
+    //    进度噪声、`--no-link` 的回执、结尾摘要 ⇒ 原样进 `raw` ✓
+    //    （它们只是**不会被当成诊断**灌进「问题」面板 ✓）
     raw.push(line)
   }
 

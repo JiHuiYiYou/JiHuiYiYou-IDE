@@ -1,6 +1,7 @@
 import * as Blockly from 'blockly/core'
 import * as enMessages from 'blockly/msg/en'
 import { BIN_OPS, BLOCK, TYPE_CHOICES, UN_OPS, VALUE_KINDS } from '@lang/blocks/tree'
+import { DoubleClickWatcher } from './doubleClick'
 
 /**
  * JHYY 的 Blockly 块定义。
@@ -50,15 +51,10 @@ const EXTERN_PRESETS: Record<string, { name: string; params: string; ret: string
 }
 
 /**
- * 「类型」下拉 —— 选项是**动态**的。
+ * 「类型」的**选项**。
  *
- * ⚠️ Blockly 的 `FieldDropdown.setValue` 遇到**不在选项里**的值会**直接拒绝**
- * （保留旧值 + 打一条警告）—— 实测把 `*u8` 设进一个只有 i32/i64 的下拉，
- * 值会**悄悄变成 i32** ⇒ 用户的代码被改掉。
- *
- * 类型的取值空间不止基础类型（还有 `*u8` / `[i32; 4]` / `Cap<T>` …），
- * 而反编译出来的就是这些值 ⇒ 选项里必须**永远带上当前值**。
- * 所以这里重写 `setValue`：先把要设的值加进选项，再设。
+ * ⚠️ 类型的取值空间**不止**基础类型（还有 `*u8` / `[i32; 4]` / `Cap<T>` …）
+ *    ⇒ 所以固定选项之外的值也**必须能留住**（见 `DynamicDropdown`）✓
  */
 function typeOptions(): Blockly.MenuOption[] {
   return [
@@ -68,17 +64,19 @@ function typeOptions(): Blockly.MenuOption[] {
   ]
 }
 
-/** printf 的格式串 —— 常用的一批（用户可以自己填别的 ✓）。 */
+/**
+ * printf 的格式串 —— 常用的一批（**双击**可以自己填别的 ✓）。
+ *
+ * ⚠️ **必须是「字面的 `\n`」（反斜杠 + n 两个字符），不是真的换行** ——
+ *    格式串在源码里就是 `"%d\n"`（两个字符）⇒ 选项也得是同样的两个字符，
+ *    否则用户一点选项 ⇒ 生成的源码里就出现一个**真的换行**
+ *    ⇒ 字符串字面量被截断 ⇒ 编译器报错 ✗
+ *    （`src/lang/blocks/compile.ts` 是原样插进引号里的）
+ */
 function formatOptions(): Blockly.MenuOption[] {
-  return [
-    '%d\n',
-    '%d',
-    '%s\n',
-    '%s',
-    '%x\n',
-    '%x',
-    '%c',
-  ].map((f) => [f, f] as Blockly.MenuOption)
+  return ['%d\\n', '%d', '%s\\n', '%s', '%x\\n', '%x', '%c'].map(
+    (f) => [f, f] as Blockly.MenuOption,
+  )
 }
 
 /**
@@ -130,16 +128,259 @@ class DynamicDropdown extends Blockly.FieldDropdown {
   }
 }
 
-/** 「类型」下拉。 */
-function typeField(defaultValue: string): DynamicDropdown {
-  return new DynamicDropdown(typeOptions(), defaultValue)
+/**
+ * 块的参数字段 —— **单击是下拉（原来那个），双击是自己填**。
+ *
+ * ## 为什么两个都要
+ *
+ * - **单击 ⇒ 下拉**（跟最初那版一样）⇒ 常用值点一下就选中 ✓
+ * - **双击 ⇒ 自己填** ⇒ 格式串/类型这种「取值空间很大」的字段
+ *   ⇒ 「**预填的下拉框覆盖不了所有情况**」（用户原话）⇒ 得能手填 ✓
+ *
+ * ⚠️ 单击的下拉**一个字都没改** —— 还是 `FieldDropdown`（还是那个菜单、
+ *    那个样式）⇒ 手感跟以前完全一样 ✓
+ *
+ * ## ⚠️ **双击怎么判定**（这里踩过坑）
+ *
+ * - **`MouseEvent.detail` 靠不住** —— Blockly 的手势在 pointerdown 上
+ *   `preventDefault()` ⇒ ⇒ **兼容性的 mouse 事件根本不会触发** ⇒ 连
+ *   `detail` 都拿不到 ✗
+ * - **`showEditor_` 也靠不住** —— 单击那一下就把 `currentDropdownOwner` 设成了
+ *   这个字段 ⇒ ⇒ 双击的第二下 `currentDropdownOwner === startField`
+ *   ⇒ ⇒ **压根不会调 `showEditor_`** ⇒ ⇒ ⇒ **表现就是「一直只有单击效果」**
+ *   （用户报过两次）✗
+ *
+ * ⇒ ⇒ **自己判**（`DoubleClickWatcher`：时间窗 + 距离）✓
+ *
+ * ## ⚠️ **必须抢在 Blockly 前面**
+ *
+ * Blockly 的手势（`doFieldClick`）挂在**工作区 SVG**上 ⇒ 那是字段组的**祖先**
+ * ⇒ ⇒ 它跑在**冒泡**阶段 ⇒ ⇒ 我们在**捕获**阶段挂在字段组上 ⇒ ⇒ **一定先跑** ✓
+ * ⇒ ⇒ 双击时 `stopPropagation()` ⇒ **Blockly 压根看不到第二下**
+ * ⇒ ⇒ 不会出现「下拉又弹回来 / 把块拖走」✗
+ *
+ * ⚠️ 而 Blockly 自己的 `pointerdown` 挂在**字段组**上（`getClickTarget_()`）
+ *    ⇒ 也是**冒泡** ⇒ ⇒ 捕获阶段一样能抢在它前面 ✓
+ */
+class ParamField extends DynamicDropdown {
+  /** 已经挂过监听器的字段组（避免重复挂 ⇒ 重复开输入框）。 */
+  private static readonly attached = new WeakSet<Element>()
+  /** 双击探测器。 */
+  private watcher: DoubleClickWatcher | null = null
+  /**
+   * 到这个时间之前，**不打开下拉**。
+   *
+   * ⚠️ 双击时我们把下拉关掉了、换成输入框；万一 Blockly 还是想打开下拉
+   *    （比如它自己那个 `showEditor_` 路径）⇒ ⇒ 下拉会**盖住输入框** ✗
+   *    ⇒ ⇒ 在这段时间内把它挡掉 ✓
+   */
+  private suppressEditorUntil = 0
+
+  override initView(): void {
+    // ⚠️ **先挂监听，再 super** ——
+    //    ① `this.fieldGroup_` 在 `Field.init()` 里、**`initView()` 之前**就建好了 ✓
+    //    ② 万一 `super.initView()` 抛了，监听也已经在 ✓
+    const group = this.fieldGroup_
+    if (group && !ParamField.attached.has(group)) {
+      ParamField.attached.add(group)
+      this.watcher = new DoubleClickWatcher((e) => this.handleDoubleClick(e))
+      this.watcher.attach(group)
+    }
+    super.initView()
+  }
+
+  override dispose(): void {
+    // ⚠️ 块被删掉时**把监听摘掉** ⇒ 不留野指针 ✓
+    if (this.watcher && this.fieldGroup_) {
+      this.watcher.detach(this.fieldGroup_)
+      this.watcher = null
+    }
+    super.dispose()
+  }
+
+  /**
+   * 双击的第二下 ⇒ **自己填**。
+   *
+   * ⚠️ **把这一下从 Blockly 手里抢走** ——
+   *    不抢的话：Blockly 的手势会照常处理（可能又打开下拉 / 把块拖走）✗
+   */
+  private handleDoubleClick(e: PointerEvent): void {
+    e.stopPropagation()
+    e.preventDefault()
+    // ⇒ 单击那一下已经把下拉打开了 ⇒ 得先关掉它（不带动画）✓
+    hideBlocklyDropdown(this)
+    // ⇒ 挡住 Blockly 的 mouseup 那一轮（否则下拉会重新打开）✓
+    this.suppressEditorUntil = Date.now() + 700
+    this.openCustomEditor()
+  }
+
+  /** 单击 ⇒ 下拉（**一个字都没改** —— 只有双击时会被上面那个时间窗挡掉）。 */
+  protected override showEditor_(e?: MouseEvent): void {
+    if (Date.now() < this.suppressEditorUntil) return
+    super.showEditor_(e)
+  }
+
+  /**
+   * 自己填：把**字段本身**变成可编辑的，内容**全选中**。
+   *
+   * ## 为什么是「选中」而不是「弹个输入框」
+   *
+   * 弹一个陌生的输入框 ⇒ 用户得先反应过来「这是个输入框」⇒ ⇒ 停顿。
+   * ⇒ 而**看到文字被选中** ⇒ 大多数人会**下意识直接打字** ⇒ ⇒ 顺手就改了 ✓
+   *
+   * ## 怎么做的
+   *
+   * - 一个**透明**的 `<input>` 精确盖在字段的文字上（字体/字号/颜色都一样）
+   * - 字段原来的 `<text>` **先藏起来**（不然两层字叠着 ⇒ 糊）⇒
+   *   ⇒ 用户看到的就是「字段上那段字被选中了」✓
+   * - 光标用主题色（看得见自己在哪）✓
+   *
+   * ⚠️ **为什么自己写**而不是用 `FieldTextInput` ——
+   *    那个字段**只有输入框、没有下拉** ⇒ 两样都要就得自己拼 ⇒
+   *    而 Blockly 的 `FieldInput`（带输入框的那套机器）**没有导出** ⇒
+   *    ⇒ 只能自己写这个「浮在字段上的输入框」✓
+   */
+  private openCustomEditor(): void {
+    // ⚠️ **单击那一下已经把下拉打开了** ⇒ 双击时得先把它关掉 ✓
+    hideBlocklyDropdown(this)
+
+    // ⚠️ **两种渲染器都要能用** ——
+    //    - SVG 渲染器（我们用的 geras）：字段的文字是个 `<text>` 元素
+    //    - DOM 渲染器：字段的文字在 DOM 行里 ⇒ **`getTextElement()` 会抛**
+    //      （Blockly 13 里它是个断言，不是返回 null）⇒ ⇒ 只能自己拿受保护的字段 ✓
+    // ⚠️ **优先用 `<text>`** —— 它才是「字」的盒子；`getClickTarget_()` 会返回
+    //    整个字段组（**连下拉箭头一起**）⇒ 输入框会盖住箭头 ⇒ 对不齐 ✗
+    const target = (this.textElement_ ??
+      this.getClickTarget_()) as HTMLElement | SVGElement | null
+    if (!target) return
+    let rect = target.getBoundingClientRect()
+    // ⚠️ **字量不出来**（还没渲染 / 元素是隐藏的）⇒ 退到字段组 ✓
+    if (rect.width === 0 && rect.height === 0 && this.fieldGroup_) {
+      rect = this.fieldGroup_.getBoundingClientRect()
+    }
+    if (rect.width === 0 && rect.height === 0) return
+
+    const computed = getComputedStyle(target)
+    // ⚠️⚠️ **SVG 的字是 `fill` 画的，不是 `color`** ——
+    //    用 `computed.color` 拿到的是**继承来的 CSS color**（多半是白的），
+    //    而**画出来的颜色**是 `fill` ⇒ ⇒ 两者可能对不上 ⇒ 字看着不对 ✗
+    //    ⇒ 优先用 `fill` ✓
+    const painted = computed.fill && computed.fill !== 'none' ? computed.fill : computed.color
+    // ⚠️ **缩放** —— 块视图可以缩放 ⇒ SVG 里的字号是「画布上的字号」，
+    //    而输入框在 DOM 里 ⇒ 得乘上缩放系数，否则字跟字段对不上 ✗
+    const scale = svgScale(target)
+    const fontSize = Number.parseFloat(computed.fontSize) * scale
+
+    const input = document.createElement('input')
+    input.value = this.getValue() ?? ''
+    Object.assign(input.style, {
+      position: 'fixed',
+      left: `${rect.left}px`,
+      top: `${rect.top}px`,
+      width: `${Math.max(rect.width, 120)}px`,
+      height: `${rect.height}px`,
+      fontFamily: computed.fontFamily,
+      fontSize: fontSize > 0 ? `${fontSize}px` : computed.fontSize,
+      // ⚠️ **对齐跟字段一样** —— SVG 文字是 `text-anchor="middle"` 就是居中 ✓
+      textAlign: this.textElement_?.getAttribute('text-anchor') === 'middle' ? 'center' : 'left',
+      // ⚠️ **透明、无边框** ⇒ 看上去就是「字段上的字被选中了」，
+      //    而不是「多了一个输入框」✓
+      background: 'transparent',
+      border: 'none',
+      outline: 'none',
+      padding: '0',
+      margin: '0',
+      color: painted,
+      caretColor: 'var(--accent)',
+      // ⚠️ **得压过 Blockly 的下拉菜单** —— 不然输入框被盖住 ⇒ 用户以为没反应 ✗
+      zIndex: '2147483647',
+    })
+    document.body.appendChild(input)
+
+    // ⚠️ **把字段原来的字藏起来** —— 不藏的话两层字叠在一起 ⇒ 糊成一团 ✗
+    //    （藏的是 SVG 的 `<text>` ⇒ DOM 渲染器那边没这个元素 ⇒ 跳过 ✓）
+    const svgText = this.textElement_
+    const prevVisibility = svgText?.style.visibility ?? ''
+    if (svgText) svgText.style.visibility = 'hidden'
+
+    let done = false
+    const finish = (commit: boolean): void => {
+      if (done) return
+      done = true
+      input.remove()
+      if (svgText) svgText.style.visibility = prevVisibility
+      if (commit) {
+        const v = input.value
+        // ⚠️ `DynamicDropdown.setValue` 会把这个值**收进选项里**
+        //    ⇒ 下拉里能再选回来 ⇒ 而且它**不会被拒绝** ✓
+        if (v !== this.getValue()) {
+          // ⚠️ **先标脏** —— 值变长了/变短了 ⇒ 字段的宽度要重算 ⇒
+          //    不标脏的话块不会重新排版（文字会溢出）✗
+          this.markDirty()
+          this.setValue(v)
+        }
+      }
+    }
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        e.stopPropagation()
+        finish(true)
+      } else if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        finish(false)
+      }
+    })
+    // 点别处 ⇒ 也算填完了（跟 VS Code 的输入框一个样）✓
+    input.addEventListener('blur', () => finish(true))
+
+    input.focus()
+    input.select()
+    // ⚠️ **内容全选中** —— 「看到选中态大多数人可能下意识就会输入」（用户原话）✓
+    input.setSelectionRange(0, input.value.length)
+  }
 }
 
-/** 「printf 格式串」下拉。 */
-function formatField(defaultValue: string): DynamicDropdown {
-  return new DynamicDropdown(formatOptions(), defaultValue)
+/**
+ * SVG 元素当前的**缩放系数**（块视图缩放时 ≠ 1）。
+ *
+ * ⚠️ DOM 里的输入框**不在** SVG 的缩放里 ⇒ 字号/位置都得自己算 ✓
+ */
+function svgScale(el: Element): number {
+  const ctm = (el as SVGGraphicsElement).getScreenCTM?.()
+  const s = ctm?.a
+  return typeof s === 'number' && s > 0 ? s : 1
 }
 
+/** 把 Blockly 的下拉菜单关掉（双击时用 —— 单击那一下已经把它打开了）。 */
+function hideBlocklyDropdown(owner: Blockly.Field): void {
+  try {
+    // ⚠️ **不带动画**地关（`hide` 会淡出 0.25 秒 ⇒ 跟输入框叠在一起 ✗）
+    // ⚠️ 名字是 **`DropDownDiv`**（大写的 D）—— 不是 `DropdownDiv` ✗
+    if (!Blockly.DropDownDiv.hideIfOwner(owner, true)) {
+      Blockly.DropDownDiv.hide()
+    }
+  } catch {
+    // ⚠️ **`hideIfOwner` 抛了也得把下拉关掉** —— 不然下拉**盖住输入框**
+    //    ⇒ 用户看着像「双击没反应」✗（用户报过）✓
+    try {
+      Blockly.DropDownDiv.hide()
+    } catch {
+      // 下拉本来就没开 ⇒ 没什么要关的 ✓
+    }
+  }
+}
+
+/** 「类型」字段（单击下拉 / 双击自己填）。 */
+function typeField(defaultValue: string): ParamField {
+  return new ParamField(typeOptions(), defaultValue)
+}
+
+/** 「printf 格式串」字段（单击下拉 / 双击自己填）。 */
+function formatField(defaultValue: string): ParamField {
+  return new ParamField(formatOptions(), defaultValue)
+}
 
 /**
  * 暗色主题。

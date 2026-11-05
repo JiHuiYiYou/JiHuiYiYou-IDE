@@ -61,7 +61,18 @@ export default defineConfig({
     },
     build: {
       rollupOptions: {
-        input: { index: resolve(root, 'src/main/index.ts') },
+        input: {
+          index: resolve(root, 'src/main/index.ts'),
+          /**
+           * ★ **pty 宿主进程** —— 真控制台跑在**独立进程**里。
+           *
+           * ⚠️ **必须是另一个入口** —— 它是 `utilityProcess.fork` 起来的
+           *    （不是主进程的一部分）⇒ 得单独打包成一个 js ✓
+           * ⚠️ **不能打进 asar 就能读** —— 不对：宿主进程是 Electron 起的，
+           *    它自己认 asar ✓（原生模块 `.node` Electron 会自动解出来）✓
+           */
+          ptyHost: resolve(root, 'src/main/ptyHost.ts'),
+        },
       },
     },
   },

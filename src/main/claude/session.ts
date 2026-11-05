@@ -178,6 +178,18 @@ export class ClaudeSession {
         NO_COLOR: '1',
         FORCE_COLOR: '0',
         PYTHONIOENCODING: 'utf-8',
+        /*
+          ⚠️ **MCP server 的连接超时** —— 默认 30 秒太紧。
+
+          jhyy 那个 MCP server 是 python + fastmcp ⇒ 光 `import fastmcp`
+          就要好几秒（实测握手 ~8s），机器再忙一点就超了 ⇒ CLI 把它记成
+          「连接失败」⇒ Claude 这一轮**用不了** `jhyy_check`/`jhyy_run`
+          （用户报过：「The JHYY MCP server didn't connect this session
+          (connect timeout)」⇒ 它只好去猜本地编译器）。
+
+          ⇒ 给 120 秒。慢总比连不上强（连不上 = Claude 只能瞎猜）。
+        */
+        MCP_TIMEOUT: process.env.MCP_TIMEOUT ?? '120000',
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     })
@@ -232,8 +244,20 @@ export class ClaudeSession {
     } catch {
       /* 已经关了 */
     }
-    // 给它一点时间跑完当前轮；超时就强杀
-    await new Promise((resolve) => setTimeout(resolve, 1500))
+    /*
+      等它**自己退出**，而不是死等 1.5 秒。
+
+      以前是固定 `setTimeout(1500)` ⇒ 哪怕 CLI 100ms 就退了，也得白等 1.4 秒。
+      「恢复一条历史会话」正好要走这条路径（先停旧的、再起新的）⇒
+      每恢复一次就白等 1.5 秒（用户报过「卡好久才会连上之前的对话」）。
+    */
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => resolve(), 1500)
+      child.once('close', () => {
+        clearTimeout(timer)
+        resolve()
+      })
+    })
     if (this.child === child) {
       await this.killTree(child.pid)
       this.child = null

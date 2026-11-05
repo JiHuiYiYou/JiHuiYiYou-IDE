@@ -51,7 +51,15 @@ export function buildSubprocessEnv(extra?: Record<string, string>): NodeJS.Proce
   const pathKeys = Object.keys(env).filter((k) => k.toUpperCase() === 'PATH')
   let rawPath: string | undefined
   if (extra) {
-    const extraPathKey = Object.keys(extra).find((k) => k.toUpperCase() === 'PATH')
+    /*
+      ⚠️ **取「最后一个」PATH 变体，不是第一个** ——
+        `extra` 常常是 `{ ...base, ...别的 }` ⇒ 两份 PATH 变体并存时
+        （`Path` 来自 base、`PATH` 来自后面那份）⇒
+        ⇒ **后 spread 的那份才是「要赢的」** ⇒ 取最后一个 ✓
+        （取第一个 ⇒ 继承来的那份赢 ⇒ 用户/主进程算好的 PATH 白算了 ✗）
+    */
+    const extraPathKeys = Object.keys(extra).filter((k) => k.toUpperCase() === 'PATH')
+    const extraPathKey = extraPathKeys[extraPathKeys.length - 1]
     if (extraPathKey) rawPath = extra[extraPathKey]
   }
   if (rawPath === undefined && pathKeys.length) rawPath = env[pathKeys[0]]

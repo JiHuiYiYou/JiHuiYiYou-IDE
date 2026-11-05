@@ -22,6 +22,35 @@ const NTSTATUS_NAMES: Record<number, string> = {
   0xc0000374: 'HEAP_CORRUPTION',
   0xc0000409: 'STACK_BUFFER_OVERRUN',
   0xc000041d: 'STATUS_FATAL_USER_CALLBACK_EXCEPTION',
+  /**
+   * ⚠️ **这个不是崩溃** —— STATUS_CONTROL_C_EXIT = **用户按了 Ctrl+C**
+   *    （或者控制台把它 Ctrl+C 掉了）。
+   *
+   * 之前它在表里没有 ⇒ 落进兜底分支 ⇒ 名字显示成 `NTSTATUS_0xC000013A`
+   * ⇒ 而且 `crashed = true` ⇒ IDE 一口咬定「程序崩溃」——
+   * **但那只是用户自己中断的**（用户报过「程序崩溃：NTSTATUS0xC000013A 是什么鬼」）。
+   *
+   * ⇒ 单独判出来：叫「已中断」，不叫「崩溃」✓。
+   */
+  0xc000013a: 'CONTROL_C_EXIT',
+}
+
+/**
+ * 退出码是不是「用户按了 Ctrl+C」。
+ *
+ * ⚠️ **真控制台（ConPTY）下按 Ctrl+C 会真的杀掉前台进程** ⇒
+ *    它退出时就是 0xC000013A ⇒ 这跟「崩溃」完全是两回事 ✓。
+ *
+ * ⚠️ **bash 那边是 130**（128 + SIGINT）——
+ *    现在程序跑在 shell 的 pty 里（见 `terminal.ts` 的 `runProgram`）⇒
+ *    bash 的 `$?` 就是 130 ⇒ 也要认出来 ✓
+ *    （不然用户按了 Ctrl+C，IDE 却说「程序崩溃」✗）
+ */
+export function isControlCExit(code: number | null): boolean {
+  if (code === null) return false
+  if ((code >>> 0) === 0xc000013a) return true
+  // bash 的 128+SIGINT（=130）
+  return (code & 0xff) === 130 && code >= 128 && code < 256
 }
 
 /** 退出码是不是 NTSTATUS（Windows 崩溃）区间。 */
@@ -300,6 +329,26 @@ export async function compileFile(opts: CompileOptions): Promise<CompileResult> 
   }
 }
 
+/**
+ * 编译一个程序，**返回产物 exe 的路径**。
+ *
+ * ⇒ 「在 pty 里跑」（`runPty.ts`）要用它 —— pty 后端要的是**可执行文件**，
+ * 而 `runFile`（管道版）把「编译 + 跑」包在一起了。
+ */
+export async function compileToProgram(
+  opts: CompileOptions,
+): Promise<CompileResult & { exe: string }> {
+  const file = resolve(opts.file)
+  const work = ensureWorkDir()
+  const outBase = opts.outBase
+    ? isAbsolute(opts.outBase)
+      ? opts.outBase
+      : join(work, opts.outBase)
+    : join(work, basename(file).replace(/\.jhyy$/i, '') || 'program')
+  const compile = await compileFile({ ...opts, outBase })
+  return { ...compile, exe: outBase + '.exe' }
+}
+
 export interface RunOptions {
   exePath: string
   file: string
@@ -360,15 +409,11 @@ export async function runFile(opts: RunOptions): Promise<RunResult> {
   const file = resolve(opts.file)
   const started = Date.now()
 
-  const work = ensureWorkDir()
-  const outBase = join(work, basename(file).replace(/\.jhyy$/i, '') || 'program')
-
-  const compile = await compileFile({
+  const compile = await compileToProgram({
     exePath: opts.exePath,
     file,
     noLink: false,
     timeoutMs: 60_000,
-    outBase,
     env: opts.env,
   })
 
@@ -383,7 +428,7 @@ export async function runFile(opts: RunOptions): Promise<RunResult> {
     }
   }
 
-  const exePath = outBase + '.exe'
+  const exePath = compile.exe
   if (!existsSync(exePath)) {
     return {
       ...compile,
@@ -416,13 +461,16 @@ export async function runFile(opts: RunOptions): Promise<RunResult> {
   })
 
   const crash = ntstatusName(outcome.code)
+  // ⚠️ Ctrl+C 退出（0xC000013A）**不是崩溃** ⇒ 单独判出来 ✓
+  const interrupted = isControlCExit(outcome.code)
 
   return {
     ...compile,
     durationMs: Date.now() - started,
     ran: true,
     exitCode: outcome.code,
-    crashed: crash !== undefined,
+    crashed: crash !== undefined && !interrupted,
+    interrupted,
     crashName: crash,
     programStdout: outcome.stdout,
     programStderr: outcome.stderr,

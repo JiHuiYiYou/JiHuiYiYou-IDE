@@ -32,6 +32,17 @@ export function useKeybindings(commands: Command[]): void {
         (c) => c.keybinding === chord && (c.scope !== 'editor' || inEditor),
       )
       if (!cmd) return
+      /*
+        ⚠️ **原生的键别抢**（比如 Ctrl+V 的粘贴）。
+
+        这里在 `window` 的**捕获阶段** `preventDefault()` + `stopPropagation()` ——
+        抢了以后浏览器**不再触发** `paste` 事件，编辑器内置的粘贴处理
+        （CodeMirror 6 的 `handlers.paste`）就永远收不到东西 ⇒ 粘贴不了。
+
+        原生路径反而更好：直接读 `event.clipboardData`（不要任何权限），
+        不用「读系统剪贴板 → IPC 往返 → 自己插」这一圈。
+      */
+      if (cmd.native) return
       if (cmd.enabled && !cmd.enabled()) return
 
       e.preventDefault()

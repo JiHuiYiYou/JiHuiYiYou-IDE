@@ -6,6 +6,21 @@ import { Markdown } from './Markdown'
 interface Props {
   /** 当前打开的文件路径 —— Claude 的工作目录 */
   filePath: string | null
+  /**
+   * 当前标签页显示的名字（磁盘文件是文件名，**未命名的新文件**也是
+   * 「未命名-1.jhyy」这种）。
+   *
+   * ⚠️ 未命名文件**没有路径** —— 只看 `filePath` 的话，聊天面板会对它显示
+   * 「（没打开文件）」（用户报过：这不对 —— 用户明明开着一个文件）。
+   */
+  fileName?: string | null
+  /**
+   * Claude 的工作目录。
+   *
+   * ⚠️ 未命名的新文件**没有路径** ⇒ 不能拿它推目录 ⇒ 由外面给
+   * （退到最近打开过的那个文件的目录）。
+   */
+  cwd?: string | null
   /** 文件在外部（Claude）被改了 */
   externalChange?: string | null
   /** 外部改了文件 → 重新加载 */
@@ -74,10 +89,22 @@ interface ChatTurn {
   userText: string
   /** 过程 */
   steps: ChatStep[]
-  /** 最终回答 */
+  /** 助手最后一条**完整**消息的正文 */
   answer?: string
-  /** 正在流式输出的回答（还没定稿） */
+  /** 正在流式输出的正文（最后一条完整消息之后又收到的增量） */
   streaming: string
+  /**
+   * `streaming` 是不是比 `answer` **新**。
+   *
+   * ⚠️ 这是「历史会话显示的不是最终回答，而是思考过程里某句话」的根因：
+   * 模型常常先吐一句「我先看看这个文件」（那是一条**完整**的 assistant
+   * 消息），再调工具，最后才给最终答案。如果最终答案只以**增量**的形式
+   * 到达（有些 CLI 版本只发增量、不发完整消息），那 `answer` 就永远停在
+   * 那句「我先看看」上 —— 显示出来的就是它，而不是最终回答 ✓。
+   *
+   * ⇒ 增量比完整消息新时，**以增量为准**。
+   */
+  streamingIsNewer: boolean
   /** 正在进行中的活动 */
   activity?: string
   /** 过程要不要折叠起来 */
@@ -92,6 +119,8 @@ interface ChatTurn {
  */
 export default function ChatPane({
   filePath,
+  fileName,
+  cwd,
   externalChange,
   onReload,
   readOnly = false,
@@ -108,6 +137,8 @@ export default function ChatPane({
   const startedRef = useRef(false)
   /** 这次会话用的 sessionId —— 用来存历史 */
   const sessionIdRef = useRef<string | null>(null)
+  /** 上一次存历史时用的 sessionId —— 用来判断「是不是换了个新会话」 */
+  const lastSavedSessionRef = useRef<string | null>(null)
   /** tool_use id → 工具名 —— 工具结果那条只有 id，得靠它补上名字 */
   const toolNamesRef = useRef<Record<string, string>>({})
   /** 轮次 id 计数器 */
@@ -170,7 +201,19 @@ export default function ChatPane({
 
     /** 应用一次状态更新（两条通道共用）。 */
     const applyStatus = (s: ClaudeStatus): void => {
-      setStatus(s)
+      /*
+        ⚠️ **别把 sessionId 弄丢** —— 有的状态事件不带它（不带就覆盖掉的话，
+        存历史的 effect 依赖 `status.sessionId` ⇒ 一条不带它的状态事件就能让
+        「这一轮的内容」再也存不进历史 ⇒ 恢复历史会话时看到的是半截对话）。
+        ⚠️ 但 **error 要照旧被清掉**（新状态没带错误 ⇒ 错误没了）——
+        不然一条旧错误会一直挂在聊天面板顶上。
+      */
+      setStatus((prev) => ({
+        ...prev,
+        ...s,
+        sessionId: s.sessionId ?? prev.sessionId,
+        error: s.error,
+      }))
       if (s.sessionId) sessionIdRef.current = s.sessionId
       // 本轮结束 ⇒ 过程折叠起来（哪怕没有最终回答）
       if (s.turnComplete) {
@@ -183,7 +226,12 @@ export default function ChatPane({
         case 'delta':
           // 增量文本 —— 正在流式输出的回答
           if (lastTurnClosed()) break
-          updateLastTurn((t) => ({ ...t, streaming: t.streaming + event.text }))
+          updateLastTurn((t) => ({
+            ...t,
+            streaming: t.streaming + event.text,
+            // 增量比上一条完整消息**新** ⇒ 显示时以它为准
+            streamingIsNewer: true,
+          }))
           break
         case 'thinking-delta':
           // 思考的增量 —— 正文等完整的 assistant 消息里才有，这里只更新状态
@@ -224,6 +272,8 @@ export default function ChatPane({
                   steps,
                   answer: m.text,
                   streaming: '',
+                  // 完整消息到了 ⇒ 它是**最新**的正文（增量被它取代）
+                  streamingIsNewer: false,
                 }
               }
               return { ...t, steps }
@@ -247,6 +297,12 @@ export default function ChatPane({
                 if (last && !last.answer && last.steps.length === 0 && last.userText === text) {
                   return prev
                 }
+                /*
+                  ⚠️ **恢复历史会话时别再加一轮** ——
+                  恢复出来的那些轮子都是「已完成」的（collapsed），CLI 那边
+                  万一回放了老消息，也不该在界面上多出重复的一轮。
+                */
+                if (last?.collapsed) return prev
                 turnCounter.current += 1
                 return [
                   ...prev,
@@ -255,6 +311,7 @@ export default function ChatPane({
                     userText: text,
                     steps: [],
                     streaming: '',
+                    streamingIsNewer: false,
                     collapsed: false,
                   },
                 ]
@@ -336,9 +393,12 @@ export default function ChatPane({
       // ⚠️ 渲染进程里**没有 `process`**（contextIsolation + nodeIntegration 都是关的）。
       // 以前这里写的是 `process.cwd()` —— 没打开文件时会 ReferenceError。
       // 现在让主进程给默认目录。
-      const cwd = filePath ? dirnameOf(filePath) : await window.jhyyIde.file.cwd()
+      //
+      // ⚠️ 未命名的新文件**没有路径** ⇒ 用外面给的 `cwd`
+      //（最近打开过的那个文件的目录）⇒ 别退到 home 目录去。
+      const workDir = cwd ?? (filePath ? dirnameOf(filePath) : await window.jhyyIde.file.cwd())
       const result = await window.jhyyIde.claude.start({
-        cwd,
+        cwd: workDir,
         ...(resumeSessionId ? { resumeSessionId } : {}),
       })
       if (!result.ok) {
@@ -348,7 +408,7 @@ export default function ChatPane({
       }
       return true
     },
-    [filePath],
+    [cwd, filePath],
   )
 
   const send = useCallback(async () => {
@@ -363,6 +423,7 @@ export default function ChatPane({
         userText: text,
         steps: [],
         streaming: '',
+        streamingIsNewer: false,
         collapsed: false,
       },
     ])
@@ -387,13 +448,18 @@ export default function ChatPane({
   /** 恢复一条历史会话。 */
   const resumeSession = useCallback(
     async (s: SavedSession) => {
-      await stop()
       setShowHistory(false)
       toolNamesRef.current = {}
       /*
-        ⚠️ **把历史对话填回界面** —— `claude --resume` 只会把对话**接上**，
-        **不会把历史消息再吐一遍**（用户报过「点历史会话然后点其中一个，
-        还是没有历史对话」）。所以历史得由 IDE 自己留着并还原 ✓。
+        ⚠️ **先把历史填回界面，再去连 CLI** ——
+
+        连 CLI 要**停掉旧会话**（等它退出，最长 1.5s）+ **起新进程**
+        （CLI 自己启动就要好几秒，里头还要连 MCP server）⇒ 整个几秒。
+
+        以前是「先 await stop() 再填界面」⇒ 点一下历史会话，界面**好几秒
+        都不动**（用户报过：「卡好久才会连上之前的对话」）。
+
+        ⇒ 界面**立刻**有东西看，连接在后台慢慢连 ✓。
       */
       turnCounter.current += 1
       setTurns(
@@ -402,14 +468,18 @@ export default function ChatPane({
           userText: t.userText,
           steps: t.steps ?? [],
           streaming: '',
+          streamingIsNewer: false,
           ...(t.answer !== undefined ? { answer: t.answer } : {}),
           collapsed: true,
         })),
       )
+      sessionIdRef.current = s.sessionId
+      setStatus((prev) => ({ ...prev, state: 'starting', sessionId: s.sessionId }))
+      // 旧的会话得先停掉 —— 不然 CLI 那边两个进程抢同一个终端
+      await stop()
       const ok = await ensureSession(s.sessionId)
       if (ok) {
         setStatus((prev) => ({ ...prev, state: 'waiting', sessionId: s.sessionId }))
-        sessionIdRef.current = s.sessionId
       }
     },
     [ensureSession, stop],
@@ -426,30 +496,59 @@ export default function ChatPane({
    * 「即使有 ai 的历史对话，也不会显示出来，依旧是空的」）。
    *
    * 所以依赖里要带上 `status.sessionId` —— 它到了就补存一次。
+   *
+   * ⚠️ **还要盯住「内容变了」** —— 以前只盯「轮数变了」，而一轮的内容是
+   * **之后**才慢慢长出来的（模型先思考、再调工具、最后才给回答）⇒
+   * 存进去的是**还没写完的那一轮** ⇒ 恢复历史会话时看到的是「思考过程的
+   * 某句话」，不是最终回答（用户报过）。
+   *
+   * ⇒ 依赖 `turns` 本身（内容变了引用就变）。
+   *   - **sessionId 刚到** ⇒ 立刻存一次（不然这次会话压根进不了历史）；
+   *   - **内容变了** ⇒ 去抖 500ms 再存（流式输出时每来一个字就变一次，
+   *     不去抖的话 localStorage 会被写几百次）。
    */
   useEffect(() => {
     const id = status.sessionId
     if (!id || turns.length === 0) return
-    const first = turns[0]?.userText ?? '（空会话）'
-    const title = first.length > 40 ? `${first.slice(0, 40)}…` : first
-    const cwd = filePath ? dirnameOf(filePath) : ''
-    const list = sessionsRef.current
-    const existing = list.find((s) => s.sessionId === id)
-    // ⚠️ **把对话内容也存下来** —— 恢复历史会话时要靠它把界面填回去
-    //   （`claude --resume` 不会把历史消息再吐一遍）。
-    //   只留最近 20 轮，别把 localStorage 撑爆。
-    const saved = turns.slice(-20).map((t) => ({
-      userText: t.userText,
-      ...(t.answer !== undefined ? { answer: t.answer } : {}),
-      steps: t.steps,
-    }))
-    const next = existing
-      ? list.map((s) => (s.sessionId === id ? { ...s, ts: Date.now(), turns: saved } : s))
-      : [{ sessionId: id, title, cwd, ts: Date.now(), turns: saved }, ...list].slice(0, 20)
-    persistSessions(next)
-    // 只在「消息数」或「sessionId」真的变了的时候写 —— 否则每次渲染都写一遍
+
+    const save = (): void => {
+      const first = turns[0]?.userText ?? '（空会话）'
+      const title = first.length > 40 ? `${first.slice(0, 40)}…` : first
+      const sessionCwd = cwd ?? (filePath ? dirnameOf(filePath) : '')
+      const list = sessionsRef.current
+      const existing = list.find((s) => s.sessionId === id)
+      // ⚠️ **把对话内容也存下来** —— 恢复历史会话时要靠它把界面填回去
+      //   （`claude --resume` 不会把历史消息再吐一遍）。
+      //   只留最近 20 轮，别把 localStorage 撑爆。
+      //
+      //   `answer` 存的是 `answerOf(t)`（**当前真正显示的那段**）——
+      //   有些 CLI 版本只发增量、不发完整消息，光存 `t.answer` 会把
+      //   最终回答整个丢掉（用户报过「有时候根本就没有最终的回复，也被吞了」）。
+      const saved = turns.slice(-20).map((t) => {
+        const answer = answerOf(t)
+        return {
+          userText: t.userText,
+          ...(answer ? { answer } : {}),
+          steps: t.steps,
+        }
+      })
+      const next = existing
+        ? list.map((s) => (s.sessionId === id ? { ...s, ts: Date.now(), turns: saved } : s))
+        : [{ sessionId: id, title, cwd: sessionCwd, ts: Date.now(), turns: saved }, ...list].slice(0, 20)
+      persistSessions(next)
+    }
+
+    // 新的会话 ⇒ 立刻存一次（历史列表里得马上出现它）
+    if (lastSavedSessionRef.current !== id) {
+      lastSavedSessionRef.current = id
+      save()
+      return
+    }
+    // 内容变了 ⇒ 去抖
+    const timer = setTimeout(save, 500)
+    return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [turns.length, status.sessionId])
+  }, [turns, status.sessionId])
 
   const stateText: Record<string, string> = {
     idle: '未开始',
@@ -461,7 +560,14 @@ export default function ChatPane({
     error: '出错',
   }
 
-  const fileName = filePath ? (filePath.split(/[\\/]/).pop() ?? filePath) : null
+  /**
+   * 聊天面板顶部那个「当前文件」的名字。
+   *
+   * ⚠️ **优先用 `fileName` 传进来的那个** —— 未命名的新文件没有路径，
+   * 光从 `filePath` 推名字会推不出来 ⇒ 只能显示「（没打开文件）」（不对）。
+   */
+  const shownFileName =
+    fileName ?? (filePath ? (filePath.split(/[\\/]/).pop() ?? filePath) : null)
 
   return (
     <div className="chat-pane">
@@ -581,11 +687,11 @@ export default function ChatPane({
       </div>
 
       <div className="chat-composer">
-        {fileName && (
+        {shownFileName && (
           <div className="chat-attachments">
             <span className="chat-attachment">
               <Icon name="file" size={12} />
-              {fileName}
+              {shownFileName}
             </span>
           </div>
         )}
@@ -614,7 +720,7 @@ export default function ChatPane({
           */}
           <span className="chat-chip static" title="Claude 能看到的当前文件">
             <Icon name="attach" size={13} />
-            {fileName ?? '（没打开文件）'}
+            {shownFileName ?? '（没打开文件）'}
           </span>
           <button
             className={readOnly ? 'chat-chip on' : 'chat-chip'}
@@ -660,12 +766,19 @@ function dirnameOf(p: string): string {
 /**
  * 这一轮已经写出来的正文。
  *
- * ⚠️ 优先用 `answer`（完整的 assistant 消息），
- * 拿不到就退回 `streaming`（流式增量）——
- * 有些 CLI 版本**只发增量、不发完整消息** ⇒ 只看 `answer` 的话
- * **回答会被整个吞掉**（用户报过「有时候根本就没有最终的回复，也被吞了」）。
+ * ⚠️ **谁更新就以谁为准** ——
+ * - `streaming` 比 `answer` 新（增量在完整消息之后到的）⇒ 用 `streaming`；
+ * - 否则用 `answer`（完整的 assistant 消息）；再没有就退回 `streaming`。
+ *
+ * 之前是 `answer ?? streaming`（**永远优先旧的完整消息**）⇒ 模型先说的那句
+ * 「我先看看」（一条完整消息）会把后来的最终回答**整个盖掉** ——
+ * 用户看到的就是思考过程里某一句话，而不是最终回答。
+ *
+ * 另外，只有增量的 CLI 版本（只发增量、不发完整消息）也能正常显示 ✓
+ * （用户报过「有时候根本就没有最终的回复，也被吞了」）。
  */
 function answerOf(turn: ChatTurn): string {
+  if (turn.streamingIsNewer && turn.streaming) return turn.streaming
   return turn.answer ?? turn.streaming
 }
 

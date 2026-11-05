@@ -24,11 +24,15 @@ export interface CommandContext {
 
   // ── 视图 ──────────────────────────────────────────────────
   showCommandPalette(): void
+  /** 打开设置对话框（编辑区的字体/字号） */
+  openSettings(): void
   toggleBlocks(): void
   togglePanel(): void
   showPanelTab(tab: PanelTab): void
   toggleSidebar(): void
   toggleStatusBar(): void
+  /** 新开一个终端（VS Code：Ctrl+Shift+`） */
+  newTerminal(): void
 
   // ── 编辑器 ────────────────────────────────────────────────
   /** 拿到编辑器（可能没有 —— 比如当前显示的是拖块） */
@@ -69,6 +73,13 @@ export function createCommands(ctx: { current: CommandContext }): Command[] {
     titleEn: string,
     keybinding: string | undefined,
     cmd: EditorCommand,
+    /**
+     * 这个键**让给原生**（全局快捷键不抢）。
+     *
+     * 目前只有粘贴：抢了 Ctrl+V 的话浏览器就不发 `paste` 事件了，
+     * 编辑器内置的粘贴处理收不到东西 ⇒ 粘不上（见 `Command.native`）。
+     */
+    native = false,
   ): Command => ({
     id,
     title,
@@ -76,6 +87,7 @@ export function createCommands(ctx: { current: CommandContext }): Command[] {
     category: '编辑',
     keybinding,
     scope: 'editor',
+    ...(native ? { native: true } : {}),
     run: () => {
       ctx.current.editor()?.exec(cmd)
     },
@@ -164,6 +176,14 @@ export function createCommands(ctx: { current: CommandContext }): Command[] {
       run: () => ctx.current.showCommandPalette(),
     },
     {
+      id: 'view.settings',
+      title: '设置…',
+      titleEn: 'View: Settings...',
+      category: '查看',
+      keybinding: 'Ctrl+,',
+      run: () => ctx.current.openSettings(),
+    },
+    {
       id: 'view.toggleBlocks',
       title: '切换块视图 / 文本视图',
       titleEn: 'JHYY: Toggle Block View',
@@ -181,6 +201,14 @@ export function createCommands(ctx: { current: CommandContext }): Command[] {
       checked: () => ctx.current.isPanelOpen(),
     },
     {
+      id: 'terminal.new',
+      title: '新建终端',
+      titleEn: 'Terminal: Create New Terminal',
+      category: '终端',
+      keybinding: 'Ctrl+Shift+Backquote',
+      run: () => ctx.current.newTerminal(),
+    },
+    {
       id: 'view.problems',
       title: '问题',
       titleEn: 'View: Problems',
@@ -188,15 +216,6 @@ export function createCommands(ctx: { current: CommandContext }): Command[] {
       keybinding: 'Ctrl+Shift+M',
       run: () => ctx.current.showPanelTab('problems'),
       checked: () => ctx.current.activePanelTab() === 'problems',
-    },
-    {
-      id: 'view.output',
-      title: '输出',
-      titleEn: 'View: Output',
-      category: '查看',
-      keybinding: 'Ctrl+Shift+U',
-      run: () => ctx.current.showPanelTab('output'),
-      checked: () => ctx.current.activePanelTab() === 'output',
     },
     {
       id: 'view.terminal',
@@ -237,7 +256,7 @@ export function createCommands(ctx: { current: CommandContext }): Command[] {
     editorCmd('edit.redo', '重做', 'Edit: Redo', 'Ctrl+Y', 'redo'),
     editorCmd('edit.cut', '剪切', 'Edit: Cut', 'Ctrl+X', 'cut'),
     editorCmd('edit.copy', '复制', 'Edit: Copy', 'Ctrl+C', 'copy'),
-    editorCmd('edit.paste', '粘贴', 'Edit: Paste', 'Ctrl+V', 'paste'),
+    editorCmd('edit.paste', '粘贴', 'Edit: Paste', 'Ctrl+V', 'paste', true),
     editorCmd('edit.find', '查找', 'Edit: Find', 'Ctrl+F', 'find'),
     editorCmd('edit.replace', '替换', 'Edit: Replace', 'Ctrl+H', 'replace'),
     editorCmd('edit.gotoLine', '转到行/列…', 'Edit: Go to Line/Column...', 'Ctrl+G', 'gotoLine'),
@@ -324,6 +343,7 @@ export function createMenus(): MenuSpec[] {
       label: '查看',
       items: [
         { commandId: 'view.commandPalette' },
+        { commandId: 'view.settings' },
         { label: '' },
         { commandId: 'view.toggleBlocks' },
         { commandId: 'view.togglePanel' },
@@ -331,8 +351,9 @@ export function createMenus(): MenuSpec[] {
         { commandId: 'view.toggleStatusBar' },
         { label: '' },
         { commandId: 'view.problems' },
-        { commandId: 'view.output' },
         { commandId: 'view.terminal' },
+        { label: '' },
+        { commandId: 'terminal.new' },
       ],
     },
     {

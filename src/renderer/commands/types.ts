@@ -29,6 +29,21 @@ export interface Command {
   /** 规范化后的快捷键，例如 "Ctrl+Shift+P" */
   keybinding?: string
   scope?: CommandScope
+  /**
+   * 这个键**由浏览器/编辑器原生处理**，全局快捷键别抢。
+   *
+   * ⚠️ 抢了会**弄坏原生行为**：全局快捷键在 `window` 的**捕获阶段**
+   * `preventDefault()` + `stopPropagation()` —— 浏览器因此**不再触发**
+   * `paste` 事件，编辑器自己的粘贴处理函数（CodeMirror 6 内置的
+   * `handlers.paste`）就永远收不到东西。
+   *
+   * 粘贴尤其不能抢：原生路径直接读 `event.clipboardData`（不需要任何权限），
+   * 比「读系统剪贴板 → IPC 往返 → 自己插」又快又稳（多行粘贴、缩进修正
+   * 都是编辑器自己做的）。
+   *
+   * 菜单项照样能用（点菜单走 `run`，跟按键无关）。
+   */
+  native?: boolean
   run: () => void | Promise<void>
   /** 菜单里灰掉（返回 false） */
   enabled?: () => boolean

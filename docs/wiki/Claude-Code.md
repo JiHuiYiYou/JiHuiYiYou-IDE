@@ -94,6 +94,7 @@ Your buffer is never overwritten behind your back.
 |---|---|
 | Claude answers but cannot call `jhyy_check` | `mcp__jhyy` is not in `--allowedTools` — it is, by default; check that the MCP server was found |
 | The MCP server fails to start | the Python in your `~/.claude.json` entry must have `fastmcp` installed — the PATH `python` usually does **not** |
+| "The JHYY MCP server didn't connect this session (connect timeout)" | the MCP server is python + fastmcp, and `import fastmcp` alone takes several seconds (~8 s handshake measured); on a busy machine that exceeds the CLI's default 30 s ⇒ it is recorded as a failed connection ⇒ Claude **cannot use** `jhyy_check`/`jhyy_run` in that session (it falls back to guessing where the compiler is). The IDE therefore hands the CLI `MCP_TIMEOUT=120000` (yours wins if you already set it) ⇒ slow, but connected ✓ |
 | Claude is slow to answer | the MCP server is started per session; give it a moment on the first turn |
 | "Permission denied" style refusals | `--permission-prompts none` refuses anything not pre-approved — add the tool to `--allowedTools` |
 | The conversation lost its context | the session was restarted — resume it with the session id shown in the panel |

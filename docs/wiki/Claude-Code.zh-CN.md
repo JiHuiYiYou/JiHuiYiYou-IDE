@@ -89,6 +89,7 @@ Claude 能改你项目里的文件。IDE 在监听这些文件，磁盘上一变
 |---|---|
 | Claude 能答，但调不了 `jhyy_check` | `mcp__jhyy` 不在 `--allowedTools` 里 —— 默认是在的；检查 MCP server 找到没有 |
 | MCP server 起不来 | `~/.claude.json` 里那个 Python 必须装了 `fastmcp` —— PATH 上的 `python` 通常**没有** |
+| 「The JHYY MCP server didn't connect this session (connect timeout)」 | MCP server 是 python + fastmcp，光 `import fastmcp` 就要好几秒（实测握手 ~8s），机器忙一点就超过 CLI 默认的 30 秒 ⇒ 被记成连接失败 ⇒ Claude 这一轮**用不了** `jhyy_check`/`jhyy_run`（它只好去猜本地编译器）。⇒ IDE 给 CLI 的环境里带了 `MCP_TIMEOUT=120000`（机器上已有这个变量就听你的）⇒ 慢，但连得上 ✓ |
 | Claude 答得慢 | MCP server 每个会话启动一次，第一轮多等一会儿 |
 | 各种「被拒绝」 | `--permission-prompts none` 拒掉一切没预先放行的 —— 把工具加进 `--allowedTools` |
 | 对话丢了上下文 | 会话重启了 —— 用面板里显示的 session id 恢复 |

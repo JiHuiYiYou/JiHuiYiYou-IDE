@@ -1,9 +1,10 @@
 import type { BlockTree } from '@lang/blocks/tree'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Diagnostic, ToolchainInfo } from '@shared/jhyy'
+import type { PtyBackendInfo, ShellState, TerminalInfo } from '@shared/terminal'
 import BlockPane, { type BlockPaneHandle } from './panes/BlockPane'
 import CodePane, { type CodePaneHandle } from './panes/CodePane'
-import type { OutputLine } from './panes/OutputPane'
+import type { OutputLine } from './sync/output'
 import { createCommands, createMenus, type CommandContext } from './commands/registry'
 import type { Command } from './commands/types'
 import { useKeybindings } from './commands/useKeybindings'
@@ -14,14 +15,23 @@ import {
   type LayoutState,
   type PanelTab,
 } from './state/layout'
+import { loadSettings, saveSettings, type Settings } from './state/settings'
+import {
+  clearStatus,
+  clearWhenDiagnosticsClean,
+  type Status,
+  type StatusTag,
+} from './state/status'
 import { blocksToSource, sourceToBlocks } from './sync/doc'
 import { detectEol, normalizeEol, toEol, type Eol } from './sync/caret'
+import { accumulateOutput } from './sync/output'
 import Breadcrumbs from './workbench/Breadcrumbs'
 import CommandPalette from './workbench/CommandPalette'
 import ErrorBoundary from './workbench/ErrorBoundary'
 import LayoutMenu from './workbench/LayoutMenu'
 import PanelView from './workbench/PanelView'
 import SecondarySidebar from './workbench/SecondarySidebar'
+import SettingsDialog from './workbench/SettingsDialog'
 import StatusBar from './workbench/StatusBar'
 import TabStrip, { type EditorTab } from './workbench/TabStrip'
 import TitleBar from './workbench/TitleBar'
@@ -78,11 +88,12 @@ interface EditorFile {
   eol: Eol
 }
 
-interface Status {
-  text: string
-  kind: 'ok' | 'bad' | 'info'
-}
-
+/**
+ * ⚠️ **状态栏那条消息必须是「**当前的**问题」** ——
+ *   用户报过：「右下角的状态栏不带更新的，一次编译失败就一直留着了」✗
+ *   ⇒ ⇒ **问题解决了就得撤掉** ✓
+ *   ⇒ ⇒ 消息的类型 + 撤除逻辑在 `state/status.ts`（纯函数，好测）✓
+ */
 function dirnameOf(p: string): string {
   const i = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/'))
   return i > 0 ? p.slice(0, i) : p
@@ -93,10 +104,56 @@ function nameOf(p: string): string {
 }
 
 export default function App() {
-  const [busy, setBusy] = useState(false)
   const [toolchain, setToolchain] = useState<ToolchainInfo | null>(null)
+  /**
+   * 终端后端（真控制台 / 管道兜底）—— 状态栏上那个徽章。
+   *
+   * ⚠️ **会变** —— node-pty 起不来时会退到管道版 ⇒ 得让用户**看得见**
+   *    （用户报过「终端一会真一会假的」⇒ 看不见就说不清）。
+   */
+  const [ptyBackend, setPtyBackend] = useState<PtyBackendInfo | null>(null)
+  /**
+   * **每个终端**的 shell 状态（当前目录 / 空闲与否 / 上一条命令的退出码）。
+   *
+   * ⚠️ **按终端 id 存** —— 多终端 ⇒ 状态不是一个，而是每个终端一份 ✓
+   */
+  const [shellStates, setShellStates] = useState<Record<number, ShellState>>({})
+  /** 终端列表（主进程是唯一真相） */
+  const [terminals, setTerminals] = useState<TerminalInfo[]>([])
+  /** 当前显示的是哪个终端 */
+  const [activeTerminalId, setActiveTerminalId] = useState<number | null>(null)
+  /**
+   * **有没有东西正在跑** —— **从各终端的状态推出来**，不是自己维护的布尔。
+   *
+   * ⚠️⚠️ **为什么不用一个全局的 `busy`** ——
+   *    以前 `busy` 是个全局布尔 ⇒ **旧的运行收场时会把「新的运行」的状态清掉**
+   *    （用户点了「停止」再点「运行」就撞上了）✗
+   *    ⇒ 现在**主进程是唯一真相**（每个终端自己报 `run` 状态）⇒
+   *    ⇒ 老运行收场**只影响它自己那个终端** ⇒ 不会连累新的 ✓
+   *    ⇒ VS Code 的模型（任务状态挂在终端上）✓
+   */
+  const busy = Object.values(shellStates).some((s) => s.run === 'running')
   const [diagnostics, setDiagnostics] = useState<Diagnostic[]>([])
+  /**
+   * **状态栏上的临时消息** —— ⚠️ **只放「出错」的消息**。
+   *
+   * ⚠️⚠️ **程序行为不放这儿** —— 用户明说：
+   *    「右下角的状态栏戏太多了，人家用户根本就不需要知道程序行为」✗
+   *    ⇒ 「运行中…」「退出码 42」「降级运行…」「已保存…」**全都不显示** ✓
+   *    ⇒ 运行状态改到**终端页签**上（转圈 / ✓ / ✗）✓
+   *    ⇒ 编译诊断在**问题面板**里 ✓
+   */
   const [status, setStatus] = useState<Status | undefined>(undefined)
+
+  /**
+   * **撤掉指定分类的状态栏消息** —— 别的分类**不动** ✓
+   *
+   * ⚠️ **为什么要有它** —— 用户报过：「一次编译失败就一直留着了」✗
+   *   ⇒ 那条消息必须**跟着问题的存亡**走 ⇒ 问题好了就撤 ✓
+   */
+  const clearStatusByTag = useCallback((...tags: StatusTag[]) => {
+    setStatus((prev) => clearStatus(prev, ...tags))
+  }, [])
 
   // 打开的文件（标签页）
   const [files, setFiles] = useState<EditorFile[]>([])
@@ -111,6 +168,13 @@ export default function App() {
 
   // 输出缓冲（跨多次运行累积）
   const [outputLines, setOutputLines] = useState<OutputLine[]>([])
+  /**
+   * 程序输出的「还没换行的那一段」。
+   *
+   * ⚠️ 程序的 stdout 是**无缓冲**的 ⇒ 一句提示（没有换行的那种）会被拆成
+   * 好几段送过来 ⇒ 攒到换行才算一行，没换行的这段**单独留着显示**
+   * （不然用户看不到「请输入一个数字：」）。
+   */
 
   // 光标位置（状态栏）
   const [cursor, setCursor] = useState({ line: 1, col: 1, selectedLines: 0 })
@@ -118,6 +182,10 @@ export default function App() {
   // 布局
   const [layout, setLayout] = useState<LayoutState>(loadLayout)
   const [panelMaximized, setPanelMaximized] = useState(false)
+  /** 用户设置（编辑区的字体/字号） */
+  const [settings, setSettings] = useState<Settings>(loadSettings)
+  /** 设置对话框开着没 */
+  const [settingsOpen, setSettingsOpen] = useState(false)
   /** 聊天：只读模式（Claude 只给建议、不改文件） */
   const [chatReadOnly, setChatReadOnly] = useState(false)
 
@@ -140,7 +208,14 @@ export default function App() {
   const blockTree = active?.blocks ?? EMPTY_BLOCKS
   /** 脏标记 = 内容和上次保存的不一样 —— 撤销回保存点就自动消失（跟 VS Code 一样） */
   const dirty = active ? active.source !== active.saved : false
-  /** 块视图过期 = 源码在块上次重建之后又变了 */
+  /**
+   * 块视图过期 = 源码在块上次重建之后又变了。
+   *
+   * ⚠️ **只用来决定「切到块视图时要不要重建」** ——
+   *    **不再拿它做视觉提示**（用户明说：「本来如果要用，用户自然回去点，
+   *    所以这个黄点就没有存在的意义」）⇒ 标题栏上**没有小黄点**、
+   *    状态栏上**也没有「块视图已过期」** ✓
+   */
   const blocksStale = active ? active.source !== active.blocksAt : false
 
   // 状态镜像 —— 让命令表和回调永远读到最新值，而不用到处挂依赖
@@ -153,6 +228,16 @@ export default function App() {
   const activeIdRef = useRef(activeId)
   /** 打开着的文件列表（磁盘改动检测要用） */
   const filesRef = useRef(files)
+  /**
+   * 最近一次「有路径的文件」所在目录。
+   *
+   * ⚠️ 新建的文件（未命名）**没有路径** ⇒ Claude 的工作目录不能跟着它走
+   * ⇒ 退到最近打开过的那个文件的目录（再退才是 home 目录）。
+   */
+  const lastPathDirRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (filePath) lastPathDirRef.current = dirnameOf(filePath)
+  }, [filePath])
   sourceRef.current = source
   blocksStaleRef.current = blocksStale
   filePathRef.current = filePath
@@ -174,6 +259,11 @@ export default function App() {
     saveLayout(layout)
   }, [layout])
 
+  // 设置变了就存下来（字体/字号这些是要跨窗口保留的）
+  useEffect(() => {
+    saveSettings(settings)
+  }, [settings])
+
   // 「已保存」小圆点 —— 让 Windows 在关闭按钮上画
   useEffect(() => {
     void window.jhyyIde.window.setEdited(dirty)
@@ -187,10 +277,22 @@ export default function App() {
 
     所以这里把「当前文件 / 诊断 / 输出末尾」都报上去 ⇒ Claude 能直接回答
     「我打开的是哪个文件」「现在报了什么错」这类问题。
+
+    ⚠️ **未命名的新文件也得报** —— 它没有路径，光看 `filePath` 分不清
+    「用户没打开文件」和「用户开着一个还没保存的新文件」（用户报过：新建的
+    未命名文件在聊天里显示成「没打开文件」，这不对）。⇒ 名字单独报一份，
+    缓冲区**还没落盘**时把内容也带上（Claude 在磁盘上读不到它）。
   */
   useEffect(() => {
+    const unsaved = dirty || filePath === null
     window.jhyyIde.ide.setContext({
       filePath,
+      fileName: active?.name ?? null,
+      unsaved,
+      // ⚠️ 缓冲区跟磁盘不一致时，**内容也得带上** ——
+      //   未命名文件在磁盘上根本不存在；改了没保存的文件在磁盘上是旧的。
+      //   不给的话 Claude 读到的跟用户正在编辑的不是一回事。
+      ...(unsaved && active ? { source: active.source } : {}),
       cwd: filePath ? dirnameOf(filePath) : null,
       diagnostics: diagnostics.slice(0, 20).map((d) => ({
         file: d.file,
@@ -204,7 +306,7 @@ export default function App() {
         .map((l) => l.text)
         .join('\n'),
     })
-  }, [filePath, diagnostics, outputLines, chatReadOnly])
+  }, [filePath, active?.name, active?.source, dirty, diagnostics, outputLines, chatReadOnly])
 
   // 启动时探测工具链，并打开命令行带来的文件
   useEffect(() => {
@@ -233,6 +335,71 @@ export default function App() {
     })
   }, [])
 
+  /**
+   * 终端后端（真控制台 / 管道兜底）—— 状态栏上那个徽章。
+   *
+   * ⚠️ **后端会变** —— node-pty 什么时候起不来是**运行期**才知道的
+   *    （原生模块加载不了、cwd 不存在、句柄不够 …）⇒
+   *    用户报过「终端一会真一会假的」⇒ 徽章得**跟着变** ✓。
+   */
+  useEffect(() => {
+    void window.jhyyIde.terminal.backend().then(setPtyBackend)
+    return window.jhyyIde.terminal.onBackendChange(setPtyBackend)
+  }, [])
+
+  /**
+   * **shell 的状态**（当前目录 / 空闲与否 / 上一条命令的退出码）。
+   *
+   * ⚠️ 这些是 **shell 自己报上来的**（OSC 633）⇒ 不是 IDE 猜的 ✓
+   *    —— 跟 VS Code 一个路子。
+   */
+  useEffect(
+    () =>
+      window.jhyyIde.terminal.onState((e) =>
+        setShellStates((prev) => ({ ...prev, [e.terminalId]: e.state })),
+      ),
+    [],
+  )
+
+  /**
+   * **终端列表**（VS Code 那样：可以有多个）。
+   *
+   * ⚠️ **「当前是哪个」由主进程说了算** ⇒ 这里只管跟着走 ⇒
+   *    不会出现「两边以为当前的不是同一个」✓
+   */
+  useEffect(() => {
+    void window.jhyyIde.terminal.list().then((l) => {
+      setTerminals(l)
+      setActiveTerminalId((cur) => cur ?? l[l.length - 1]?.id ?? null)
+    })
+    return window.jhyyIde.terminal.onList((e) => {
+      setTerminals(e.terminals)
+      setActiveTerminalId(e.activeId)
+    })
+  }, [])
+
+  /*
+    ⚠️⚠️ **终端退出了 ⇒ 它上面的运行状态要清掉** ——
+      VS Code 的模型：任务由**终端的 exit 事件**驱动收场
+      （`tasks/browser/terminalTaskSystem.ts:971`）⇒
+      关掉终端 ⇒ 任务结束 ⇒ **「运行中」不会永远亮着** ✓
+      （用户报过：「有的终端杀掉了右上角还是在运行中」）✗
+      ⇒ 以前渲染进程**根本不听** `terminalExit` ⇒ 没人知道 ⇒ 状态挂着 ✗
+
+      ⚠️ **只清 `run`，别把整个状态删了** ——
+        退出码还要留着（终端页签上那个徽章要显示它）✓
+        ⇒ 而 `busy` 是从 `run === 'running'` 推出来的 ⇒ 清了它就不忙了 ✓
+  */
+  useEffect(() => {
+    return window.jhyyIde.terminal.onExit((e) => {
+      setShellStates((prev) => {
+        const cur = prev[e.terminalId]
+        if (!cur || cur.run !== 'running') return prev
+        return { ...prev, [e.terminalId]: { ...cur, run: undefined } }
+      })
+    })
+  }, [])
+
   // 实时诊断：改完代码 debounce 一下，跑一次"只检查不链接"的编译
   //
   // 用 `compile --no-link`：parse/sema 错误都在 codegen 之前报，链接对
@@ -255,7 +422,18 @@ export default function App() {
         // 每敲一个字就往终端里打一行 `> jhyy compile …`，终端会被刷满
         // （用户报过「都会触发就很烦人」）。
         .compile({ file: path, noLink: true, quiet: true, timeoutMs: 15_000 })
-        .then((r) => setDiagnostics(r.diagnostics))
+        .then((r) => {
+          setDiagnostics(r.diagnostics)
+          /*
+            ⚠️⚠️ **后台诊断干净了 ⇒ 把状态栏那条「编译失败」撤掉** ——
+              用户报过：「一次编译失败就一直留着了」✗
+              ⇒ 用户改完代码、后台说「没错了」⇒ 状态栏还挂着「编译失败」
+              ⇒ 就是**骗人** ✗ ⇒ 撤掉 ✓
+              ⇒ ⚠️ **只撤「有源码诊断」的那种** —— 后台是 `--no-link`
+                ⇒ 它看不见链接错误 ⇒ 「链接失败」那条留着 ✓
+          */
+          setStatus((prev) => clearWhenDiagnosticsClean(prev))
+        })
         .finally(() => {
           diagInFlight.current = false
         })
@@ -293,9 +471,11 @@ export default function App() {
             ),
           )
           if (hadUnsaved) {
+            // ⚠️ **这是「数据丢了」** —— 不是程序行为 ⇒ 值得说一声 ✓
             setStatus({
               text: `Claude 改了 ${nameOf(e.path)}，这个文件里未保存的修改被覆盖了`,
               kind: 'bad',
+              tag: 'claude-overwrite',
             })
           }
         })
@@ -355,7 +535,10 @@ export default function App() {
     })
     setActiveId(opened.path)
     setDiagnostics([])
+    // ⚠️ **清掉上一条错误消息** —— 换文件了 ⇒ 上个文件的问题不该还挂着 ✓
+    //    （不然「先打开一个 .jhyy 文件」会一直挂在状态栏上 ✗）
     setStatus(undefined)
+
     setHistory((h) => {
       if (h.stack[h.index] === opened.path) return h
       const stack = [...h.stack.slice(0, h.index + 1), opened.path]
@@ -385,6 +568,7 @@ export default function App() {
     ])
     setActiveId(id)
     setDiagnostics([])
+    // ⚠️ **清掉上一条错误消息** —— 换文件了 ⇒ 上个文件的错误不该还挂着 ✓
     setStatus(undefined)
   }, [])
 
@@ -394,6 +578,7 @@ export default function App() {
       if (id === activeIdRef.current) return
       setActiveId(id)
       setDiagnostics([])
+      // ⚠️ **清掉上一条错误消息** ✓
       setStatus(undefined)
       setExternalChange(null)
       // 正在块视图里切文件 ⇒ 那个文件的块是旧的，得按新源码重建
@@ -434,7 +619,7 @@ export default function App() {
     // 不还原的话每保存一次就把用户的 CRLF 文件改成 LF。
     await window.jhyyIde.file.write(file.path, toEol(file.source, file.eol))
     updateActive({ saved: file.source })
-    setStatus({ text: `已保存 ${file.path}`, kind: 'ok' })
+
   }, [files, updateActive])
 
   const saveAs = useCallback(async () => {
@@ -449,7 +634,7 @@ export default function App() {
     updateActive({ id, path, name: nameOf(path), saved: file.source })
     if (id !== file.id) setActiveId(id)
     void window.jhyyIde.file.watch(dirnameOf(path))
-    setStatus({ text: `已保存 ${path}`, kind: 'ok' })
+
   }, [files, updateActive])
 
   /** 文本视图改了 → 源码变 → 块视图过期。 */
@@ -484,9 +669,12 @@ export default function App() {
       const { trees, parseErrors } = sourceToBlocks(sourceRef.current)
       updateActive({ blocks: trees, blocksAt: sourceRef.current })
       if (parseErrors.length > 0) {
+        // ⚠️ **这是「有问题」** —— 不是程序行为 ⇒ 值得说一声 ✓
         setStatus({
           text: `源码有语法问题，块视图只重建了能解析的部分（${parseErrors.length} 处）`,
           kind: 'bad',
+          // ⚠️ **这一条跟编译无关** ⇒ 编译成功**不该**把它撤掉 ✓
+          tag: 'blocks',
         })
       }
     }
@@ -512,54 +700,132 @@ export default function App() {
     })
   }, [])
 
+  /**
+   * 程序的输出：**自己攒行 + 批量刷**。
+   *
+   * ⚠️ 程序的 stdout 是**无缓冲**的（编译器 runtime 里
+   * `setvbuf(stdout, NULL, _IONBF, 0)`）⇒
+   * - 一句提示会被拆成好几个片段送过来（「请输入一」/「个数」/「字: 」）
+   *   ⇒ 得攒到换行符才当一行 ✓
+   * - 没换行的那段（提示语）单独留着，显示成最后一行 ✓
+   * - 打印多的程序会有成千上万个片段 ⇒ 不批量刷的话 React 被拖死 ✓
+   */
+  /** 待刷的完整行 */
+  const progOutBufRef = useRef<OutputLine[]>([])
+  /** 还没换行的那一段 */
+  const progOutTailRef = useRef<OutputLine | null>(null)
+  /** 批量刷的定时器 */
+  const progOutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  /** 把攒着的程序输出刷进输出面板。 */
+  const flushProgramOutput = useCallback(() => {
+    progOutTimerRef.current = null
+    const lines = progOutBufRef.current
+    progOutBufRef.current = []
+    if (lines.length > 0) pushOutput(lines)
+  }, [pushOutput])
+
+  /** 收一段程序输出。 */
+  const pushProgramOutput = useCallback(
+    (kind: 'stdout' | 'stderr', text: string) => {
+      if (!text) return
+      const prev = progOutTailRef.current
+      /*
+        ⚠️ stdout 和 stderr **别拼到同一行**里 ——
+        上一段尾巴是 stdout、这次来的是 stderr ⇒ 尾巴自成一行，
+        新的从新行开始（混在一行里没法看）。
+      */
+      const sameStream = prev !== null && prev.kind === kind
+      const base = sameStream ? prev.text : ''
+      const { lines, tail } = accumulateOutput(base, text)
+      if (prev !== null && !sameStream) progOutBufRef.current.push(prev)
+      for (const l of lines) progOutBufRef.current.push({ kind, text: l })
+      progOutTailRef.current = tail.length > 0 ? { kind, text: tail } : null
+      if (!progOutTimerRef.current) {
+        progOutTimerRef.current = setTimeout(() => flushProgramOutput(), 50)
+      }
+    },
+    [flushProgramOutput],
+  )
+
   // 程序的实时输出（边跑边推）—— 跟 VS Code 的任务终端一样。
+  //
+  // ⚠️ **程序输出现在一段一段的，而且一段可能只是半行** ——
+  //
+  // 程序的 stdout 现在是**无缓冲**的（编译器 runtime 里
+  // `setvbuf(stdout, NULL, _IONBF, 0)`）⇒ 一句提示会被拆成好几个片段送过来
+  // （实测「请输入一个数字: 」= 「请输入一」/「个数」/「字: 」三截）。
+  //
+  // ⇒ 两件事得自己做：
+  // 1. **自己攒行** —— 攒到换行符才当一行；没换行的那段（提示语就是这种）
+  //    单独留着、显示成最后一行 ✓（不然用户看不到「请输入一个数字：」）。
+  // 2. **批量刷** —— 无缓冲 ⇒ 打印多的程序会产生成千上万个片段 ⇒ 每个片段
+  //    都 setState 一次 ⇒ React 被拖死 ⇒ 攒一批（50ms）再刷 ✓。
   useEffect(() => {
     return window.jhyyIde.jhyy.onOutput((e) => {
-      for (const line of splitLines(e.text)) {
-        pushOutput([{ kind: e.stream === 'stderr' ? 'stderr' : 'stdout', text: line }])
-      }
+      pushProgramOutput(e.stream === 'stderr' ? 'stderr' : 'stdout', e.text)
     })
-  }, [pushOutput])
+  }, [pushProgramOutput])
 
   const doCompile = useCallback(
     async (noLink: boolean) => {
       const path = filePathRef.current
       if (!path) {
-        setStatus({ text: '先打开一个 .jhyy 文件', kind: 'bad' })
+        setStatus({ text: '先打开一个 .jhyy 文件', kind: 'bad', tag: 'file' })
         return
       }
       if (dirty) await saveFile()
-      setBusy(true)
       // 「检查」⇒ 弹底部面板并切到问题页
       setLayout((l) => ({ ...l, panelOpen: true, panelTab: 'problems' }))
       try {
         const result = await window.jhyyIde.jhyy.compile({ file: path, noLink })
         setDiagnostics(result.diagnostics)
         pushOutput(result.raw.map((text) => ({ kind: 'compiler' as const, text })))
+        // ⚠️ **只报「出错」** —— 编译成功是**正常的** ⇒ 不该占着状态栏
+        //    （用户明说状态栏不要程序行为）⇒ 诊断在**问题面板**里 ✓
+        if (!result.ok) {
+          setStatus({
+            text: `编译失败（${result.durationMs}ms）`,
+            kind: 'bad',
+            tag: 'compile',
+            /*
+              ⚠️ **后台检查能不能把它撤掉** ——
+                后台是 `--no-link` ⇒ 它**看得见源码错误**、**看不见链接错误** ⇒
+                ⇒ 只有「确实有源码诊断」的那种才让后台撤 ✓
+            */
+            clearsWhenDiagnosticsClean: result.diagnostics.some((d) => d.severity === 'error'),
+          })
+        } else {
+          /*
+            ⚠️⚠️ **编译成功了 ⇒ 上一条「编译失败」必须撤掉** ——
+              用户报过：「一次编译失败就一直留着了」✗
+              ⇒ 状态栏那条消息得**跟着问题的存亡**走 ✓
+          */
+          clearStatusByTag('compile')
+        }
+      } catch (err) {
         setStatus({
-          text: result.ok
-            ? `编译成功（${result.durationMs}ms${noLink ? '，仅检查' : ''}）`
-            : `编译失败（${result.durationMs}ms）`,
-          kind: result.ok ? 'ok' : 'bad',
+          text: `编译失败：${err instanceof Error ? err.message : String(err)}`,
+          kind: 'bad',
+          tag: 'compile',
+          // ⚠️ **编译器压根没跑起来** ⇒ 后台检查也验证不了 ⇒ 不让后台撤 ✓
+          clearsWhenDiagnosticsClean: false,
         })
-      } finally {
-        setBusy(false)
       }
     },
-    [dirty, pushOutput, saveFile],
+    [clearStatusByTag, dirty, pushOutput, saveFile],
   )
 
   const doRun = useCallback(async () => {
     const path = filePathRef.current
     if (!path) {
-      setStatus({ text: '先打开一个 .jhyy 文件', kind: 'bad' })
+      setStatus({ text: '先打开一个 .jhyy 文件', kind: 'bad', tag: 'file' })
       return
     }
     if (dirty) await saveFile()
-    setBusy(true)
-    setStatus({ text: '运行中…', kind: 'info' })
-    // 「运行」⇒ 弹底部面板并切到输出页
-    setLayout((l) => ({ ...l, panelOpen: true, panelTab: 'output' }))
+
+    // 「运行」⇒ 弹底部面板并切到**终端**页（VS Code 那样：程序的输出就在终端里）
+    setLayout((l) => ({ ...l, panelOpen: true, panelTab: 'terminal' }))
     try {
       const result = await window.jhyyIde.jhyy.run({ file: path })
       setDiagnostics(result.diagnostics)
@@ -571,35 +837,106 @@ export default function App() {
         lines.push({ kind: 'error', text: `${d.file}:${d.line}:${d.col}: ${d.message}` })
       }
       pushOutput(lines)
-      if (result.truncated) {
-        // 程序在疯狂打印 ⇒ IDE 已经把它杀了（不然机器会被撑爆）
-        setStatus({ text: '程序输出过多，已终止', kind: 'bad' })
-      } else if (!result.ran) {
-        setStatus({ text: '编译失败，未运行', kind: 'bad' })
-      } else if (result.crashed) {
-        setStatus({
-          text: `程序崩溃：${result.crashName}（退出码 ${result.exitCode}）`,
-          kind: 'bad',
-        })
-      } else if (result.exitCode === 0) {
-        setStatus({ text: `运行结束，退出码 0（${result.durationMs}ms）`, kind: 'ok' })
+      // 程序跑完了 ⇒ 把攒着的输出（含「还没换行的那段」）立刻刷进面板
+      flushProgramOutput()
+      /*
+        ⚠️⚠️ **只报「出错」** —— 「运行中…」「退出码 42」「已中断」这些
+          **程序行为**都**不显示**（用户明说状态栏戏太多）⇒
+          运行状态在**终端页签**上（转圈 / ✓ / ✗）✓
+
+        ⚠️⚠️ **而且那条消息得跟着问题的存亡走** ——
+          用户报过：「一次编译失败就一直留着了」✗
+          ⇒ ⇒ **这次跑得好好的 ⇒ 把上一条撤掉** ✓
+      */
+      const terminalClosed = result.terminalClosed
+      let failure: Status | undefined
+      /*
+        ⚠️⚠️ **「终端死了」要排在最前面** ——
+          不然「程序没跑起来」会被误报成「编译失败，未运行」
+          （其实是被关掉的终端害的）✗
+      */
+      if (!terminalClosed) {
+        if (result.truncated) {
+          // 程序在疯狂打印 ⇒ IDE 已经把它杀了（不然机器会被撑爆）
+          failure = { text: '程序输出过多，已终止', kind: 'bad', tag: 'run' }
+        } else if (result.timedOut) {
+          // ⚠️ **超时杀的，不是「中断」** —— 杀 ConPTY 也会让程序带着
+          //    0xC000013A 退出 ⇒ 不分开报的话，用户看到的还是「程序已中断」
+          //    ⇒ 像是程序自己断的（其实是 IDE 超时杀的）✗
+          // ⚠️ **编译那一步也可能超时**（「运行」现在在活 shell 里跑 ⇒
+          //    编译是我们自己发的一条命令 ⇒ 它卡住了也得有个说法）✓
+          failure = {
+            text: result.ran ? '程序超时，已终止' : '编译超时，已终止',
+            kind: 'bad',
+            tag: 'run',
+          }
+        } else if (!result.ran) {
+          failure = { text: '编译失败，未运行', kind: 'bad', tag: 'compile' }
+        } else if (result.crashed) {
+          failure = {
+            text: `程序崩溃：${result.crashName}（退出码 ${result.exitCode}）`,
+            kind: 'bad',
+            tag: 'run',
+          }
+        }
       } else {
-        setStatus({ text: `运行结束，退出码 ${result.exitCode}`, kind: 'bad' })
+        // ⚠️ **终端（shell）在跑的过程中死了** ⇒ 收不到「命令跑完」
+        //    ⇒ **什么都不说** —— 用户自己把终端关掉的 ⇒ 他知道 ✓
+        //    ⇒ 状态在**终端页签**上（✗）⇒ 状态栏不报 ✓（用户明说不要程序行为）
+        //    ⇒ ⇒ **也别撤上一条**（不知道成没成 ⇒ 别乱动）✓
       }
-    } finally {
-      setBusy(false)
+      if (failure) {
+        setStatus(failure)
+      } else if (!terminalClosed) {
+        // ⚠️ **这次跑得好好的 ⇒ 上一条「编译失败 / 运行失败」撤掉** ✓
+        clearStatusByTag('compile', 'run')
+      }
+      // ⚠️⚠️ **退出码不是「对错」的判据** ——
+      //    JHYY 的入口是 `fn main_jhyy() -> i32`，**它的返回值就是进程退出码**
+      //    （语言仓库 `compiler/runtime/runtime.c`：`return main_jhyy(argc, argv);`）
+      //    ⇒ 返回什么**由程序自己决定** ⇒ ⇒ **非 0 不等于出错** ✗
+      //    （一致性门的语料里连 `// EXPECT-EXIT: 42` 都拿它当断言用！）
+      // ⇒ ⇒ 所以**不能用红/绿区分**（用户明说：「退出码本身就不该是 0」）⇒
+      // ⇒ ⇒ 一律**中性**，而且**根本不显示**（状态栏不要程序行为）✓
+      //    真正的「出事」是上面那几条：编译失败 / 超时 / 输出过多 / **崩溃**
+      //    （崩溃是 NTSTATUS，跟退出码是两码事）✓
+    } catch (err) {
+      /*
+        ⚠️⚠️ **别把错误吞了** ——
+        以前这个 `try` 只有 `finally` 没有 `catch` ⇒ IPC 一 reject
+        （终端起不来、广播到已销毁的窗口 …）⇒ 异常**逃出去**
+        ⇒ 状态栏永远停在「运行中…」⇒ **用户什么都不知道** ✗
+        （用户报过：「点了运行没反应，也不报错」）
+      */
+      setStatus({
+        text: `运行失败：${err instanceof Error ? err.message : String(err)}`,
+        kind: 'bad',
+        tag: 'run',
+      })
     }
-  }, [dirty, pushOutput, saveFile])
+  }, [clearStatusByTag, dirty, flushProgramOutput, pushOutput, saveFile])
 
   const stop = useCallback(async () => {
     await window.jhyyIde.jhyy.stop()
-    setBusy(false)
-    setStatus({ text: '已停止', kind: 'info' })
-  }, [])
+    flushProgramOutput()
+    // ⚠️ **不用 setBusy(false)** —— `busy` 是**从各终端的状态推出来的**
+    //    （主进程是唯一真相）⇒ 主进程收场时报状态 ⇒ 这里不用管 ✓
+  }, [flushProgramOutput])
 
   // ── 布局开关 ────────────────────────────────────────────────
   const togglePanel = useCallback(() => {
     setLayout((l) => ({ ...l, panelOpen: !l.panelOpen }))
+  }, [])
+
+  /**
+   * 新开一个终端（VS Code：Ctrl+Shift+`）。
+   *
+   * ⚠️ **开完把面板切到「终端」页签** —— 不然用户按了快捷键看不到反应 ✗
+   */
+  const newTerminal = useCallback(() => {
+    void window.jhyyIde.terminal.create().then(() => {
+      setLayout((l) => ({ ...l, panelOpen: true, panelTab: 'terminal' }))
+    })
   }, [])
 
   const showPanelTab = useCallback((tab: PanelTab) => {
@@ -654,8 +991,13 @@ export default function App() {
         )
         setActiveId(path)
         void window.jhyyIde.file.watch(dirnameOf(path))
-      } catch {
-        setStatus({ text: `打不开 ${path}`, kind: 'bad' })
+      } catch (err) {
+        // ⚠️ **打不开文件** —— 这是「出错」⇒ 值得说一声 ✓
+        setStatus({
+          text: `打不开 ${path}：${err instanceof Error ? err.message : String(err)}`,
+          kind: 'bad',
+          tag: 'file',
+        })
       }
     },
     [history],
@@ -678,9 +1020,11 @@ export default function App() {
     run: () => void doRun(),
     stop: () => void stop(),
     showCommandPalette: () => setPaletteOpen(true),
+    openSettings: () => setSettingsOpen(true),
     toggleBlocks,
     togglePanel,
     showPanelTab,
+    newTerminal,
     toggleSidebar,
     toggleStatusBar,
     editor: () => codeRef.current,
@@ -724,7 +1068,6 @@ export default function App() {
         onOpenPalette={() => setPaletteOpen(true)}
         title={active?.name ?? ''}
         blocksActive={centerView === 'blocks'}
-        blocksStale={blocksStale}
         onToggleBlocks={toggleBlocks}
         sidebarOpen={layout.sidebarOpen}
         onToggleSidebar={toggleSidebar}
@@ -785,6 +1128,8 @@ export default function App() {
                 onChange={onSourceChange}
                 diagnostics={diagnostics}
                 onCursorChange={setCursor}
+                fontFamily={settings.editorFontFamily}
+                fontSize={settings.editorFontSize}
               />
             </div>
             <div
@@ -831,9 +1176,20 @@ export default function App() {
             onHeightChange={(h) => setLayout((l) => ({ ...l, panelHeight: h }))}
             diagnostics={diagnostics}
             onSelectDiagnostic={revealDiagnostic}
-            outputLines={outputLines}
-            onClearOutput={() => setOutputLines([])}
             cwd={terminalCwd}
+            shellStates={shellStates}
+            terminals={terminals}
+            activeTerminalId={activeTerminalId}
+            onSelectTerminal={(id) => {
+              setActiveTerminalId(id)
+              window.jhyyIde.terminal.select(id)
+            }}
+            onCreateTerminal={() => {
+              void window.jhyyIde.terminal.create()
+            }}
+            onCloseTerminal={(id) => {
+              void window.jhyyIde.terminal.close(id)
+            }}
           />
         </div>
 
@@ -842,6 +1198,8 @@ export default function App() {
           width={layout.sidebarWidth}
           onWidthChange={(w) => setLayout((l) => ({ ...l, sidebarWidth: w }))}
           filePath={filePath}
+          fileName={active?.name ?? null}
+          cwd={filePath ? dirnameOf(filePath) : lastPathDirRef.current}
           externalChange={externalChange}
           onReload={() => void reloadFromDisk()}
           readOnly={chatReadOnly}
@@ -854,9 +1212,9 @@ export default function App() {
           cursor={cursor}
           diagnostics={diagnostics}
           toolchain={toolchain}
+          ptyBackend={ptyBackend}
           message={status}
           view={centerView}
-          blocksStale={blocksStale}
         />
       )}
 
@@ -865,11 +1223,13 @@ export default function App() {
         commands={commands}
         onClose={() => setPaletteOpen(false)}
       />
+      <SettingsDialog
+        open={settingsOpen}
+        settings={settings}
+        onChange={setSettings}
+        onClose={() => setSettingsOpen(false)}
+      />
     </div>
   )
 }
 
-function splitLines(text: string): string[] {
-  if (!text) return []
-  return text.replace(/\r\n/g, '\n').split('\n').filter((l) => l.length > 0)
-}

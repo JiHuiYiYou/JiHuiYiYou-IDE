@@ -31,9 +31,36 @@ describe('styles.css', () => {
     expect(css).toMatch(/\.terminal-pane[^{]*\{[^}]*user-select\s*:\s*text/)
   })
 
+  it('终端的搜索框也要能选中（不然鼠标选不了搜索词）', () => {
+    expect(css).toMatch(/\.terminal-search[^{]*\{[^}]*user-select\s*:\s*text/)
+  })
+
   it('藏起来的视图用 visibility 而不是 display:none（Blockly 的坐标系会崩）', () => {
     const rule = css.match(/\[data-hidden='true'\][^{]*\{([^}]*)\}/)?.[1] ?? ''
     expect(rule).toMatch(/visibility\s*:\s*hidden/)
     expect(rule).not.toMatch(/display\s*:\s*none/)
+  })
+
+  it('终端的 padding 必须在 **xterm 挂的那一层**（FitAddon 减的就是它）', () => {
+    // ⚠️ **FitAddon 减的是「xterm 的父元素」的 padding** ——
+    //    以前 padding 在外层 `.terminal-pane` 上 ⇒ 它减的是 `.xterm` 自己
+    //    的 padding（= 0）⇒ **那 8px 压根没减掉** ⇒ **多算一行**
+    //    ⇒ 最后一行被裁掉 ✗
+    expect(css).toMatch(/\.terminal-pane-inner[^{]*\{[^}]*padding/)
+    const outer = css.match(/(?:^|\})\s*\.terminal-pane\s*\{([^}]*)\}/)?.[1] ?? ''
+    expect(outer).not.toMatch(/padding\s*:/)
+  })
+
+  it('终端名旁边的退出码**不能用红色**（退出码不是「失败」的判据）', () => {
+    // ⚠️ JHYY 的 `main_jhyy() -> i32` **返回值就是进程退出码** ⇒
+    //    程序自己返回什么就是什么 ⇒ 非 0 **不等于出错** ⇒ 不能用红色（用户明说）✓
+    const rule = css.match(/\.terminal-tab\s+\.terminal-tab-badge[^{]*\{([^}]*)\}/)?.[1] ?? ''
+    expect(rule).not.toMatch(/var\(--error\)/)
+  })
+
+  it('**没有**「块视图已过期」的小黄点（用户明说那个没意义）', () => {
+    // ⚠️ 文本视图改了代码，块视图**不用**再标小黄点 ——
+    //    「本来如果要用用户自然回去点，所以这个黄点就没有存在的意义」✓
+    expect(css).not.toMatch(/\.icon-badge/)
   })
 })

@@ -1,7 +1,10 @@
-import { execFileSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { promisify } from 'node:util'
+
+const execFileAsync = promisify(execFile)
 
 /**
  * 给内嵌的 Claude 挂上 **jhyy MCP server**。
@@ -24,8 +27,26 @@ interface McpServerEntry {
   env?: Record<string, string>
 }
 
-export async function buildMcpConfig(): Promise<string | null> {
-  const servers = collectMcpServers()
+/**
+ * 算出 MCP 配置文件路径（**只算一次**，之后一直复用）。
+ *
+ * ⚠️ **必须是异步的** —— 探测「哪个 python 装了 fastmcp」要起一个 python
+ * 进程 import 一下，**要好几秒**。
+ *
+ * 以前这里是 `execFileSync`（**同步**）⇒ **整个 Electron 主进程被卡住**
+ * 那几秒 ⇒ 窗口白屏、菜单点不动、连终端都不响应（用户报过：
+ * 「特别慢特别卡」）。⇒ 现在改成异步，而且**启动时就在后台预热**，
+ * 用户第一次发消息时配置早好了 ✓。
+ */
+let configPromise: Promise<string | null> | null = null
+
+export function buildMcpConfig(): Promise<string | null> {
+  if (!configPromise) configPromise = computeMcpConfig()
+  return configPromise
+}
+
+async function computeMcpConfig(): Promise<string | null> {
+  const servers = await collectMcpServers()
   const jhyy = servers.jhyy
   if (!jhyy || !jhyy.command) return null
 
@@ -37,7 +58,7 @@ export async function buildMcpConfig(): Promise<string | null> {
 }
 
 /** 收集可用的 MCP server 配置。 */
-function collectMcpServers(): Record<string, McpServerEntry> {
+async function collectMcpServers(): Promise<Record<string, McpServerEntry>> {
   // ① 用户已有的配置
   const userConfig = join(homedir(), '.claude.json')
   if (existsSync(userConfig)) {
@@ -55,7 +76,7 @@ function collectMcpServers(): Record<string, McpServerEntry> {
   const serverScript = findMcpServerScript()
   if (!serverScript) return {}
 
-  const python = findPythonWithFastMcp()
+  const python = await findPythonWithFastMcp()
   if (!python) return {}
 
   return {
@@ -87,10 +108,13 @@ function findMcpServerScript(): string | null {
  *
  * ⚠️ PATH 上的 `python` 未必有 —— 用户机器上 `C:\msys64\mingw64\bin\python.exe`
  * 就**没有** fastmcp（用它是 MCP server 直接起不来）。miniconda 那个有。
+ *
+ * ⚠️ **必须异步** —— `import fastmcp` 要好几秒；同步跑（`execFileSync`）
+ * 会把 Electron 主进程**整个卡住**那几秒（用户报过「特别慢特别卡」）。
  */
 let cachedPython: string | null | undefined
 
-function findPythonWithFastMcp(): string | null {
+async function findPythonWithFastMcp(): Promise<string | null> {
   if (cachedPython !== undefined) return cachedPython
 
   const candidates = [
@@ -104,7 +128,10 @@ function findPythonWithFastMcp(): string | null {
     if (candidate.includes('/') && !existsSync(candidate)) continue
     try {
       // 用最省事的方式判断：能不能 import fastmcp
-      execFileSync(candidate, ['-c', 'import fastmcp'], { stdio: 'ignore', timeout: 10_000 })
+      await execFileAsync(candidate, ['-c', 'import fastmcp'], {
+        timeout: 10_000,
+        windowsHide: true,
+      })
       cachedPython = candidate
       return candidate
     } catch {

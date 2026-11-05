@@ -40,8 +40,28 @@ import { jhyyHighlightStyle, jhyyLanguage } from './jhyyLanguage'
 /** 主题（暗色）。 */
 const theme = EditorView.theme(
   {
-    '&': { color: '#d7dce5', backgroundColor: '#101219', height: '100%' },
-    '.cm-content': { caretColor: '#00d4aa', fontFamily: 'var(--mono)' },
+    '&': {
+      color: '#d7dce5',
+      backgroundColor: '#101219',
+      height: '100%',
+      /*
+        ⚠️ **字体/字号走 CSS 变量** —— 用户在设置里改 ⇒
+        React 把变量写在 `.code-pane` 的行内样式上 ⇒
+        **CSS 变量是会「活」的** ⇒ 改完立刻生效，**不用重建编辑器** ✓
+        （而 CodeMirror 的主题只在建视图时生效 ⇒ 走主题就得用 compartment 重配）
+
+        ⚠️ **字号设在 `&`（编辑器根）上** —— 设 `.cm-content` 的话
+        **行号那一栏还是 body 的字号** ⇒ 大小不一致 ✗（gutter 继承 `&` ⇒ 一起变 ✓）
+        ⚠️ **字体要设两处** —— base theme 里 `.cm-content` 写死了自己的 font-family，
+        它的选择器比 `&` 具体 ⇒ 只改 `&` 的话**正文还是老的字体** ⇒ 一起改 ✓
+      */
+      fontFamily: 'var(--editor-font-family)',
+      fontSize: 'var(--editor-font-size)',
+    },
+    '.cm-content': {
+      caretColor: '#00d4aa',
+      fontFamily: 'var(--editor-font-family)',
+    },
     '.cm-cursor, .cm-dropCursor': { borderLeftColor: '#00d4aa' },
     '& > .cm-scroller > .cm-selectionLayer .cm-selectionBackground': {
       /*

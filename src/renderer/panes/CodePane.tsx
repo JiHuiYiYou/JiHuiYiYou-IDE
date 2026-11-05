@@ -12,6 +12,7 @@ import {
   type CursorInfo,
 } from '../editor/codemirror'
 import { revealLine, runEditorCommand, type EditorCommand } from '../editor/editorCommands'
+import { DEFAULT_SETTINGS } from '../state/settings'
 import { applyTextChange, normalizeEol } from '../sync/caret'
 
 interface Props {
@@ -21,6 +22,10 @@ interface Props {
   readOnly?: boolean
   /** 光标位置变了（状态栏用） */
   onCursorChange?: (info: CursorInfo) => void
+  /** 编辑区字体（CSS font-family）—— 用户设置里改的 */
+  fontFamily?: string
+  /** 编辑区字号（像素）—— 用户设置里改的 */
+  fontSize?: number
 }
 
 /**
@@ -56,6 +61,8 @@ export default function CodePane({
   diagnostics = [],
   readOnly,
   onCursorChange,
+  fontFamily,
+  fontSize,
   ref,
 }: Props & { ref?: Ref<CodePaneHandle> }) {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -177,5 +184,23 @@ export default function CodePane({
     [],
   )
 
-  return <div ref={hostRef} className="code-pane" />
+  return (
+    <div
+      ref={hostRef}
+      className="code-pane"
+      style={
+        {
+          /*
+            ⚠️ **字体/字号走 CSS 变量** ——
+            CSS 变量是「活」的 ⇒ 改完**立刻生效**，不用重建编辑器 ✓
+            （CodeMirror 的主题只在建视图时生效 ⇒ 走主题就得用 compartment 重配，
+              那套更绕 ⇒ 用变量 ✓）
+            ⚠️ **React 支持自定义属性**（名字里有 `--` 就行）✓
+          */
+          '--editor-font-family': fontFamily ?? DEFAULT_SETTINGS.editorFontFamily,
+          '--editor-font-size': `${fontSize ?? DEFAULT_SETTINGS.editorFontSize}px`,
+        } as React.CSSProperties
+      }
+    />
+  )
 }

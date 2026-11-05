@@ -17,6 +17,7 @@ export type IconName =
   | 'trash'
   | 'maximize'
   | 'restore'
+  | 'fullscreen'
   | 'chevron-down'
   | 'chevron-right'
   | 'search'
@@ -24,6 +25,7 @@ export type IconName =
   | 'error'
   | 'warning'
   | 'info'
+  | 'loading'
   | 'plus'
   | 'file'
   | 'terminal'
@@ -96,6 +98,16 @@ const PATHS: Record<IconName, React.ReactNode> = {
   // 播放三角形
   play: <path d="M4.5 2.8v10.4L13 8z" fill="currentColor" stroke="none" />,
   stop: <rect x="3.5" y="3.5" width="9" height="9" rx="1" fill="currentColor" stroke="none" />,
+  /*
+    转圈 —— **正在跑**（VS Code 的 task 页签上就是这个 spinner）✓
+    ⇒ 一段 3/4 的圆弧 ⇒ CSS 里转它
+  */
+  loading: (
+    <>
+      <circle cx="8" cy="8" r="5.5" />
+      <path d="M8 2.5a5.5 5.5 0 0 1 5.5 5.5" strokeWidth="2" />
+    </>
+  ),
   // 两个并排的面板
   split: (
     <>
@@ -123,6 +135,12 @@ const PATHS: Record<IconName, React.ReactNode> = {
     <>
       <rect x="2" y="2" width="12" height="12" rx="1.5" />
       <path d="M2 6h12" />
+    </>
+  ),
+  // 全屏（四角撑开）—— VS Code 的面板全屏按钮长这样
+  fullscreen: (
+    <>
+      <path d="M2.5 5.5v-3h3M13.5 5.5v-3h-3M2.5 10.5v3h3M13.5 10.5v3h-3" />
     </>
   ),
   restore: (

@@ -41,7 +41,7 @@ flowchart TB
 | Blockly adapter | `src/renderer/blocks/adapter.ts` + `xml.ts` | block tree ⇄ Blockly workspace; the XML half is pure DOM and unit-tested |
 | Workbench shell | `src/renderer/workbench/`, `src/renderer/commands/` | title bar · menu bar · command palette · panel · status bar — **one command table** feeds the menus, the palette and the keybindings |
 | Text editor | `src/renderer/editor/` | CodeMirror 6 + the JHYY language mode |
-| Main process | `src/main/compiler/`, `src/main/claude/`, `src/main/terminal.ts` | drives `jhyy.exe`, the `claude` CLI and the terminal shell |
+| Main process | `src/main/compiler/`, `src/main/claude/`, `src/main/terminal.ts` + `src/main/pty*.ts` | drives `jhyy.exe`, the `claude` CLI and the terminal shell (the PTY backend: **node-pty/ConPTY**, with a pipe fallback) |
 | Bridge | `src/preload/index.ts` | `contextBridge` — the renderer's only privileged surface |
 
 ## Three rules
@@ -88,7 +88,7 @@ When the documentation and the compiler disagree, the compiler wins.
 | give a construct a block | `src/lang/blocks/tree.ts` → `src/renderer/blocks/definitions.ts` → `decompile.ts` → `compile.ts` → `buildToolbox()` |
 | change how the compiler is invoked | `src/main/compiler/` |
 | change how Claude is invoked | `src/main/claude/` |
-| change how the terminal shell is spawned | `src/main/terminal.ts` |
+| change how the terminal shell is spawned | `src/main/terminal.ts` (semantics) + `src/main/pty*.ts` (the backend) |
 | add a command, a menu entry or a shortcut | `src/renderer/commands/registry.ts` — **one table, three consumers** |
 | change what the UI looks like | `src/renderer/workbench/`, `src/renderer/styles.css` |
 

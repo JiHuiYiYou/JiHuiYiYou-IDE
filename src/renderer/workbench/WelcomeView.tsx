@@ -18,10 +18,16 @@ export default function WelcomeView({ onOpen, onNew }: Props) {
         <p className="welcome-sub">给 JHYY（机会翼游）做的桌面 IDE</p>
 
         <div className="welcome-actions">
+          {/*
+            ⚠️ **两个按钮要一模一样** ——
+            以前「打开文件…」是 `primary`（加粗/高亮），「新建文件」不是 ⇒
+            看着像两个不同的级别（用户提过）⇒ ⇒ 现在**两个都是 `primary`** ✓
+            ⇒ 而且**都不要「…」**（VS Code 那个是英文版的，我们的中文不用）✓
+          */}
           <button className="primary" onClick={onOpen}>
-            打开文件… <kbd>Ctrl+O</kbd>
+            打开文件 <kbd>Ctrl+O</kbd>
           </button>
-          <button onClick={onNew}>
+          <button className="primary" onClick={onNew}>
             新建文件 <kbd>Ctrl+N</kbd>
           </button>
         </div>

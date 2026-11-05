@@ -143,6 +143,11 @@ arithmetic, `if`/`else`, `while`/`for`, functions, structs, enums + `match`, `pr
   (and "（不写）" for `let x = 0`).
 - **`printf` is its own block** — one format dropdown plus one value hole; **no**
   dragging "argument" blocks inside "argument" blocks.
+- **Parameter fields: click for the list, double-click to type your own** — the
+  dropdown covers the common values, but a format string or a type can be
+  anything. A single click still opens the plain dropdown; a **double click**
+  turns the field into a text box with the current value selected, so you can
+  just start typing.
 - **There's a ready-made "read input" block** — `scanf("%d", &x)` is one block (the
   address-of is added by the block itself), and the C function declaration
   dropdown has a `scanf` preset.
@@ -154,8 +159,9 @@ arithmetic, `if`/`else`, `while`/`for`, functions, structs, enums + `match`, `pr
   the editor keeps its undo history and cursor.
 - **Block → text** is live: drag a block, the text updates.
 - **Text → blocks** happens when you switch back to the block view (rebuilding blocks on
-  every keystroke would make the canvas unusable). The 🧩 button grows a dot when the
-  blocks are stale.
+  every keystroke would make the canvas unusable). It rebuilds from your current source
+  when you get there — the 🧩 button does **not** grow a dot (if you want the blocks,
+  you click over anyway).
 - Anything the block subset cannot express shows up as an **opaque block** holding the
   original source. Move it, delete it — but as long as you leave it alone, that code
   round-trips byte for byte.
@@ -179,9 +185,9 @@ The bottom panel holds three tabs:
 - **终端** — a real shell (**MSYS2 bash** by default; PowerShell and `cmd` are available too).
   It starts in the directory of the file you have open.
 
-> ⚠️ The terminal runs over **pipes, not a PTY**, so full-screen TUI programs
-> (`vim`, `top`) will not work. Everything else does — and the output is UTF-8 even on
-> a Chinese Windows.
+> The terminal runs over a **real PTY** (Windows ConPTY) ⇒ full-screen TUI programs
+> (`vim`, `top`) work, `Ctrl+C` interrupts, and the window size follows the pane.
+> The output is UTF-8 even on a Chinese Windows.
 
 Like VS Code's integrated terminal, it **mirrors the commands the IDE runs**: press
 **Run** and the terminal shows `> jhyy compile "…"` followed by the program's output.

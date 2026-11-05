@@ -5,7 +5,7 @@
  */
 
 /** 底部面板的页签。 */
-export type PanelTab = 'problems' | 'output' | 'terminal'
+export type PanelTab = 'problems' | 'terminal'
 
 /** 中心区当前显示什么（**互斥** —— 代码和拖块不同时显示）。 */
 export type CenterView = 'code' | 'blocks'
@@ -29,7 +29,7 @@ export interface LayoutState {
 export const DEFAULT_LAYOUT: LayoutState = {
   // ⚠️ 面板默认**隐藏** —— 只在点「检查」或「运行」时才弹出来。
   panelOpen: false,
-  panelTab: 'output',
+  panelTab: 'terminal',
   sidebarOpen: true,
   statusBarVisible: true,
   menuBarVisible: true,

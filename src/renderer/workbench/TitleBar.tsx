@@ -15,7 +15,6 @@ interface Props {
 
   // 右侧的开关
   blocksActive: boolean
-  blocksStale: boolean
   onToggleBlocks: () => void
   sidebarOpen: boolean
   onToggleSidebar: () => void
@@ -82,11 +81,10 @@ export default function TitleBar(props: Props) {
       <div className="titlebar-right">
         <button
           className={props.blocksActive ? 'icon-button active' : 'icon-button'}
-          title={props.blocksStale ? '块视图已过期 —— 点此重建并切换' : '切换块视图 (Ctrl+Shift+B)'}
+          title="切换块视图 (Ctrl+Shift+B)"
           onClick={props.onToggleBlocks}
         >
           <Icon name="blocks" />
-          {props.blocksStale && <span className="icon-badge" />}
         </button>
         <button
           className={props.sidebarOpen ? 'icon-button active' : 'icon-button'}

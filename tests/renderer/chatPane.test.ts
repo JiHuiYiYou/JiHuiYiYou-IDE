@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { createElement } from 'react'
 import { act } from 'react'
-import { createRoot } from 'react-dom/client'
-import { describe, expect, it } from 'vitest'
+import { createRoot, type Root } from 'react-dom/client'
+import { afterEach, describe, expect, it } from 'vitest'
 import type { ClaudeEvent } from '@shared/claude'
 import ChatPane from '../../src/renderer/panes/ChatPane'
 
@@ -57,14 +57,41 @@ function installApi() {
   }
 }
 
+/**
+ * 挂过的根 —— 每个用例结束后**必须卸载**。
+ *
+ * ⚠️ 聊天面板里有个「思考中换个花样」的 `setInterval`（每 1.4 秒轮换一次
+ * 提示语）。不卸载组件的话，这个定时器会活到 **jsdom 环境被拆掉之后**
+ * ⇒ 它再调 `setTurns` ⇒ React 摸不到 `window` 了 ⇒
+ * `ReferenceError: window is not defined` ⇒ **整轮测试 exit 1**。
+ *
+ * （用例越多、文件跑得越久，这个定时器就越可能活到 teardown 之后 ——
+ *  所以「卸载」不是洁癖，是必需。）
+ */
+const mountedRoots: Root[] = []
+
+afterEach(() => {
+  for (const root of mountedRoots) {
+    act(() => root.unmount())
+  }
+  mountedRoots.length = 0
+  document.body.innerHTML = ''
+})
+
 /** 渲染聊天面板并返回宿主页 + 事件发射器。 */
-async function mount() {
+async function mount(props: { filePath?: string | null; fileName?: string | null } = {}) {
   const bridge = installApi()
   const host = document.createElement('div')
   document.body.appendChild(host)
   const root = createRoot(host)
+  mountedRoots.push(root)
   await act(async () => {
-    root.render(createElement(ChatPane, { filePath: 'C:\\work\\a.jhyy' }))
+    root.render(
+      createElement(ChatPane, {
+        filePath: props.filePath === undefined ? 'C:\\work\\a.jhyy' : props.filePath,
+        ...(props.fileName !== undefined ? { fileName: props.fileName } : {}),
+      }),
+    )
   })
   return { host, bridge }
 }
@@ -178,6 +205,67 @@ describe('聊天面板的折叠', () => {
     expect(host.querySelectorAll('details.chat-turn-steps').length).toBe(2)
     expect(host.querySelectorAll('.bubble.assistant').length).toBe(2)
   })
+
+  /**
+   * 模型常先说一句「我先看看这个文件」（那是一条**完整**的 assistant
+   * 消息），再调工具，最后才给最终答案。
+   *
+   * ⚠️ 以前 `answerOf()` 是 `answer ?? streaming` —— **永远优先那条旧的
+   * 完整消息** ⇒ 最终回答只以增量形式到达时，界面上显示的还是
+   * 「我先看看」（用户报过：「历史会话显示的不是最终回答，而是思考过程
+   * 的某一句话」）。
+   */
+  it('最终回答不能被前面那句「我先看看」盖掉', async () => {
+    const { host, bridge } = await mount()
+    await send(host, '看一下这个文件')
+
+    // 开场白：一条完整的 assistant 消息
+    await act(async () => {
+      bridge.emit({
+        type: 'message',
+        message: { role: 'assistant', text: '我先看看这个文件' },
+      })
+    })
+    expect(host.querySelector('.bubble.assistant')?.textContent).toContain('我先看看')
+
+    // 最终回答只以**增量**的形式到达（有些 CLI 版本只发增量）
+    await act(async () => {
+      bridge.emit({ type: 'delta', text: '最终答案在这里' })
+    })
+    await act(async () => {
+      bridge.status({ state: 'waiting', turnComplete: true })
+    })
+
+    const text = host.querySelector('.bubble.assistant')?.textContent ?? ''
+    expect(text).toContain('最终答案在这里')
+    expect(text, '不能还停在思考过程那句').not.toContain('我先看看')
+  })
+})
+
+/**
+ * 「当前文件」那个 chip —— **未命名的新文件也得显示它的名字**。
+ *
+ * ⚠️ 用户报过：「如果是新建的未命名文件，ai 聊天显示的是未打开文件，
+ * 这是不对的」—— 未命名文件没有路径，光看 `filePath` 分不清
+ * 「用户没开文件」和「用户开了个还没保存的新文件」。
+ */
+describe('当前文件的名字', () => {
+  it('未命名的新文件显示的是它的名字，不是「没打开文件」', async () => {
+    const { host } = await mount({ filePath: null, fileName: '未命名-1.jhyy' })
+    const chip = host.querySelector('.chat-chip.static')?.textContent ?? ''
+    expect(chip).toContain('未命名-1.jhyy')
+    expect(chip).not.toContain('没打开文件')
+  })
+
+  it('真的一个文件都没开时才显示「没打开文件」', async () => {
+    const { host } = await mount({ filePath: null, fileName: null })
+    expect(host.querySelector('.chat-chip.static')?.textContent ?? '').toContain('没打开文件')
+  })
+
+  it('磁盘上的文件显示文件名', async () => {
+    const { host } = await mount({ filePath: 'C:\\work\\a.jhyy' })
+    expect(host.querySelector('.chat-chip.static')?.textContent ?? '').toContain('a.jhyy')
+  })
 })
 
 /**
@@ -210,8 +298,41 @@ describe('历史会话', () => {
     expect(list[0].title).toContain('hello world')
   })
 
-  it('重开面板能从 localStorage 里读回历史', async () => {
-    localStorage.setItem(
+  /**
+   * 存进历史的必须是**最终回答**。
+   *
+   * ⚠️ 以前只在「轮数变了」的时候存 ⇒ 存进去的是**还没写完**的那一轮
+   * （模型还在思考/调工具）⇒ 恢复历史会话时看到的是「思考过程的某句话」，
+   * 不是最终回答（用户报过：「历史会话显示的不是最终回答」）。
+   */
+  it('存进历史的那一轮带的是最终回答', async () => {
+    localStorage.clear()
+    const { host, bridge } = await mount()
+
+    await send(host, '写个程序')
+    await act(async () => {
+      bridge.status({ state: 'running', sessionId: 'sess-ans' })
+    })
+    await act(async () => {
+      // 开场白（一条完整消息）+ 最终回答（只以增量形式到达）
+      bridge.emit({ type: 'message', message: { role: 'assistant', text: '我先看看' } })
+      bridge.emit({ type: 'delta', text: '最终答案' })
+      bridge.status({ state: 'waiting', turnComplete: true })
+    })
+    // 内容变了之后是**去抖**存的 ⇒ 等它落盘
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 800))
+    })
+
+    const raw = localStorage.getItem('jhyy-ide.claude-sessions.v1')
+    expect(raw).toBeTruthy()
+    const list = JSON.parse(raw!) as { turns?: { answer?: string }[] }[]
+    const answer = list[0].turns?.[0]?.answer ?? ''
+    expect(answer, '历史里要的是最终回答').toContain('最终答案')
+    expect(answer, '不能是思考过程那句').not.toContain('我先看看')
+  })
+
+  it('重开面板能从 localStorage 里读回历史', async () => {    localStorage.setItem(
       'jhyy-ide.claude-sessions.v1',
       JSON.stringify([{ sessionId: 'sess-abc', title: '上次的会话', cwd: 'C:\\w', ts: 1 }]),
     )

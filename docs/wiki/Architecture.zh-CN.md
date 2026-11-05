@@ -41,7 +41,7 @@ flowchart TB
 | Blockly 适配器 | `src/renderer/blocks/adapter.ts` + `xml.ts` | 块树 ⇄ Blockly 工作区；XML 那一半是纯 DOM，有单测 |
 | 工作台外壳 | `src/renderer/workbench/`、`src/renderer/commands/` | 标题栏 · 菜单栏 · 命令面板 · 面板 · 状态栏 —— **一张命令表**同时喂给菜单、命令面板和快捷键 |
 | 文本编辑器 | `src/renderer/editor/` | CodeMirror 6 + JHYY 语言模式 |
-| 主进程 | `src/main/compiler/`、`src/main/claude/`、`src/main/terminal.ts` | 驱动 `jhyy.exe`、`claude` CLI 和终端 shell |
+| 主进程 | `src/main/compiler/`、`src/main/claude/`、`src/main/terminal.ts` + `src/main/pty*.ts` | 驱动 `jhyy.exe`、`claude` CLI 和终端 shell（PTY 后端：**node-pty/ConPTY**，管道版兜底） |
 | 桥接 | `src/preload/index.ts` | `contextBridge` —— 渲染进程唯一的特权入口 |
 
 ## 三条铁律
@@ -87,7 +87,7 @@ IDE 解析 ──▶ IDE 打印 ──▶ 真实 jhyy.exe ──▶ 运行 ─�
 | 给某个语法加块 | `src/lang/blocks/tree.ts` → `src/renderer/blocks/definitions.ts` → `decompile.ts` → `compile.ts` → `buildToolbox()` |
 | 改编译器怎么调 | `src/main/compiler/` |
 | 改 Claude 怎么调 | `src/main/claude/` |
-| 改终端怎么起 shell | `src/main/terminal.ts` |
+| 改终端怎么起 shell | `src/main/terminal.ts`（语义）+ `src/main/pty*.ts`（后端） |
 | 加命令、菜单项或快捷键 | `src/renderer/commands/registry.ts` —— **一张表，三个消费方** |
 | 改界面长什么样 | `src/renderer/workbench/`、`src/renderer/styles.css` |
 

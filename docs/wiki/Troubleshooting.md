@@ -92,13 +92,51 @@ is *input*). Output now goes to the display only.
 
 ### `vim` / `top` / other full-screen programs do not work
 
-The terminal runs the shell over **pipes, not a PTY**. Without a PTY the child process
-does not think it is on a terminal, so programs that take over the screen refuse to run.
-Everything line-oriented works fine — `dir`, `gcc --version`, `jhyy run foo.jhyy`, pipes,
-redirection.
+**Fixed** — the terminal now runs on a **real PTY** (`node-pty` → Windows ConPTY) ⇒ the
+child process really is on a terminal (`isatty(1)` is TRUE) ⇒ full-screen TUI programs
+start normally ✓.
 
-A real PTY needs `node-pty`, which needs a C++ toolchain to build for Electron. This
-machine has no MSVC, so the IDE does not depend on it.
+⚠️ `node-pty` is a **native module**: it only ships prebuilt binaries for **Node's**
+ABI, and Electron needs its own ⇒ it has to be compiled, which needs the **MSVC
+Build Tools** (one UAC prompt: `winget install Microsoft.VisualStudio.2022.BuildTools`).
+The IDE's `postinstall` (`scripts/prepare-node-pty.mjs`) does that rebuild
+automatically.
+
+⚠️ **Without MSVC the IDE still installs and runs** — it falls back to the pipe backend
+(below), where everything line-oriented works fine (`dir`, `gcc --version`,
+`jhyy run foo.jhyy`, pipes, redirection) — only the TUI programs are out of reach.
+
+### `node` / `go` are missing in the terminal — your tool paths are gone
+
+The IDE does not start from a **login shell** ⇒ it inherits **the IDE's own**
+environment ⇒ everything you added to `.bashrc` / `.bash_profile`
+(**nvm, rbenv, pyenv, conda init, your own tools on PATH**) is missing.
+
+The IDE now exports the environment from a **login shell** (`env -0`) in the
+background at startup, caches it, and layers it onto the terminal's
+environment ⇒ those tools come back ✓.
+
+⚠️ Exporting takes ~0.5–1 s, so it happens **at startup in the background**,
+not when you open the terminal ⇒ **editing `.bashrc` needs an IDE restart**.
+
+### The terminal is "fake" — why `vim` / `top` refuse to run
+
+**No longer true** — the terminal runs on a **real PTY** (`node-pty` → Windows
+ConPTY) ⇒ the child gets a **console device** (`GetFileType(stdout) == 2`) ⇒
+`isatty(1)` is TRUE ⇒ full-screen TUI programs run ✓ and the window size is tracked
+live (`stty size` matches the terminal) ✓.
+
+The backend is an **interface** (`PtySession` in `src/main/pty.ts`) with two
+implementations:
+
+| backend | when | what you get |
+|---|---|---|
+| **node-pty (ConPTY)** | default (MSVC installed) | real console, TUI programs, live resize, the console echoes what you type |
+| **pipe** (`child_process.spawn`) | fallback — no MSVC ⇒ no native build | everything line-oriented works; no TUI, no live resize, and stdout is a **pipe** ⇒ the C runtime **fully buffers** it |
+
+⇒ The `setvbuf(stdout, NULL, _IONBF, 0)` in the **language repository**
+(`compiler/runtime/runtime.c`) stays as the **belt-and-braces** fix ⇒ the prompt is
+visible wherever you run the program, pipe or not ✓.
 
 ### Chinese output in the terminal is mojibake
 
@@ -110,15 +148,119 @@ looking at a `cmd` session whose messages come from the system in the OEM code p
 
 ### The terminal doesn't show a prompt after the IDE runs a program
 
-The missing bit is the `user@host ~/dir` line. When the IDE runs a command it only
-**echoes** it into the terminal (like VS Code's task terminal) — the shell itself never
-learns that the command finished, so it stops printing prompts.
+**It does now** — the prompt comes back, and the terminal stays alive.
 
-The IDE now sends an empty line to the shell's **stdin** after the command, so the
-**shell itself** prints the prompt (every shell formats and escapes its prompt
-differently, so drawing it by hand would never match).
-⚠️ The IDE does **not** do this while you are **typing a command** — that would run
-your half-typed command.
+**How it used to work**: the IDE ran the program with VS Code's **task terminal**
+model, i.e. the command was the shell's **launch argument**
+(`bash -c "…"` / `powershell -Command "…"`) ⇒ the shell **ran the command and
+exited** ⇒ a shell that exits never gets to print a prompt ⇒ you saw the command
+line the IDE writes itself (`> jhyy compile …`), then the compiler's output and the
+program's output — and **no prompt**.
+
+**How it works now**: the IDE **types the commands into the terminal you already
+have** ⇒ the program is a **child of that shell** ⇒ when it exits, the shell prints
+its prompt again and **keeps running** ⇒ you can keep using the terminal.
+
+⚠️ The IDE still **never** asks the shell for a prompt: writing a bare carriage
+return into the shell's stdin would be a **real Enter keystroke** ⇒ the shell would
+run **another whole prompt cycle** ⇒ you'd get **one prompt too many** (see the next
+entry).
+
+### Clicking "Run" prints nothing at all
+
+**Symptom**: clicking **Run** shows the command line in the terminal, but the program's
+output **never appears** (and the run may stay "running" forever).
+
+Two causes, both fixed now — but they explain the symptom if you ever see it again:
+
+① **PowerShell needs the call operator.** `'C:\…\prog.exe'` is a **string** in
+PowerShell, not a command ⇒ the parser rejects the whole line ⇒ **the program never
+starts**. (bash happens to accept it, because a quoted word that contains `/` is
+treated as a path ⇒ **only the default shell was affected**.)
+
+② **The pty host process never got the command.** The IDE prefers running the real
+console in a **separate helper process** (so a native-module crash can't take the IDE
+down). That request has to carry the command with it ⇒ if it doesn't, the helper starts
+an ordinary **interactive** shell ⇒ **the command never runs** and the terminal never
+exits ⇒ "running" stays lit. (Only that one path was affected ⇒ **whether the bug
+appeared depended on whether node-pty was installed**.)
+
+**Now**: the call operator is added (`& 'C:\…\prog.exe'`), and the command is passed
+to the helper process too ⇒ the program runs and its output shows up ✓.
+
+⚠️ **bash must NOT get the `&`** — in bash `&` is the **background operator** ⇒ the
+compiler would run in the background ⇒ the shell would return to the prompt at once
+⇒ the exit code would be a lie and the program would start before the artifact even
+exists ⇒ **it always breaks**. `buildShellCommand()` gets this right per shell ✓.
+
+### Clicking "Run" wipes the program's output from the terminal, leaving only a prompt
+
+**Symptom**: with no terminal open, clicking **Run** starts the program, but its output
+**vanishes** from the terminal and all you see is a `(base) PS C:\…>` prompt — while
+the program is **still running**.
+
+**Cause**: the IDE has two ways to run a program ——
+① the program is a **child of the shell** (its output really is on the console
+screen ⇒ a terminal repaint can't wipe it) ✓
+② the program runs in **its own pty** and its output is *injected* into the terminal
+⇒ ②'s output is **not** on the console screen ⇒ **a console repaint (resizing the
+terminal) wipes it** ✗
+
+Used to happen when you had **no terminal at all**: the IDE then had to create one,
+and that terminal is **cold** (PowerShell has to boot, and your profile loads conda
+⇒ the first prompt takes several seconds) ⇒ the IDE only waited **2 seconds** for the
+shell integration ⇒ it usually timed out ⇒ it silently took route ② ⇒ output wiped.
+
+**Now**: the program is **always a child of the shell** ⇒
+⇒ the compiler output, the program output and the prompt are **all in one stream**
+⇒ **the output survives** ✓
+⇒ and the run is settled by the shell integration reporting "command finished"
+⇒ so the IDE **waits for the integration to come up** before it types anything
+(⇒ no output is written into a terminal that can't report back) ✓
+
+⇒ If the shell integration is **not available** (that's `cmd`, or you set
+`JHY_IDE_NO_SHELL_INTEGRATION=1`), the IDE falls back to the **task terminal**
+model: it opens a separate terminal named **运行** / **检查**, and the command is the
+shell's launch argument ⇒ the run still works, but **that terminal dies when the
+command is done** ⇒ **degraded, and visible on purpose** ✓
+⇒ The same fallback kicks in when your current terminal is **busy** (you are running
+something yourself) ⇒ the IDE **never types into a busy terminal** ⇒ your command
+isn't disturbed ✓
+
+### The prompt shows up **again** after the program's output
+
+**Symptom**: the program finishes, the terminal shows its output and then **another**
+`(base) PS C:\…>` prompt — as if the prompt was printed twice.
+
+**Cause**: the IDE used to have a "make the shell redraw its prompt" mechanism —
+implemented by writing a **bare carriage return** (`\r`) into the shell's stdin. That
+is a **real Enter keystroke** ⇒ the shell runs **another whole prompt cycle** ⇒ the
+terminal ends up with **one prompt too many**.
+
+Worse: in **PowerShell** that empty Enter creates an **empty history entry** ⇒ the
+shell reports "command finished, exit code 0" ⇒ the IDE **finished the pending run
+early with exit code 0** ⇒ **the program's real exit code was reported as 0**.
+
+**Now**: that mechanism is **gone** — **the shell's prompt is the only prompt**
+(same model as VS Code: the IDE never asks for a prompt). And the compile and the
+program are **one command** (`jhyy compile "file" && <product>`) ⇒ the compiler
+output, the program output and the prompt are **all in one stream** ⇒
+**exactly one prompt per command** ✓.
+
+### Closing a terminal still leaves "running" in the top right
+
+**Symptom**: the program is running, you close that terminal ⇒ the program keeps
+running and the UI still says "running".
+
+**Cause**: the run wasn't **bound to its terminal**. On the fallback path (no shell
+integration) the program runs in **its own pty** ⇒ closing the terminal **doesn't
+kill it** ⇒ the IDE's result **never arrives** ⇒ "running" stays lit forever.
+
+**Now**: the run **is bound to its terminal** (VS Code's model: the task is settled
+by the **terminal's exit event**) ⇒ closing the terminal **kills the program** ⇒ the
+run settles ⇒ the state clears ✓.
+The "running" spinner lives on the **terminal tab** (spinner / ✓ / ✗) — the
+bottom-right status bar shows **no program behaviour at all** ✓
 
 ### The program does not wait for input — `scanf` reads nothing
 
@@ -126,17 +268,48 @@ The IDE used to give the program the **null device** on stdin (immediate EOF) �
 any program reading stdin got EOF right away ⇒ `scanf` returned at once and the
 program carried on.
 
-Now the IDE takes over a **pipe** while running a program and **feeds it whatever
+Now the program runs **in a PTY** (a real console) and the IDE **feeds it whatever
 you type in the terminal** ✓ (like VS Code's "run in terminal") — switch to the
 **Terminal** tab, type, press Enter, and the program receives it ✓.
 
 ⚠️ Type into the **terminal** tab, not the **Output** tab — the output tab is the
-read-only program output. What you type is **echoed** in the terminal: the program
-reads stdin from a **pipe** and has no TTY of its own, so without the echo it would
-look like nothing was happening.
+read-only program output. What you type is **echoed** by the **console itself**
+(a real console echoes the characters it receives — correctly, cursor position and
+wide characters included) ⇒ the IDE must **not** echo it a second time, or every
+character would appear twice.
+(On the pipe fallback backend there is no TTY ⇒ the IDE echoes by itself.)
+
 A program that has not finished after 60 seconds is **killed by the timeout**
 (waiting for input has to leave you time to type); a program that prints forever is
 killed by the **output cap** (512 KB) ✓.
+
+### The program's prompt only shows up **after** you typed the answer
+
+**Fixed** — the IDE runs the program in a **real console** (ConPTY) ⇒ the C runtime
+does not buffer a console's stdout ⇒ the prompt shows up **at once** ✓.
+
+The underlying rule (it explains why this ever happened) is **stdio buffering**: the
+C runtime buffers stdout according to whether it is an **interactive device** —
+
+| stdout is | buffering | `printf("enter a number: ")` |
+|---|---|---|
+| a console (`CONOUT$` in a real terminal) | line-buffered / unbuffered | **shows up at once** |
+| a pipe (CI / `jhyy run \| less` / the IDE's pipe fallback) | **fully buffered** (4 KB at a time) | held back until the program exits |
+
+So "`jhyy run` in cmd is fine, in the IDE it is not" was never about jhyy — it was
+that the terminal hands the program a **console** while the IDE handed it a **pipe**.
+
+⇒ Belt and braces: the fix also lives in the **program's own runtime**
+(`compiler/runtime/runtime.c` is the C bridge every JHYY program links in): one
+`setvbuf(stdout, NULL, _IONBF, 0)` at the entry point ⇒ stdout is unbuffered ⇒ the
+prompt is visible wherever you run it ✓.
+
+⚠️ That change is in the **language repository** (`JiHuiYiYou`), not in the IDE — the
+IDE just links the compiler built from that runtime.
+
+(Side effect: unbuffered stdout means one sentence can arrive in several pieces, so
+the IDE **re-assembles the lines** itself — the prompt still shows up as one whole
+line in the Output panel ✓)
 
 ## The window and the shell
 
@@ -201,6 +374,31 @@ The IDE now passes **only the directory, no default name** ⇒ the box starts em
 ⇒ there is no selected extension ✓. **Everything else is unchanged**: the filter
 still applies and the extension is still appended — type "hello" ⇒ "hello.jhyy".
 
+### `Ctrl+V` does not paste in the editor
+
+The global shortcut handler calls `preventDefault()` + `stopPropagation()` in the
+**capture phase** on `window` ⇒ the browser therefore **never fires the `paste`
+event** ⇒ the editor's own paste handling (CodeMirror 6's `handlers.paste`) never
+receives anything ⇒ nothing gets pasted.
+
+Rule: **do not steal keys the editor/browser handles natively**. The paste command
+is flagged `native` (see `src/renderer/commands/types.ts`) ⇒ the global handler
+lets it through and the browser dispatches `paste` itself — which is also faster
+(it reads `event.clipboardData` directly, no IPC round trip).
+
+`tests/renderer/paste.test.ts` pins this down: pressing Ctrl+V must **not** end up
+`preventDefault`ed.
+
+### A new, unsaved file shows up as "no file open" in the chat
+
+An untitled file has **no path** (it does not exist on disk yet) ⇒ looking at
+"is there a filePath?" cannot tell "the user has no file open" apart from "the user
+opened a file that was never saved".
+
+The chat panel's file chip now shows the **file name** (`未命名-1.jhyy`) ✓, and
+Claude's system prompt carries the name plus **the content the user is editing**
+(the disk copy does not exist, so without it Claude would only be guessing) ✓.
+
 ### The chat's history list is always empty
 
 Three causes, all fixed:
@@ -217,6 +415,35 @@ The history entries now carry the whole dialogue (stored in localStorage ✓,
 survives a restart); clicking one fills the chat back in ✓ while `--resume`
 reconnects the CLI's context ✓.
 
+### A history session shows a sentence from the thinking process instead of the final answer
+
+Models often open with "let me look at this file" (that is a **complete** assistant
+message), call a tool, and only then produce the final answer. The rule for "which
+text do we show" used to be `answer ?? streaming` — which **always prefers the older
+complete message** ⇒ when the final answer arrives as a delta only (some CLI
+versions send deltas and nothing else), the chat showed the opening sentence.
+
+Now the **newest** text wins: a delta that arrived after the last complete message
+takes precedence ✓.
+
+On top of that, the history used to be saved only when the **number of turns**
+changed ⇒ what got stored was the turn **while it was still being written** ⇒
+restoring it showed half a conversation. Now it is saved whenever the content
+changes (debounced) ✓.
+
+### Clicking a history session takes several seconds to connect
+
+Three causes, all fixed:
+
+- **The main process was blocked**: finding "which python has fastmcp installed" used
+  `execFileSync` (**synchronous**) ⇒ for the few seconds `import fastmcp` takes, the
+  **whole IDE froze** (reported as "really slow and laggy"). It is asynchronous now
+  and **warmed up in the background at startup** ✓.
+- **Stopping the old session waited a fixed 1.5 s**: it now waits for the CLI to
+  **exit on its own** (and moves on as soon as it does) ✓.
+- **The UI waited for the connection before showing anything**: the history is now
+  **filled in first**, the CLI is reconnected in the background ✓.
+
 ### Running a `while true` program freezes the whole IDE
 
 The program prints forever and the IDE concatenates its output **without any
@@ -230,7 +457,63 @@ VS Code doesn't freeze because it runs a **real PTY** (ConPTY on Windows): the
 pseudo-terminal has a fixed buffer, so when the program writes faster than the
 reader consumes, the **write blocks** (the program slows itself down), and
 xterm.js renders incrementally with a bounded scrollback ⇒ memory always stays
-bounded. We have no PTY, so we add the cap ourselves.
+bounded. **We now run a real PTY too** — but the cap stays, because a program that
+prints forever would still eat the IDE's memory (the PTY only bounds the *writer*,
+not what we keep for the output panel).
+
+### The program "crashed": `NTSTATUS0xC000013A` (exit code -1073741510)
+
+**That is not a crash — it is you pressing Ctrl+C.**
+
+`0xC000013A` is `STATUS_CONTROL_C_EXIT`: the process was terminated by Ctrl+C. Now that
+the program runs in a **real console**, Ctrl+C really does kill the foreground
+program (that is the point of a real console — before, the byte was just written into
+a pipe and the program never noticed).
+
+⇒ The IDE now says **"程序已中断"** instead of "程序崩溃" ✓.
+(The IDE's **Stop** button kills the program the same way, so it reports the same thing.)
+
+### The terminal is sometimes real and sometimes not
+
+**Fixed, and now visible.** The status bar carries a small badge:
+
+| badge | meaning |
+|---|---|
+| **PTY** | a **real console** (ConPTY) ⇒ TUI programs run, the window size is live, the program's prompt shows up at once |
+| **管道** | the **pipe fallback** ⇒ no real TTY. The tooltip says why and what to do |
+
+Two things used to make the terminal silently degrade to the pipe version:
+
+1. **The native module is loaded lazily** — `require('node-pty')` does not touch
+   `build/Release/conpty.node`; the **first spawn** does. And `npm install`
+   **deletes** that file (node-pty's own `postinstall` wipes `build/Release` — its
+   bug). The IDE now **warms it up at startup**, so the module is in Node's module
+   cache and a later `npm install` cannot break the running IDE ✓.
+2. **A working directory that no longer exists** — `CreateProcess` fails, node-pty
+   throws, and the whole terminal quietly fell back to pipes. The IDE now looks for
+   an existing directory **before** starting the process ✓.
+
+If the badge says **管道**, run `npm install` once (the `postinstall` rebuilds
+node-pty against Electron's ABI) and restart the IDE.
+
+### The terminal spits out a bunch of empty prompts
+
+**Fixed.** The root cause: the IDE ended the commands it sent to the shell with
+**`\r\n`** — and to a shell that is **two** Enters (readline's two accept-lines) ⇒
+the shell prints **two** prompts, with a blank line in between. Changing the
+directory added two empty prompts; a few of those and you have the pile you saw.
+
+⇒ The line ending now follows the backend: `\n` for the pipe, `\r` for the real
+console — **`\r\n` is never sent**.
+
+Two more holes are closed:
+
+- **Prompts are not force-printed back-to-back** — one is only added after the
+  IDE wrote something to the terminal (the echoed command / the program's output),
+  and not at all when the terminal is already sitting at a prompt.
+- **Nothing is added while you are not looking at the terminal** — running ten
+  commands in the background no longer piles up ten empty prompts; you get **one**
+  when you switch back to the **Terminal** tab.
 
 ## The block view
 

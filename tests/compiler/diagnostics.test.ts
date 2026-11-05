@@ -26,7 +26,7 @@ describe('parseDiagnostics', () => {
     expect(diagnostics[0].col).toBe(3)
   })
 
-  it('过滤编译进度噪声', () => {
+  it('编译进度噪声**不是诊断**，但**要原样保留**（用户要看见全部输出）', () => {
     const stderr = [
       '[1] imports start',
       '[2] imports done',
@@ -41,8 +41,12 @@ describe('parseDiagnostics', () => {
     ].join('\n')
 
     const { diagnostics, raw } = parseDiagnostics(stderr)
+    // ⚠️ **不进「问题」面板** ✓
     expect(diagnostics).toHaveLength(0)
-    expect(raw).toHaveLength(0)
+    // ⚠️ **但输出里要看得见**（用户明说「不用过滤」）✓
+    expect(raw).toHaveLength(10)
+    expect(raw[0]).toBe('[1] imports start')
+    expect(raw).toContain('parse errors')
   })
 
   it('把无法识别的行归到 raw', () => {
@@ -51,7 +55,8 @@ describe('parseDiagnostics', () => {
     )
     expect(diagnostics).toHaveLength(1)
     expect(diagnostics[0].message).toBe('boom')
-    expect(raw).toEqual(['gcc: fatal error'])
+    // ⚠️ 进度噪声也留着（不过滤）✓
+    expect(raw).toEqual(['[3] sema start', 'gcc: fatal error'])
   })
 
   it('识别 warning 级别', () => {
@@ -64,14 +69,14 @@ describe('parseDiagnostics', () => {
     expect(parseDiagnostics('\r\n\r\n')).toEqual({ diagnostics: [], raw: [] })
   })
 
-  it('--no-link 的提示行不会被误判成诊断，也会被当噪声滤掉', () => {
+  it('--no-link 的提示行不会被误判成诊断（但输出里保留着）', () => {
     // 这行的路径里可能带冒号，但没有 :数字:数字: 结构 ⇒ 不是诊断。
-    // 而且它是 IDE 自己传 --no-link 的回执，对用户是纯噪声 ⇒ 连 raw 都不该进。
+    // ⚠️ **不滤掉** —— 用户要看见编译器的全部输出 ✓
     const { diagnostics, raw } = parseDiagnostics(
       'compile: --no-link set, skipping gcc link (.s kept at C:\\tmp\\out.s)\n',
     )
     expect(diagnostics).toHaveLength(0)
-    expect(raw).toHaveLength(0)
+    expect(raw).toHaveLength(1)
   })
 
   it('真的用法错误（compile: no input file）不会被当成噪声滤掉', () => {
