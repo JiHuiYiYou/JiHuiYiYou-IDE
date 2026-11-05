@@ -463,6 +463,12 @@ npx vite-node scripts/claude-smoke.ts   # Claude 集成冒烟（会消耗 API �
   - ⚠️ **`$PWD` 在 MSYS2 下是 `/c/Users/…`** ⇒ 要用 `cygpath -m` 换成
     Windows 路径，否则 IDE 那边**永远比不相等** ⇒ 每次都白白发 `cd`。
     比路径前先 `normalizeCwd()`（斜杠方向 / 大小写 / 尾斜杠都得归一）。
+  - ⚠️⚠️ **报出来的 cwd 是「这台机器的」路径 ⇒ 别在测试里写死它** ——
+    `cygpath -m /tmp` 在本地是 `C:/msys64/tmp`，在 CI 那台 runner 上是
+    **`C:/Windows`**（那台机器的 MSYS2 就这么映射 `/tmp`）⇒
+    ⇒ 断言「路径以 `/tmp` 结尾」⇒ **必假红** ✗
+    ⇒ ⇒ **让 shell 自己说**：跑 `__jhyy_cwd`（集成脚本里那个函数）⇒
+    拿它的输出跟 OSC 报上来的那个比 ✓（`tests/compiler/shellIntegration.test.ts`）✓
   - ⚠️⚠️ **「这条命令是什么」也要报**（OSC 633 的 `E;<cmd>`）——
     IDE 让 shell 跑程序时，**用户自己可能还有命令在跑** ⇒
     它的「命令执行完」会**先**到 ⇒ 不认一下就会把**用户的**退出码

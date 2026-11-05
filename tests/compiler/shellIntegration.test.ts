@@ -41,6 +41,8 @@ const bash = bashPath()
 interface BashSession {
   /** 敲一条命令（回车结尾） */
   send(cmd: string): void
+  /** 在 shell 里跑一条命令，把它的**输出**抓回来 */
+  capture(cmd: string, timeoutMs?: number): Promise<string>
   /** 等到某个条件满足（或者超时） */
   waitFor(pred: (ev: ShellIntegrationEvent[]) => boolean, timeoutMs?: number): Promise<void>
   /** 已经收到的所有事件 */
@@ -90,6 +92,34 @@ function startBash(): BashSession {
     },
     send(cmd: string) {
       child.stdin.write(`${cmd}\n`)
+    },
+    /**
+     * **在 shell 里跑一条命令，把它的输出抓回来**。
+     *
+     * ⚠️ **用标记包起来** —— 但标记**在回显里也会出现一次**
+     *   （bash 会回显我们敲的那一行 ⇒ 标记后面紧跟着 `$(`）⇒
+     *   ⇒ **回显的那次要跳过**（它后面是 `$(`，不是值）✓
+     */
+    async capture(cmd: string, timeoutMs = 15_000) {
+      const marker = `__JHY_CAPTURE_${Date.now()}__`
+      child.stdin.write(`echo "${marker}$(${cmd})"\n`)
+      const start = Date.now()
+      while (Date.now() - start < timeoutMs) {
+        let i = text.indexOf(marker)
+        while (i >= 0) {
+          const rest = text.slice(i + marker.length)
+          // ⚠️ **回显的那一次**：后面紧跟着 `$(`（命令还没跑）⇒ 跳过 ✓
+          if (!rest.startsWith('$')) {
+            const nl = rest.indexOf('\n')
+            if (nl >= 0) return rest.slice(0, nl).trim()
+          }
+          i = text.indexOf(marker, i + 1)
+        }
+        await new Promise((r) => setTimeout(r, 25))
+      }
+      throw new Error(
+        `抓不到输出：${cmd}\n文本：${JSON.stringify(text.slice(-400))}`,
+      )
     },
     async waitFor(pred, timeoutMs = 15_000) {
       const start = Date.now()
@@ -221,14 +251,33 @@ describe('shell 集成的脚本（真跑 bash）', () => {
     const s = startBash()
     try {
       await s.waitFor((ev) => ev.some((e) => e.type === 'promptEnd'))
+      const first = s.events.find((e) => e.type === 'property' && e.key === 'Cwd')
+      const before = String((first as { value: string }).value)
       s.send('cd /tmp')
+      /*
+        ⚠️⚠️ **别断言「报出来的路径以 `/tmp` 结尾」** ——
+          报出来的是 **Windows 路径**（脚本用 `cygpath -m` 换的）⇒
+          它长什么样**取决于这台机器怎么映射 `/tmp`**：
+          本地是 `C:/msys64/tmp`，CI 那台是 `C:/Windows` ⇒
+          写死 `/tmp` ⇒ **必假红** ✗
+
+        ⇒ ⇒ **问 shell 自己**：它把当前目录报成什么？⇒ 拿那个来比 ✓
+          （`__jhyy_cwd` 就是集成脚本里那个函数 ⇒ **同一套逻辑** ✓）
+      */
       await s.waitFor((ev) =>
-        ev.some((e) => e.type === 'property' && String(e.value).replace(/\\/g, '/').endsWith('/tmp')),
+        ev.some(
+          (e) =>
+            e.type === 'property' &&
+            e.key === 'Cwd' &&
+            normalizeCwd(String((e as { value: string }).value)) !== normalizeCwd(before),
+        ),
       )
       const cwds = s.events
         .filter((e) => e.type === 'property' && e.key === 'Cwd')
         .map((e) => (e as { value: string }).value)
       expect(cwds.length).toBeGreaterThan(1)
+      const expected = await s.capture('__jhyy_cwd')
+      expect(normalizeCwd(cwds[cwds.length - 1])).toBe(normalizeCwd(expected))
     } finally {
       s.kill()
     }
