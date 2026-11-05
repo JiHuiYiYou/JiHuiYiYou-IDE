@@ -281,10 +281,9 @@ npx vite-node scripts/claude-smoke.ts   # Claude 集成冒烟（会消耗 API �
   现在 8 MB（有了**背压**之后，IPC 队列是有界的 ⇒ 这个上限守的是内存）✓
 
 - **`CreatePseudoConsole` 要用「命名管道」，不是匿名管道** —— 我们自己写的
-  ConPTY 助手（`native/pty-helper/`）就是死在这儿：用 `CreatePipe` ⇒
+  ConPTY 助手（已删，被 node-pty 取代）就是死在这儿：用 `CreatePipe` ⇒
   ConPTY 接不上客户端 ⇒ 孩子的 stdout **永远不是控制台**、渲染通道**一个字节都没有**；
   而 node-pty 用 `CreateNamedPipe` + `ConnectNamedPipe` ⇒ 一次就通 ✓。
-  ⇒ 那个助手已被 node-pty 取代（留在这儿当踩坑记录）。
   另外 node-pty 的 `CreateProcess` 是 `STARTF_USESTDHANDLES` + **三个 std 句柄都传 NULL**
   + `bInheritHandles = false`（真控制台由 `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` 接管）。
 - **终端的 env 要用「登录 shell」那份** —— IDE 不是从登录 shell 起来的 ⇒
