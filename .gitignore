@@ -16,3 +16,6 @@ tmp/
 
 # playwright-cli 的快照/日志（浏览器自动化工具的临时产物）
 .playwright-cli/
+
+# Claude Code 本地配置（指针 + 本机设置，不入仓）
+.claude
