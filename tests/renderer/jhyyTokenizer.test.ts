@@ -148,6 +148,20 @@ describe('词法 —— 注释与标点', () => {
     expect(tokenize('#derive')[0]).toEqual({ token: 'meta', value: '#d' })
   })
 
+  /*
+    ⚠️⚠️ **`#[inline]` 以前是「红色的无效」** ——
+      老实现是 `/^#[A-Za-z_]/` ⇒ `#` 后面得跟一个标识符字符 ⇒
+      而 `#[inline]` 的 `#` 后面是 `[` ⇒ 匹配不上 ⇒ 落到兜底 ⇒ `invalid`
+      ⇒ 编辑器里那个 `#` 是**红的** ⇒ 看着像语法错误，其实完全合法 ✗
+      ⇒ 现在：`#[…]` 整段算一个 `meta` token ✓
+  */
+  it('属性（`#[inline]` / `#[no_std]`）整段算 meta，不是 invalid', () => {
+    expect(tokenize('#[inline]')).toEqual([{ token: 'meta', value: '#[inline]' }])
+    expect(tokenize('#[no_std]')).toEqual([{ token: 'meta', value: '#[no_std]' }])
+    // ⚠️ **没有收尾的 `]` ⇒ 别把整行都吃掉** ⇒ 退回老行为（`#` 是 invalid）✓
+    expect(tokenize('#[inline')[0]).toEqual({ token: 'invalid', value: '#' })
+  })
+
   it('`<<` 不能被 `<` 抢先匹配（长的排前面）', () => {
     expect(tokenOf('<<', '<<')).toBe('operator')
   })

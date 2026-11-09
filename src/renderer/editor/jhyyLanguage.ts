@@ -305,9 +305,27 @@ const jhyyParser: StreamParser<JhyyState> = {
         stream.next()
         return 'punctuation'
       }
-      if (c === '#' && isIdentStart(stream.string.charAt(stream.pos + 1))) {
-        stream.pos += 2
-        return 'meta'
+      if (c === '#') {
+        const next = stream.string.charAt(stream.pos + 1)
+        /*
+          ⚠️⚠️ **属性（`#[inline]` / `#[no_std]`）以前是「红色的无效」** ——
+            老实现是 `/^#[A-Za-z_]/` ⇒ `#` 后面得跟一个**标识符字符** ⇒
+            而 `#[inline]` 的 `#` 后面是 `[` ⇒ **匹配不上** ⇒
+            ⇒ `#` 落到最后的兜底 ⇒ `invalid` ⇒ **编辑器里是红的** ✗
+            （用户看着像语法错误，其实完全合法）
+          ⇒ ⇒ 现在：`#[…]` **整段**算一个 `meta` token ✓
+        */
+        if (next === '[') {
+          const close = stream.string.indexOf(']', stream.pos + 2)
+          if (close > 0) {
+            stream.pos = close + 1
+            return 'meta'
+          }
+        }
+        if (isIdentStart(next)) {
+          stream.pos += 2
+          return 'meta'
+        }
       }
     }
 
