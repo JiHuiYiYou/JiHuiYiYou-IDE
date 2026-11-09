@@ -154,7 +154,12 @@ function printStmt(stmt: Stmt, depth: number): string {
   switch (stmt.kind) {
     case 'let': {
       const annot = stmt.typeAnnotation ? `: ${printType(stmt.typeAnnotation)}` : ''
-      const init = stmt.init ? ` = ${printExpr(stmt.init)}` : ''
+      /*
+        ⚠️ **没有初始值也要写 `= 0`** —— 真实编译器的 `parse_let` **强制要求 `=`**
+        （`let x;` 是语法错误）⇒ 打印器**不能**吐出 `let x;`
+        （那连 IDE 自己的解析器都过不了）⇒ 补 0 ✓
+      */
+      const init = ` = ${stmt.init ? printExpr(stmt.init) : '0'}`
       return `${pad}let ${stmt.isMutable ? 'mut ' : ''}${stmt.name}${annot}${init};`
     }
     case 'if':
@@ -198,18 +203,43 @@ function printBlock(block: BlockNode, depth: number): string {
   return `{\n${lines.join('\n')}\n${pad}}`
 }
 
+/**
+ * else 分支的块里**恰好一个语句、而且那个语句是 if** ⇒ 它**跟 else-if 链完全等价**
+ * （`else { if c { A } }` ⇔ `else if c { A }` —— 值、副作用都一样）✓
+ *
+ * ⚠️ **为什么要有这个** —— 块视图表达不出「块里的 if」和「链上的 if」的区别
+ *    （块树里都是「ELSE 容器里放一个 if 块」）⇒ 两条路打印出来的不一样
+ *    ⇒ **两边统一打印成 else-if** ⇒ 又一致了 ✓
+ *
+ * ⚠️ **只有「恰好一个语句」才行** —— 多语句的块不能这样归并
+ *    （`else { f(); if c { A } }` 归并过去 `f()` 就没了）✗
+ */
+function elseAsChain(elseBody: BlockNode): Extract<Stmt, { kind: 'if' }> | null {
+  if (elseBody.statements.length !== 1) return null
+  const only = elseBody.statements[0]
+  return only.kind === 'if' ? only : null
+}
+
+/** 这个节点是不是一个 `if`（用来把联合类型收窄）。 */
+function isIfNode(node: { kind: string }): node is Extract<Stmt, { kind: 'if' }> {
+  return node.kind === 'if'
+}
+
 function printIf(node: Extract<Stmt, { kind: 'if' }>, depth: number): string {
   const pad = INDENT.repeat(depth)
   let out = `${pad}if ${printExpr(node.cond)} ${printBlock(node.thenBody, depth)}`
-  if (node.elseBody) {
-    if (node.elseBody.kind === 'if') {
-      // else-if 链
-      const nested = printIf(node.elseBody, depth)
-      out += ` else ${nested.trimStart()}`
-    } else {
-      out += ` else ${printBlock(node.elseBody, depth)}`
-    }
+  const elseBody = node.elseBody
+  if (!elseBody) return out
+  if (isIfNode(elseBody)) {
+    // else-if 链
+    out += ` else ${printIf(elseBody, depth).trimStart()}`
+    return out
   }
+  // 块里的 if ⇒ 跟 else-if 链等价 ⇒ 统一打印成 else-if（见 elseAsChain）
+  const chain = elseAsChain(elseBody)
+  out += chain
+    ? ` else ${printIf(chain, depth).trimStart()}`
+    : ` else ${printBlock(elseBody, depth)}`
   return out
 }
 
@@ -437,13 +467,14 @@ export function printExpr(expr: Expr): string {
 function printIfInline(node: Extract<Expr, { kind: 'if' }>): string {
   const thenText = printBlockInline(node.thenBody)
   let out = `if ${printExpr(node.cond)} ${thenText}`
-  if (node.elseBody) {
-    if (node.elseBody.kind === 'if') {
-      out += ` else ${printIfInline(node.elseBody)}`
-    } else {
-      out += ` else ${printBlockInline(node.elseBody)}`
-    }
+  const elseBody = node.elseBody
+  if (!elseBody) return out
+  if (isIfNode(elseBody)) {
+    out += ` else ${printIfInline(elseBody)}`
+    return out
   }
+  const chain = elseAsChain(elseBody)
+  out += chain ? ` else ${printIfInline(chain)}` : ` else ${printBlockInline(elseBody)}`
   return out
 }
 

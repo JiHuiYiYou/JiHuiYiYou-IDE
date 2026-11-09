@@ -87,16 +87,40 @@ class Parser {
   private readonly typeNames: Set<string>
   /** 本文件里声明过的枚举变体名（`type X = enum { A, B }` 里的 A / B） */
   private readonly variantNames: Set<string>
+  /**
+   * **最后消费掉的 token 的结束偏移** —— 节点的 `end` 要用它。
+   *
+   * ⚠️ **不能用 `this.cur`** —— `this.cur` 是**下一个** token 了
+   *    （`advance()` 已经把它换掉了）⇒ 拿它算 `end` 会把**下一个 token
+   *    整段**包进这个节点 ⇒ 「原始代码」块里会混进不属于它的字
+   *    （实测：一个 `const` 声明的块里会多出一个 `fn`）。
+   */
+  private lastEnd = 0
+  /**
+   * **把模式里的 `标识符(` 当成枚举变体**（而不是绑定）。
+   *
+   * ⚠️ 真实编译器靠**符号表**判断（`Some` 是不是声明过的变体）⇒ IDE
+   *    正常解析源码时也要靠符号表（`collectDeclaredNames` 预扫描）。
+   *    但**块视图**重解析模式文本时，那段文本是从**块字段**里来的
+   *    （周边没有 enum 声明）⇒ 符号表是空的 ⇒ `Some(v)` 会被当成绑定 `Some`
+   *    ⇒ **括号里的绑定被静默丢掉**（`Some(v) => v` 变成 `Some => v`，
+   *    而 body 还在引用 `v` ⇒ 读一个未定义的变量）。
+   *    ⇒ 这条路用「`标识符(` 一定是带载荷的变体」这个**纯语法**规则兜底
+   *    （合法的 JHYY 模式里，绑定后面跟 `(` 只能是非法的）。
+   */
+  private readonly assumeEnumPatterns: boolean
 
   constructor(
     source: string,
     typeNames: Set<string> = new Set(),
     variantNames: Set<string> = new Set(),
+    assumeEnumPatterns = false,
   ) {
     this.lexer = new Lexer(source)
     this.cur = this.lexer.next()
     this.typeNames = typeNames
     this.variantNames = variantNames
+    this.assumeEnumPatterns = assumeEnumPatterns
   }
 
   /**
@@ -112,6 +136,7 @@ class Parser {
 
   private advance(): Token {
     const prev = this.cur
+    this.lastEnd = prev.start + prev.length
     this.cur = this.lexer.next()
     return prev
   }
@@ -189,7 +214,7 @@ class Parser {
       }
     }
 
-    const endTok = this.cur
+    const endTok = { end: this.lastEnd }
     return {
       kind: 'module',
       ...this.spanFrom(startTok, endTok),
@@ -343,7 +368,7 @@ class Parser {
       this.expect(TokenKind.Semicolon, '; after function declaration')
     }
 
-    const endTok = this.cur
+    const endTok = { end: this.lastEnd }
     return {
       kind: 'func_decl',
       ...this.spanFrom(startTok, endTok),
@@ -415,7 +440,7 @@ class Parser {
     }
 
     // ⚠️ `type X = ...` 结尾**不能**带 `;`（带了就报 "unexpected token ';' in expression"）
-    const endTok = this.cur
+    const endTok = { end: this.lastEnd }
     return {
       kind: 'type_decl',
       ...this.spanFrom(startTok, endTok),
@@ -440,7 +465,7 @@ class Parser {
       if (!this.match(TokenKind.Comma)) break
     }
     this.expect(TokenKind.RBrace, '} in struct definition')
-    const endTok = this.cur
+    const endTok = { end: this.lastEnd }
     return {
       kind: 'struct_def',
       ...this.spanFrom(startTok, endTok),
@@ -471,7 +496,7 @@ class Parser {
       if (!this.match(TokenKind.Comma)) break
     }
     this.expect(TokenKind.RBrace, '} in enum definition')
-    const endTok = this.cur
+    const endTok = { end: this.lastEnd }
     return {
       kind: 'enum_def',
       ...this.spanFrom(startTok, endTok),
@@ -493,7 +518,7 @@ class Parser {
     }
     this.expect(TokenKind.Semicolon, '; after extern declaration')
 
-    const endTok = this.cur
+    const endTok = { end: this.lastEnd }
     return {
       kind: 'extern_decl',
       ...this.spanFrom(startTok, endTok),
@@ -510,7 +535,7 @@ class Parser {
     const nameTok = this.expectIdent('module name')
     this.expect(TokenKind.Semicolon, '; after import')
 
-    const endTok = this.cur
+    const endTok = { end: this.lastEnd }
     return {
       kind: 'import_decl',
       ...this.spanFrom(startTok, endTok),
@@ -532,7 +557,7 @@ class Parser {
     if (!init) return null
     this.expect(TokenKind.Semicolon, '; after const declaration')
 
-    const endTok = this.cur
+    const endTok = { end: this.lastEnd }
     return {
       kind: 'const_decl',
       ...this.spanFrom(startTok, endTok),
@@ -582,7 +607,7 @@ class Parser {
     const init = this.parseExpr(PREC_NONE)
     this.expect(TokenKind.Semicolon, ';')
 
-    const endTok = this.cur
+    const endTok = { end: this.lastEnd }
     return {
       kind: 'let',
       ...this.spanFrom(startTok, endTok),
@@ -603,7 +628,7 @@ class Parser {
     }
     this.expect(TokenKind.Semicolon, ';')
 
-    const endTok = this.cur
+    const endTok = { end: this.lastEnd }
     return { kind: 'return', ...this.spanFrom(startTok, endTok), expr }
   }
 
@@ -611,7 +636,7 @@ class Parser {
     const startTok = this.cur
     this.advance()
     this.expect(TokenKind.Semicolon, ';')
-    const endTok = this.cur
+    const endTok = { end: this.lastEnd }
     return { kind: 'break', ...this.spanFrom(startTok, endTok) }
   }
 
@@ -619,7 +644,7 @@ class Parser {
     const startTok = this.cur
     this.advance()
     this.expect(TokenKind.Semicolon, ';')
-    const endTok = this.cur
+    const endTok = { end: this.lastEnd }
     return { kind: 'continue', ...this.spanFrom(startTok, endTok) }
   }
 
@@ -632,7 +657,7 @@ class Parser {
     } else {
       this.expect(TokenKind.Semicolon, ';')
     }
-    const endTok = this.cur
+    const endTok = { end: this.lastEnd }
     if (!expr) return null
     return { kind: 'defer', ...this.spanFrom(startTok, endTok), expr }
   }
@@ -644,7 +669,7 @@ class Parser {
     if (!this.check(TokenKind.RBrace) && !this.check(TokenKind.Eof)) {
       this.expect(TokenKind.Semicolon, ';')
     }
-    const endTok = this.cur
+    const endTok = { end: this.lastEnd }
     return { kind: 'expr_stmt', ...this.spanFrom(startTokOf(expr), endTok), expr }
   }
 
@@ -659,7 +684,7 @@ class Parser {
       if (this.cur.start === before) this.advance()
     }
     this.expect(TokenKind.RBrace, '}')
-    const endTok = this.cur
+    const endTok = { end: this.lastEnd }
     return { kind: 'block', ...this.spanFrom(startTok, endTok), statements }
   }
 
@@ -682,7 +707,7 @@ class Parser {
       }
     }
 
-    const endTok = this.cur
+    const endTok = { end: this.lastEnd }
     return { kind: 'if', ...this.spanFrom(startTok, endTok), cond, thenBody, elseBody }
   }
 
@@ -693,7 +718,7 @@ class Parser {
     if (!cond) return null
     // ⚠️ parseBlock 自己会消费 `{`
     const body = this.parseBlock()
-    const endTok = this.cur
+    const endTok = { end: this.lastEnd }
     return { kind: 'while', ...this.spanFrom(startTok, endTok), cond, body }
   }
 
@@ -717,7 +742,7 @@ class Parser {
     // ⚠️ parseBlock 自己会消费 `{`
     const body = this.parseBlock()
 
-    const endTok = this.cur
+    const endTok = { end: this.lastEnd }
     return {
       kind: 'for',
       ...this.spanFrom(startTok, endTok),
@@ -769,7 +794,7 @@ class Parser {
     }
 
     this.expect(TokenKind.RBrace, '}')
-    const endTok = this.cur
+    const endTok = { end: this.lastEnd }
     return { kind: 'match', ...this.spanFrom(startTok, endTok), subject, arms }
   }
 
@@ -781,7 +806,7 @@ class Parser {
     // `_` 通配符
     if (this.check(TokenKind.Ident) && this.cur.text === '_') {
       this.advance()
-      return { kind: 'pattern_wild', ...this.spanFrom(startTok, this.cur) }
+      return { kind: 'pattern_wild', ...this.spanFrom(startTok, { end: this.lastEnd }) }
     }
 
     // ── IDENT 分支 ──
@@ -799,7 +824,7 @@ class Parser {
         }
         return {
           kind: 'pattern_enum',
-          ...this.spanFrom(startTok, this.cur),
+          ...this.spanFrom(startTok, { end: this.lastEnd }),
           typeName: name,
           variantName: variantTok?.text ?? '',
           inner,
@@ -822,7 +847,11 @@ class Parser {
       //
       // 编译器靠符号表判断（名字是不是已声明的枚举变体）。IDE 是纯句法的，
       // 用预扫描收集到的**本文件里的变体名**来判断。
-      if (this.variantNames.has(name)) {
+      //
+      // ⚠️ `assumeEnumPatterns`（块视图重解析模式文本时）⇒ 符号表是空的
+      //    ⇒ 退一步用**纯语法**规则：**后面跟着 `(` 就是带载荷的变体**
+      //    （合法的 JHYY 模式里，绑定后面跟 `(` 只能是非法的）✓
+      if (this.variantNames.has(name) || (this.assumeEnumPatterns && this.check(TokenKind.LParen))) {
         let inner: Pattern | null = null
         if (this.match(TokenKind.LParen)) {
           inner = this.parsePattern()
@@ -830,7 +859,7 @@ class Parser {
         }
         return {
           kind: 'pattern_enum',
-          ...this.spanFrom(startTok, this.cur),
+          ...this.spanFrom(startTok, { end: this.lastEnd }),
           typeName: null,
           variantName: name,
           inner,
@@ -999,7 +1028,7 @@ class Parser {
       }
       const inner = this.parseType()
       if (!inner) return null
-      const endTok = this.cur
+      const endTok = { end: this.lastEnd }
       return { kind: 'ref_type', ...this.spanFrom(startTok, endTok), inner, isMutable }
     }
 
@@ -1007,7 +1036,7 @@ class Parser {
     if (this.match(TokenKind.Star)) {
       const inner = this.parseType()
       if (!inner) return null
-      const endTok = this.cur
+      const endTok = { end: this.lastEnd }
       return { kind: 'unary', ...this.spanFrom(startTok, endTok), op: '*', expr: inner }
     }
 
@@ -1017,7 +1046,7 @@ class Parser {
         this.expect(TokenKind.RBracket, '] after [*')
         const elem = this.parseType()
         if (!elem) return null
-        const endTok = this.cur
+        const endTok = { end: this.lastEnd }
         return { kind: 'slice_type', ...this.spanFrom(startTok, endTok), elemType: elem }
       }
       const base = this.parseType()
@@ -1036,7 +1065,7 @@ class Parser {
           }
         : null
       this.expect(TokenKind.RBracket, '] in array type')
-      const endTok = this.cur
+      const endTok = { end: this.lastEnd }
       return { kind: 'array_type', ...this.spanFrom(startTok, endTok), elemType: base, count }
     }
 
@@ -1077,7 +1106,7 @@ class Parser {
         col: innerTok.col,
         name: innerTok.text,
       }
-      const endTok = this.cur
+      const endTok = { end: this.lastEnd }
       return { kind: 'volatile_type', ...this.spanFrom(startTok, endTok), inner }
     }
 
@@ -1091,7 +1120,7 @@ class Parser {
       typeArgs = this.parseTypeArgs()
     }
 
-    const endTok = this.cur
+    const endTok = { end: this.lastEnd }
     const node: TypeExpr = {
       kind: 'ident',
       ...this.spanFrom(nameTok, endTok),
@@ -1179,7 +1208,7 @@ class Parser {
       }
       case TokenKind.LParen: {
         const args = this.parseCallArgs()
-        return { kind: 'call', ...this.spanFrom(startTok, this.cur), callee: left, args }
+        return { kind: 'call', ...this.spanFrom(startTok, { end: this.lastEnd }), callee: left, args }
       }
       case TokenKind.Dot: {
         const fieldTok = this.expectIdent('field name')
@@ -1200,14 +1229,14 @@ class Parser {
           this.expect(TokenKind.RBracket, ']')
           return {
             kind: 'slice_range',
-            ...this.spanFrom(startTok, this.cur),
+            ...this.spanFrom(startTok, { end: this.lastEnd }),
             base: left,
             rangeStart: indexExpr,
             rangeEnd: end,
           }
         }
         this.expect(TokenKind.RBracket, ']')
-        return { kind: 'index', ...this.spanFrom(startTok, this.cur), expr: left, index: indexExpr }
+        return { kind: 'index', ...this.spanFrom(startTok, { end: this.lastEnd }), expr: left, index: indexExpr }
       }
       case TokenKind.As: {
         const target = this.parseType()
@@ -1689,7 +1718,17 @@ export function parseIntLiteral(text: string): bigint {
     if (/^0[xX][0-9a-fA-F]+$/.test(body)) return BigInt(body)
     if (/^0[oO][0-7]+$/.test(body)) return BigInt(body)
     if (/^0[bB][01]+$/.test(body)) return BigInt(body)
-    if (/^0[0-7]+$/.test(body)) return BigInt(`0o${body.slice(1)}`)
+    if (/^0[0-9]+$/.test(body)) {
+      /*
+        ⚠️ **前导 0 = 八进制**（编译器 `jh_parse_int_literal`：base 8）——
+          遇到**>= 8** 的数字**就停**（编译器也停）⇒
+          ⇒ `08` 的值是 **0**（不是 8！）✓
+          （编译器**不报错**，只是值不同 ⇒ 以前 IDE 给 8 ⇒ 同一个源码
+            在 IDE 和编译器里算出不同的值 ⇒ 静悄悄的错 ✗）
+      */
+      const oct = body.slice(1).split(/[^0-7]/)[0]
+      return BigInt(`0o${oct || '0'}`)
+    }
     return BigInt(body)
   } catch {
     return 0n
@@ -1833,10 +1872,22 @@ function collectDeclaredNames(source: string): { types: Set<string>; variants: S
   return { types, variants }
 }
 
+/** `parse()` 的可选项。 */
+export interface ParseOptions {
+  /**
+   * **把模式里的 `标识符(` 当成枚举变体**（而不是绑定）。
+   *
+   * ⚠️ 只有**块视图重解析模式文本**时需要 —— 那段文本是从块字段里来的，
+   *    周边没有 enum 声明 ⇒ 符号表是空的 ⇒ `Some(v)` 会被当成绑定
+   *    ⇒ **括号里的绑定被静默丢掉**（详见 `Parser` 上那段说明）。
+   */
+  assumeEnumPatterns?: boolean
+}
+
 /** 解析一份 JHYY 源码。 */
-export function parse(source: string): ParseResult {
+export function parse(source: string, options: ParseOptions = {}): ParseResult {
   const { types, variants } = collectDeclaredNames(source)
-  const parser = new Parser(source, types, variants)
+  const parser = new Parser(source, types, variants, options.assumeEnumPatterns ?? false)
   const module = parser.parseModule()
   return { module, errors: parser.errors }
 }

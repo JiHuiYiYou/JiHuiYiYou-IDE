@@ -35,7 +35,7 @@ function makeBlock(statements: Stmt[]): BlockNode {
   return { kind: 'block', ...NO_POS, statements }
 }
 
-/** 解析一段不透明代码。 */
+/** 解析一段不透明代码（**当成模块**解析 ⇒ 拿到的是声明）。 */
 function parseSnippet(code: string): { decls: Decl[]; stmts: Stmt[] } {
   const result = parse(code)
   const decls = result.module?.declarations ?? []
@@ -44,6 +44,22 @@ function parseSnippet(code: string): { decls: Decl[]; stmts: Stmt[] } {
     if (decl.kind === 'expr_stmt' || decl.kind === 'let') stmts.push(decl)
   }
   return { decls, stmts }
+}
+
+/**
+ * 解析一段**语句**（不透明块在语句位置用）。
+ *
+ * ⚠️ **必须当成「函数体」解析** —— 当成模块解析的话，语句的种类会漏：
+ *    `defer` / `asm!` / `fence_*()` 这些**只在函数体里**才是语句
+ *    （在模块层面它们是「不认识的东西」）⇒ 会被漏掉 ⇒
+ *    **一条 `defer` 语句在块视图里就凭空消失了**（实测：`defer cleanup();`
+ *    往返之后变成了 `let ;`）✗
+ */
+function parseStmts(code: string): Stmt[] {
+  const result = parse(`fn __jhyy_snip() -> i32 {\n${code}\n}`)
+  const decl = result.module?.declarations[0]
+  if (!decl || decl.kind !== 'func_decl' || !decl.body) return []
+  return decl.body.statements
 }
 
 /** 不透明块在声明位置 → 解析出来的声明。 */
@@ -57,7 +73,7 @@ function opaqueDecls(tree: BlockTree): Decl[] {
 function opaqueStmts(tree: BlockTree): Stmt[] {
   const code = decodeOpaque(tree.fields?.CODE ?? '')
   if (!code.trim()) return []
-  return parseSnippet(code).stmts
+  return parseStmts(code)
 }
 
 /** match 的分支列表。 */
@@ -102,21 +118,39 @@ export function compileExpr(tree: BlockTree | null | undefined): Expr | null {
   switch (tree.type) {
     case BLOCK.value: {
       const kind = tree.fields?.KIND ?? 'number'
-      const value = tree.fields?.VALUE ?? ''
-      switch (kind) {
-        case 'string':
-          return { kind: 'string', ...NO_POS, value, raw: value }
-        case 'char':
-          return { kind: 'char', ...NO_POS, value: value.charCodeAt(0) || 0, raw: value }
-        case 'bool':
-          return { kind: 'bool', ...NO_POS, value: value === 'true' }
-        default:
-          return { kind: 'int', ...NO_POS, value: parseIntSafe(value), raw: value || '0' }
-      }
+      const content = tree.fields?.VALUE ?? ''
+      /*
+        ⚠️ **字面量的文本要按 `KIND` 生成** —— 以前是把 `VALUE` 原样塞进 `raw`
+        ⇒ **`KIND` 那个下拉完全没用**：选「字符串」+ 填 `hi` 生成的还是 `hi`
+        （一个标识符！）⇒ 用户的代码被改成了别的东西 ✗
+        ⇒ 现在：`KIND` 决定引号/字面量形态，`VALUE` 只是**内容** ✓
+      */
+      const raw =
+        kind === 'string'
+          ? `"${content}"`
+          : kind === 'char'
+            ? `'${content}'`
+            : kind === 'bool'
+              ? content.trim() === 'true'
+                ? 'true'
+                : 'false'
+              : content.trim()
+      // ⚠️ **用真的解析器解析这个字面量** ⇒ 进制前缀 / 类型后缀 / 浮点全都对
+      //    （`2.5f32`、`18446744073709551615u64`、`0u16`、`0xFF`…）
+      //    —— 自己手写 `BigInt()` 会把这些**当成 0**（值被悄悄改掉）✗
+      return (
+        parseLiteral(raw) ?? { kind: 'int' as const, ...NO_POS, value: 0n, raw: '0' }
+      )
     }
 
     case BLOCK.variable:
-      return { kind: 'ident', ...NO_POS, name: tree.fields?.NAME ?? '' }
+      return {
+        kind: 'ident',
+        ...NO_POS,
+        name: tree.fields?.NAME ?? '',
+        // ⚠️ **泛型实参不能丢** —— `Cap<i32>` 少了 `<i32>` 编译器会拒绝
+        typeArgs: parseTypeArgs(tree.fields?.TYPEARGS),
+      }
 
     case BLOCK.binop: {
       const left = compileExpr(tree.inputs?.LEFT)
@@ -141,7 +175,14 @@ export function compileExpr(tree: BlockTree | null | undefined): Expr | null {
     case BLOCK.call: {
       const callee: Expr = { kind: 'ident', ...NO_POS, name: tree.fields?.NAME ?? '' }
       const args = compileSlots(tree.statements?.ARGS ?? [])
-      return { kind: 'call', ...NO_POS, callee, args }
+      return {
+        kind: 'call',
+        ...NO_POS,
+        callee,
+        args,
+        // ⚠️ **turbofish 不能丢** —— `max::<i32>(7, 2)` 少了它编译器会拒绝
+        typeArgs: parseTypeArgs(tree.fields?.TYPEARGS),
+      }
     }
 
     // 值形态的赋值 / if / match
@@ -234,6 +275,7 @@ export function compileExpr(tree: BlockTree | null | undefined): Expr | null {
         kind: 'struct_lit',
         ...NO_POS,
         typeName: tree.fields?.TYPE ?? '',
+        typeArgs: parseTypeArgs(tree.fields?.TYPEARGS),
         fields,
       }
     }
@@ -245,6 +287,7 @@ export function compileExpr(tree: BlockTree | null | undefined): Expr | null {
         ...NO_POS,
         typeName: tree.fields?.TYPE ?? '',
         variantName: tree.fields?.VARIANT ?? '',
+        typeArgs: parseTypeArgs(tree.fields?.TYPEARGS),
         payload,
       }
     }
@@ -339,17 +382,96 @@ export function compileExpr(tree: BlockTree | null | undefined): Expr | null {
   }
 }
 
-function parseIntSafe(text: string): bigint {
-  const t = text.trim()
-  if (!t) return 0n
-  try {
-    if (/^0[xX][0-9a-fA-F]+$/.test(t)) return BigInt(t)
-    if (/^0[oO][0-7]+$/.test(t)) return BigInt(t)
-    if (/^0[bB][01]+$/.test(t)) return BigInt(t)
-    return BigInt(t)
-  } catch {
-    return 0n
+/**
+ * 解析一个字面量文本 → AST 节点。
+ *
+ * ⚠️ **必须用真的词法/语法** —— 手写 `BigInt()` / `Number()` 会把
+ *    `2.5f32`、`18446744073709551615u64`、`0u16`、`0xFF` 这些**当成 0**
+ *    （值被悄悄改掉，而编译器**不报错**）✗
+ *    ⇒ 借一小段语法把字面量交给**同一个解析器** ✓
+ *
+ * ⚠️ 只接受**真的字面量** —— 用户在字段里填了 `abc` 的话，那是个标识符，
+ *    不能当字面量编出去（否则 `KIND=string` + `abc` 会生成一个变量引用）✗
+ */
+function parseLiteral(raw: string): Expr | null {
+  if (!raw) return null
+  const result = parse(`fn __lit() -> i32 { let __v = ${raw}; }`)
+  const decl = result.module?.declarations[0]
+  if (!decl || decl.kind !== 'func_decl' || !decl.body) return null
+  const stmt = decl.body.statements[0]
+  if (!stmt || stmt.kind !== 'let' || !stmt.init) return null
+  const init = stmt.init
+  switch (init.kind) {
+    case 'int':
+    case 'float':
+    case 'string':
+    case 'char':
+    case 'bool':
+      // 位置是**片段里**的 ⇒ 换成 NO_POS（块路径的节点都不带真实位置）
+      return { ...init, start: 0, end: 0, line: 1, col: 1 }
+    default:
+      return null
   }
+}
+
+/**
+ * 泛型参数列表文本（`T, U`）→ 参数名数组。
+ *
+ * ⚠️ 以前块树里**没有**这个信息 ⇒ 泛型声明往返之后**泛型参数全丢了**
+ *    （`fn max<T>(a: T, b: T) -> T` → `fn max(a: T, b: T) -> T`）
+ *    ⇒ **编译器会拒绝**（用了没声明的泛型参数）✗✗
+ */
+function parseTypeParams(text: string | undefined): string[] {
+  if (!text) return []
+  return text
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
+/**
+ * 泛型实参文本（`i32, i64`）→ 类型列表。
+ *
+ * ⚠️ 以前**整段丢了** —— `Cap<i32> { ... }` 变成 `Cap { ... }`、
+ *    `max::<i32>(7, 2)` 变成 `max(7, 2)` ⇒ 泛型代码**编译不过** ✗
+ */
+function parseTypeArgs(text: string | undefined): TypeExpr[] | undefined {
+  if (!text || !text.trim()) return undefined
+  const out: TypeExpr[] = []
+  for (const part of text.split(',')) {
+    const t = part.trim()
+    if (!t) continue
+    const type = parseTypeText(t)
+    if (!type) return undefined
+    out.push(type)
+  }
+  return out.length > 0 ? out : undefined
+}
+
+/**
+ * 属性文本（`inline` / `naked` / `link_section(".text")`，逗号分隔）→ 属性。
+ *
+ * ⚠️ 以前块树里**没有**这个信息 ⇒ `#[inline]` / `#[naked]` / `#[link_section]`
+ *    往返之后**全丢了**（`#[inline] fn dbl(...)` → `fn dbl(...)`）✗
+ */
+function parseAttrs(text: string | undefined): {
+  isInline: boolean
+  isNaked: boolean
+  linkSection: string | null
+} {
+  let isInline = false
+  let isNaked = false
+  let linkSection: string | null = null
+  for (const part of (text ?? '').split(',')) {
+    const t = part.trim()
+    if (t === 'inline') isInline = true
+    else if (t === 'naked') isNaked = true
+    else {
+      const m = /link_section\(\s*"([^"]*)"\s*\)/.exec(t)
+      if (m) linkSection = m[1]
+    }
+  }
+  return { isInline, isNaked, linkSection }
 }
 
 // ── 模式 ──────────────────────────────────────────────────────────
@@ -358,8 +480,18 @@ function parseIntSafe(text: string): bigint {
 export function parsePatternText(text: string): Pattern | null {
   const trimmed = text.trim()
   if (!trimmed) return null
-  // 用一个 match 的 arm 来借用模式解析器
-  const result = parse(`fn __m(x: i32) -> i32 { match x { ${trimmed} => 0, } }`)
+  /*
+    用一个 match 的 arm 来借用模式解析器。
+
+    ⚠️ `assumeEnumPatterns: true` —— 这段片段里**没有 enum 声明**
+    ⇒ 符号表是空的 ⇒ 短名变体 `Some(v)` 会被当成绑定 `Some`
+    ⇒ **括号里的绑定被静默丢掉**（`Some(v) => v` 变成 `Some => v`，
+    而 body 还在引用 `v` ⇒ 读一个未定义的变量）✗
+    ⇒ 这条路用「`标识符(` 一定是带载荷的变体」兜底 ✓
+  */
+  const result = parse(`fn __m(x: i32) -> i32 { match x { ${trimmed} => 0, } }`, {
+    assumeEnumPatterns: true,
+  })
   const decl = result.module?.declarations[0]
   if (!decl || decl.kind !== 'func_decl' || !decl.body) return null
   const stmt = decl.body.statements[0]
@@ -382,7 +514,19 @@ export function compileStmtList(trees: BlockTree[]): Stmt[] {
 export function compileStmt(tree: BlockTree): Stmt | null {
   switch (tree.type) {
     case BLOCK.let: {
-      const init = compileExpr(tree.inputs?.VALUE)
+      /*
+        ⚠️ **没有初始值 ⇒ 补 0**（不是不写）——
+        真实编译器的 `parse_let` **强制要求 `=`**（`let x;` 是语法错误）
+        ⇒ 以前这里 `init` 为 null 时打印器会吐出 `let x;`
+        ⇒ **块视图能生成连 IDE 自己都解析不了的代码** ✗
+        ⇒ 补 0（跟「打印块没有占位符时实参自动补 0」一个路子）✓
+      */
+      const init = compileExpr(tree.inputs?.VALUE) ?? {
+        kind: 'int' as const,
+        ...NO_POS,
+        value: 0n,
+        raw: '0',
+      }
       const typeAnnotation = parseTypeText(tree.fields?.TYPE ?? '')
       return {
         kind: 'let',
@@ -432,13 +576,23 @@ export function compileStmt(tree: BlockTree): Stmt | null {
       const start = compileExpr(tree.inputs?.START)
       const end = compileExpr(tree.inputs?.END)
       if (!start) return null
+      /*
+        ⚠️ **`isSlice` 不能写死成 false** —— `for x in slice`（迭代切片）和
+        `for i in a..b`（迭代区间）是**两种循环**：
+        - 区间是**半开**的 ⇒ `a..b` 迭代 b-a 次
+        - 切片是**遍历元素** ⇒ `for x in s`
+        以前写死 false ⇒ 切片循环被改成 `for x in s..0` ⇒ **循环体一次都不跑**
+        （而且编译器**不报错** —— 它只是迭代了一个空区间）✗✗
+        ⇒ 块树上用 `FORM` 字段区分（`'SLICE'` / `'RANGE'`）✓
+      */
+      const isSlice = tree.fields?.FORM === 'SLICE'
       return {
         kind: 'for',
         ...NO_POS,
         varName: tree.fields?.NAME ?? '',
         rangeStart: start,
-        rangeEnd: end,
-        isSlice: false,
+        rangeEnd: isSlice ? null : end,
+        isSlice,
         body: { kind: 'block', ...NO_POS, statements: compileStmtList(tree.statements?.BODY ?? []) },
       }
     }
@@ -467,7 +621,13 @@ export function compileStmt(tree: BlockTree): Stmt | null {
       return {
         kind: 'expr_stmt',
         ...NO_POS,
-        expr: { kind: 'call', ...NO_POS, callee, args },
+        expr: {
+          kind: 'call',
+          ...NO_POS,
+          callee,
+          args,
+          typeArgs: parseTypeArgs(tree.fields?.TYPEARGS),
+        },
       }
     }
 
@@ -527,6 +687,7 @@ export function compileDecl(tree: BlockTree): Decl | null {
         })
         .filter((p): p is FuncParam => p !== null)
       const returnType = parseTypeText(tree.fields?.RET ?? '')
+      const attrs = parseAttrs(tree.fields?.ATTRS)
       return {
         kind: 'func_decl',
         ...NO_POS,
@@ -535,10 +696,11 @@ export function compileDecl(tree: BlockTree): Decl | null {
         returnType,
         body: { kind: 'block', ...NO_POS, statements: compileStmtList(tree.statements?.BODY ?? []) },
         isExtern: false,
-        isInline: false,
-        isNaked: false,
-        linkSection: null,
-        typeParams: [],
+        isInline: attrs.isInline,
+        isNaked: attrs.isNaked,
+        linkSection: attrs.linkSection,
+        // ⚠️ **泛型参数不能丢** —— 丢了编译器会拒绝（用了没声明的参数）✗
+        typeParams: parseTypeParams(tree.fields?.TYPEPARAMS),
       }
     }
 
@@ -556,7 +718,7 @@ export function compileDecl(tree: BlockTree): Decl | null {
         ...NO_POS,
         name: tree.fields?.NAME ?? '',
         body: def,
-        typeParams: [],
+        typeParams: parseTypeParams(tree.fields?.TYPEPARAMS),
       }
     }
 
@@ -578,7 +740,7 @@ export function compileDecl(tree: BlockTree): Decl | null {
         ...NO_POS,
         name: tree.fields?.NAME ?? '',
         body: def,
-        typeParams: [],
+        typeParams: parseTypeParams(tree.fields?.TYPEPARAMS),
       }
     }
 
@@ -590,7 +752,7 @@ export function compileDecl(tree: BlockTree): Decl | null {
         ...NO_POS,
         name: tree.fields?.NAME ?? '',
         body,
-        typeParams: [],
+        typeParams: parseTypeParams(tree.fields?.TYPEPARAMS),
       }
     }
 
@@ -633,7 +795,30 @@ export function compileDecl(tree: BlockTree): Decl | null {
 
 /** 块列表 → 模块。 */
 export function compileModule(trees: BlockTree[]): ModuleNode {
-  const declarations = compileDeclList(trees)
+  /*
+    ⚠️ **模块级属性（`#[no_std]`）不是声明** —— 它挂在**模块**上
+      （`ModuleNode.isNoStd`）⇒ 以前这里写死 `false` ⇒ **`#[no_std]` 丢了**
+      ⇒ 程序会**多链一个运行时**（行为完全变了！）✗✗
+    ⇒ 反编译器把它放在**第一个**「原始代码」块里 ⇒ 这里单独拎出来 ✓
+  */
+  let isNoStd = false
+  const declTrees: BlockTree[] = []
+  for (const tree of trees) {
+    if (!isNoStd && tree.type === BLOCK.opaque) {
+      const code = decodeOpaque(tree.fields?.CODE ?? '').trim()
+      if (code.startsWith('#[')) {
+        const parsed = parse(code)
+        const mod = parsed.module
+        if (mod?.isNoStd && mod.declarations.length === 0) {
+          isNoStd = true
+          continue
+        }
+      }
+    }
+    declTrees.push(tree)
+  }
+
+  const declarations = compileDeclList(declTrees)
 
   // 用了打印块但文件里没有 printf 的 extern 声明 → 补一个
   const usesPrintf = JSON.stringify(trees).includes('"jhyy_print"')
@@ -663,5 +848,5 @@ export function compileModule(trees: BlockTree[]): ModuleNode {
     })
   }
 
-  return { kind: 'module', ...NO_POS, declarations, isNoStd: false }
+  return { kind: 'module', ...NO_POS, declarations, isNoStd }
 }

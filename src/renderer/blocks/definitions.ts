@@ -1,6 +1,6 @@
 import * as Blockly from 'blockly/core'
 import * as enMessages from 'blockly/msg/en'
-import { BIN_OPS, BLOCK, TYPE_CHOICES, UN_OPS, VALUE_KINDS } from '@lang/blocks/tree'
+import { BIN_OPS, BLOCK, FOR_FORM, TYPE_CHOICES, UN_OPS, VALUE_KINDS } from '@lang/blocks/tree'
 import { DoubleClickWatcher } from './doubleClick'
 
 /**
@@ -383,6 +383,51 @@ function formatField(defaultValue: string): ParamField {
 }
 
 /**
+ * 给字段挂一个「值变了就回调」的钩子。
+ *
+ * ⚠️ **Blockly 13 没有 `Field.setOnChange`**（老版本那个 API 被删了）⇒
+ *    只能**包一层 `setValue`** —— `setValue` 是所有字段改值的唯一入口 ✓
+ *    （XML 灌进来的时候也走它 ⇒ 灌完界面就能调对 ✓）
+ */
+function onValueChange<T>(field: Blockly.Field<T>, cb: (value: T | null) => void): void {
+  const original = field.setValue.bind(field)
+  field.setValue = (newValue: T, fireChangeEvent?: boolean): void => {
+    original(newValue, fireChangeEvent)
+    cb(field.getValue())
+  }
+}
+
+/**
+ * **「有值才显示」的字段** —— 泛型参数、turbofish 实参这些**大多数块用不上**，
+ * 摆在明面上太吵 ⇒ **没值就藏起来**，等真的有值了再显示 ✓
+ *
+ * ⚠️ **藏起来不影响序列化** —— Blockly 写 XML 时不看 input 的可见性
+ *   （实测：隐藏的 input 里的字段照样进 XML、也照样读得回来）✓
+ *   ⇒ 所以「藏起来」只是**视觉**上的，**信息不会丢** ✓
+ *
+ * @param inputName  挂在哪个 dummy input 上
+ * @param fieldName  字段名（**必须**登记进 `tree.ts` 的 `BLOCK_FIELDS`）
+ * @param label      显示在字段前面的字（空字符串 = 不显示）
+ */
+function optionalField(
+  block: Blockly.BlockSvg,
+  inputName: string,
+  fieldName: string,
+  label: string,
+): void {
+  const input = block.appendDummyInput(inputName)
+  // ⚠️ 静态标签**不要给名字** ⇒ 它不会被写进 XML（见 CLAUDE.md 那条）
+  if (label) input.appendField(new Blockly.FieldLabel(label))
+  const field = new Blockly.FieldTextInput('')
+  input.appendField(field, fieldName)
+  const sync = (): void => {
+    input.setVisible(String(field.getValue() ?? '').trim() !== '')
+  }
+  onValueChange(field, sync)
+  sync()
+}
+
+/**
  * 暗色主题。
  *
  * Blockly 默认是浅色的（白底黑字），跟 IDE 的暗色调不搭 —— 而且工具箱那一条
@@ -477,6 +522,8 @@ export function defineJhyyBlocks(): void {
     [BLOCK.variable]: {
       init(this: Blockly.BlockSvg) {
         this.appendDummyInput('NAME').appendField(new Blockly.FieldTextInput('x'), 'NAME')
+        // 泛型实参（Cap<i32>）—— 大多数时候用不上 ⇒ 没值就藏着
+        optionalField(this, 'TYPEARGS', 'TYPEARGS', '实参')
         this.setOutput(true)
         this.setStyle(STYLE.var)
         this.setTooltip('引用一个变量')
@@ -596,6 +643,8 @@ export function defineJhyyBlocks(): void {
           new Blockly.FieldTextInput('printf'),
           'NAME',
         )
+        // turbofish 的类型实参（max::<i32>(…)）
+        optionalField(this, 'TYPEARGS', 'TYPEARGS', '实参')
         this.appendDummyInput('LBL_ARGS').appendField(new Blockly.FieldLabel('参数'))
         this.appendStatementInput('ARGS')
         this.setOutput(true)
@@ -699,13 +748,39 @@ export function defineJhyyBlocks(): void {
           .appendField(new Blockly.FieldTextInput('i'), 'NAME')
           .appendField('in', 'LBL_IN')
         this.appendValueInput('START').setCheck(null)
-        this.appendDummyInput('DOTDOT').appendField('..', 'LBL_')
+        /*
+          ⚠️ **区间 / 切片是两种循环** ⇒ 给一个下拉让用户选。
+
+          以前这个 `..` 是**写死的静态标签** ⇒ 块树里没有任何信息能区分
+          `for i in 0..10`（区间）和 `for x in s`（切片）⇒ 编译回来一律
+          当区间 ⇒ **`for x in s` 变成 `for x in s..0`** ⇒ 循环体一次都不跑，
+          而**编译器不报错**（它只是迭代了一个空区间）✗✗
+        */
+        this.appendDummyInput('DOTDOT').appendField(
+          new Blockly.FieldDropdown([
+            ['..', FOR_FORM.range],
+            ['切片', FOR_FORM.slice],
+          ]),
+          'FORM',
+        )
         this.appendValueInput('END').setCheck(null)
         this.appendDummyInput('LBL_BODY').appendField(new Blockly.FieldLabel('循环体'))
         this.appendStatementInput('BODY')
         this.setPreviousStatement(true)
         this.setNextStatement(true)
         this.setStyle(STYLE.control)
+        /*
+          形态变了 ⇒ 终点那个孔跟着显/隐（切片循环没有终点）。
+
+          ⚠️ `setVisible(false)` **不会**断开已连接的块（实测）⇒
+          切回「区间」时终点还在 ✓（用户的工作不会丢）
+        */
+        const form = this.getField('FORM') as Blockly.FieldDropdown | null
+        if (form) {
+          onValueChange(form, (value) => {
+            this.getInput('END')?.setVisible(value !== FOR_FORM.slice)
+          })
+        }
       },
     },
 
@@ -743,6 +818,10 @@ export function defineJhyyBlocks(): void {
         this.appendDummyInput('ROW1')
           .appendField('fn', 'LBL_FN')
           .appendField(new Blockly.FieldTextInput('main_jhyy'), 'NAME')
+        // 泛型参数（fn max<T>(…)）—— 大多数时候用不上 ⇒ 没值就藏着
+        optionalField(this, 'TYPEPARAMS', 'TYPEPARAMS', '泛型')
+        // 属性（#[inline] / #[naked] / #[link_section("…")]）
+        optionalField(this, 'ATTRS', 'ATTRS', '属性')
         this.appendDummyInput('ROW2')
           .appendField('参数', 'LBL_PARAMS')
         this.appendStatementInput('PARAMS')
@@ -776,6 +855,7 @@ export function defineJhyyBlocks(): void {
           .appendField('type', 'LBL_TYPE')
           .appendField(new Blockly.FieldTextInput('Point'), 'NAME')
           .appendField('= struct', 'LBL_STRUCT')
+        optionalField(this, 'TYPEPARAMS', 'TYPEPARAMS', '泛型')
         this.appendDummyInput('LBL_FIELDS').appendField(new Blockly.FieldLabel('字段'))
         this.appendStatementInput('FIELDS')
         this.setPreviousStatement(true)
@@ -802,6 +882,7 @@ export function defineJhyyBlocks(): void {
           .appendField('type', 'LBL_TYPE')
           .appendField(new Blockly.FieldTextInput('Color'), 'NAME')
           .appendField('= enum', 'LBL_ENUM')
+        optionalField(this, 'TYPEPARAMS', 'TYPEPARAMS', '泛型')
         this.appendDummyInput('LBL_VARIANTS').appendField(new Blockly.FieldLabel('变体'))
         this.appendStatementInput('VARIANTS')
         this.setPreviousStatement(true)
@@ -829,6 +910,7 @@ export function defineJhyyBlocks(): void {
           new Blockly.FieldTextInput('Point'),
           'TYPE',
         )
+        optionalField(this, 'TYPEARGS', 'TYPEARGS', '实参')
         this.appendDummyInput('LBL_FIELDS').appendField(new Blockly.FieldLabel('字段'))
         this.appendStatementInput('FIELDS')
         this.setOutput(true)
@@ -852,6 +934,7 @@ export function defineJhyyBlocks(): void {
           .appendField(new Blockly.FieldTextInput('Color'), 'TYPE')
           .appendField('::', 'LBL_COLONCOLON')
           .appendField(new Blockly.FieldTextInput('Red'), 'VARIANT')
+        optionalField(this, 'TYPEARGS', 'TYPEARGS', '实参')
         this.appendValueInput('PAYLOAD').setCheck(null)
         this.setOutput(true)
         this.setStyle(STYLE.value)
@@ -891,6 +974,7 @@ export function defineJhyyBlocks(): void {
           .appendField(new Blockly.FieldTextInput('Age'), 'NAME')
           .appendField('=', 'LBL_EQ')
           .appendField(typeField('i32'), 'TYPE')
+        optionalField(this, 'TYPEPARAMS', 'TYPEPARAMS', '泛型')
         this.setPreviousStatement(true)
         this.setNextStatement(true)
         this.setStyle(STYLE.type)
@@ -991,6 +1075,8 @@ export function defineJhyyBlocks(): void {
           new Blockly.FieldTextInput('printf'),
           'NAME',
         )
+        // turbofish 的类型实参（max::<i32>(…)）
+        optionalField(this, 'TYPEARGS', 'TYPEARGS', '实参')
         this.appendDummyInput('LBL_ARGS').appendField(new Blockly.FieldLabel('参数'))
         this.appendStatementInput('ARGS')
         this.setPreviousStatement(true)

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parse } from '../../src/lang/parser'
+import { parse, parseIntLiteral } from '../../src/lang/parser'
 import { print } from '../../src/lang/printer'
 
 function parseOk(src: string) {
@@ -105,6 +105,41 @@ fn f() -> i32 { let p = Pair<i32> { a: 1, b: 2 }; let n = max::<i32>(1, 2); n }`
     const r = parse('fn f() -> i32 {\n    let x = ;\n}')
     expect(r.errors.length).toBeGreaterThan(0)
     expect(r.errors[0].line).toBe(2)
+  })
+})
+
+/**
+ * **整数字面量的值** —— 必须跟**真实编译器**一样。
+ *
+ * ⚠️ 前导 `0` = **八进制**（编译器 `jh_parse_int_literal`：base 8）⇒
+ *   遇到 **>= 8** 的数字**就停** ⇒
+ *   ⇒ **`08` 的值是 0**（不是 8！）——
+ *   编译器**不报错**（只是值不同）⇒ 以前 IDE 给 8 ⇒
+ *   **同一份源码在 IDE 和编译器里算出不同的值** ⇒ 静悄悄的错 ✗
+ */
+describe('整数字面量', () => {
+  it('跟真实编译器一致（进制前缀 / 八进制 / 类型后缀）', () => {
+    expect(parseIntLiteral('42')).toBe(42n)
+    expect(parseIntLiteral('0xFF')).toBe(255n)
+    expect(parseIntLiteral('0o77')).toBe(63n)
+    expect(parseIntLiteral('0b1010')).toBe(10n)
+    // ⚠️ **前导 0 = 八进制** ⇒ `077` = 63 ✓
+    expect(parseIntLiteral('077')).toBe(63n)
+    // ⚠️ **08 = 0**（八进制遇到 8 就停）—— 编译器也是这个值 ✓
+    expect(parseIntLiteral('08')).toBe(0n)
+    // ⚠️ 类型后缀要剥掉 ✓
+    expect(parseIntLiteral('42i32')).toBe(42n)
+    expect(parseIntLiteral('18446744073709551615u64')).toBe(18446744073709551615n)
+  })
+
+  it('解析出来的 AST 里，值也是那个值', () => {
+    const m = parseOk('fn f() -> i32 { let x = 077; x }')
+    const decl = m.declarations[0]
+    if (decl.kind !== 'func_decl' || !decl.body) throw new Error('bad')
+    const stmt = decl.body.statements[0]
+    if (stmt.kind !== 'let' || !stmt.init) throw new Error('bad')
+    expect(stmt.init.kind).toBe('int')
+    expect((stmt.init as { value: bigint }).value).toBe(63n)
   })
 })
 

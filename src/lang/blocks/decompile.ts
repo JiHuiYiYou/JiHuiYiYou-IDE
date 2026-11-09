@@ -38,6 +38,17 @@ function opaqueValue(node: { start: number; end: number }, source: string): Bloc
   })
 }
 
+/**
+ * 泛型实参 → 文本（`i32, i64`）。
+ *
+ * ⚠️ 以前**整段丢了** —— `Cap<i32> { ... }` 变成 `Cap { ... }`、
+ *    `max::<i32>(7, 2)` 变成 `max(7, 2)` ⇒ 泛型代码**编译不过** ✗
+ */
+function typeArgsText(args: TypeExpr[] | undefined, source: string): string {
+  if (!args || args.length === 0) return ''
+  return args.map((t) => typeText(t, source)).join(', ')
+}
+
 /** 类型 → 文本（类型的"块"就是一段文本，块视图里用输入框表示）。 */
 function typeText(type: TypeExpr, source: string): string {
   switch (type.kind) {
@@ -99,9 +110,23 @@ function patternText(pattern: Pattern, source: string): string {
   }
 }
 
-/** 字面量 → 文本。 */
+/**
+ * 字面量 → 块字段里的**内容**。
+ *
+ * ⚠️ **字符串/字符只取「引号里面」** —— 块字段存的是**内容**，
+ *    引号由 `KIND` 决定（编译器那边按 `KIND` 补引号）。
+ *    ⚠️ 转义**保持原样**（`\n` 还是那两个字）⇒ 补回引号后一模一样 ✓
+ *    （跟「打印块」的格式串一个路子 —— 它也是存内容、不存引号）✓
+ */
 function literalText(expr: Expr, source: string): string {
-  return source.slice(expr.start, expr.end)
+  const raw = source.slice(expr.start, expr.end)
+  if (expr.kind === 'string' || expr.kind === 'char') {
+    return raw.length >= 2 ? raw.slice(1, -1) : raw
+  }
+  if (expr.kind === 'bool') {
+    return expr.value ? 'true' : 'false'
+  }
+  return raw
 }
 
 // ── 表达式 ────────────────────────────────────────────────────────
@@ -127,7 +152,9 @@ export function decompileExpr(expr: Expr, source: string): BlockTree | null {
     }
 
     case 'ident':
-      return block(BLOCK.variable, { fields: { NAME: expr.name } })
+      return block(BLOCK.variable, {
+        fields: { NAME: expr.name, TYPEARGS: typeArgsText(expr.typeArgs, source) },
+      })
 
     case 'binary':
       return block(BLOCK.binop, {
@@ -157,7 +184,7 @@ export function decompileExpr(expr: Expr, source: string): BlockTree | null {
 
     case 'call':
       return block(BLOCK.call, {
-        fields: { NAME: calleeName(expr.callee, source) },
+        fields: { NAME: calleeName(expr.callee, source), TYPEARGS: typeArgsText(expr.typeArgs, source) },
         statements: {
           ARGS: expr.args
             .map((a) => argSlot(decompileExpr(a, source)))
@@ -206,7 +233,7 @@ export function decompileExpr(expr: Expr, source: string): BlockTree | null {
 
     case 'struct_lit':
       return block(BLOCK.structLit, {
-        fields: { TYPE: expr.typeName },
+        fields: { TYPE: expr.typeName, TYPEARGS: typeArgsText(expr.typeArgs, source) },
         statements: {
           FIELDS: expr.fields
             .map((f) =>
@@ -221,7 +248,11 @@ export function decompileExpr(expr: Expr, source: string): BlockTree | null {
 
     case 'enum_variant':
       return block(BLOCK.enumVariant, {
-        fields: { TYPE: expr.typeName, VARIANT: expr.variantName },
+        fields: {
+          TYPE: expr.typeName,
+          VARIANT: expr.variantName,
+          TYPEARGS: typeArgsText(expr.typeArgs, source),
+        },
         inputs: { PAYLOAD: expr.payload ? decompileExpr(expr.payload, source) : null },
       })
 
@@ -273,7 +304,7 @@ function decompileExprStmt(expr: Expr, source: string): BlockTree | null {
       const scanned = scanfBlock(expr, source)
       if (scanned) return scanned
       return block(BLOCK.callStmt, {
-        fields: { NAME: calleeName(expr.callee, source) },
+        fields: { NAME: calleeName(expr.callee, source), TYPEARGS: typeArgsText(expr.typeArgs, source) },
         statements: {
           ARGS: expr.args
             .map((a) => argSlot(decompileExpr(a, source)))
@@ -470,7 +501,13 @@ export function decompileStmt(stmt: Stmt, source: string): BlockTree | null {
 
     case 'for':
       return block(BLOCK.for, {
-        fields: { NAME: stmt.varName },
+        fields: {
+          NAME: stmt.varName,
+          // ⚠️ **区间 / 切片是两种循环** ⇒ 必须带进块树
+          //    （以前不带 ⇒ 编译回来一律当区间 ⇒ `for x in s` 变成 `for x in s..0`
+          //    ⇒ 循环体一次都不跑，而编译器**不报错**）✗✗
+          FORM: stmt.isSlice ? 'SLICE' : 'RANGE',
+        },
         inputs: {
           START: decompileExpr(stmt.rangeStart, source),
           END: stmt.rangeEnd ? decompileExpr(stmt.rangeEnd, source) : null,
@@ -510,6 +547,11 @@ export function decompileDecl(decl: Decl, source: string): BlockTree | null {
         fields: {
           NAME: decl.name,
           RET: decl.returnType ? typeText(decl.returnType, source) : '',
+          // ⚠️ **泛型参数不能丢** —— 丢了编译器会拒绝（用了没声明的参数）✗
+          TYPEPARAMS: decl.typeParams.join(', '),
+          // ⚠️ **属性不能丢** —— `#[inline]` / `#[naked]` / `#[link_section]`
+          //    丢了语义就变了（`inline` 变成普通函数）✗
+          ATTRS: attrsText(decl),
         },
         statements: {
           PARAMS: decl.params.map((p) =>
@@ -524,7 +566,7 @@ export function decompileDecl(decl: Decl, source: string): BlockTree | null {
     case 'type_decl': {
       if (decl.body.kind === 'struct_def') {
         return block(BLOCK.structDef, {
-          fields: { NAME: decl.name },
+          fields: { NAME: decl.name, TYPEPARAMS: decl.typeParams.join(', ') },
           statements: {
             FIELDS: decl.body.fields.map((f) =>
               block(BLOCK.fieldDecl, {
@@ -536,7 +578,7 @@ export function decompileDecl(decl: Decl, source: string): BlockTree | null {
       }
       if (decl.body.kind === 'enum_def') {
         return block(BLOCK.enumDef, {
-          fields: { NAME: decl.name },
+          fields: { NAME: decl.name, TYPEPARAMS: decl.typeParams.join(', ') },
           statements: {
             VARIANTS: decl.body.variants.map((v) =>
               block(BLOCK.variantDecl, {
@@ -551,7 +593,11 @@ export function decompileDecl(decl: Decl, source: string): BlockTree | null {
       }
       // 类型别名
       return block(BLOCK.typedef, {
-        fields: { NAME: decl.name, TYPE: typeText(decl.body, source) },
+        fields: {
+          NAME: decl.name,
+          TYPE: typeText(decl.body, source),
+          TYPEPARAMS: decl.typeParams.join(', '),
+        },
       })
     }
 
@@ -580,9 +626,31 @@ export function decompileDecl(decl: Decl, source: string): BlockTree | null {
   }
 }
 
+/**
+ * 属性 → 文本（`inline` / `naked` / `link_section(".text")`，逗号分隔）。
+ *
+ * ⚠️ 顺序跟打印器一致（`inline` → `naked` → `link_section`）⇒
+ *    往返之后打印出来的**一模一样** ✓
+ */
+function attrsText(fn: { isInline: boolean; isNaked: boolean; linkSection: string | null }): string {
+  const parts: string[] = []
+  if (fn.isInline) parts.push('inline')
+  if (fn.isNaked) parts.push('naked')
+  if (fn.linkSection) parts.push(`link_section("${fn.linkSection}")`)
+  return parts.join(', ')
+}
+
 /** 整个模块 → 顶层块列表。 */
 export function decompileModule(module: ModuleNode, source: string): BlockTree[] {
   const out: BlockTree[] = []
+  /*
+    ⚠️ **模块级属性（`#[no_std]`）不是声明** ⇒ 单独放在**第一个**「原始代码」块里
+      （编译器那边会把它认出来 ⇒ `ModuleNode.isNoStd` ✓）
+      —— 以前它直接**丢了** ⇒ 程序会**多链一个运行时**（行为变了）✗✗
+  */
+  if (module.isNoStd) {
+    out.push(block(BLOCK.opaque, { fields: { CODE: encodeOpaque('#[no_std]') } }))
+  }
   for (const decl of module.declarations) {
     const b = decompileDecl(decl, source)
     if (b) out.push(b)

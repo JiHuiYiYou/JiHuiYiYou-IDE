@@ -116,10 +116,10 @@ export const BLOCK_FIELDS: Record<string, string[]> = {
   [BLOCK.let]: ['NAME', 'MUT', 'TYPE'],
   [BLOCK.set]: [],
   [BLOCK.value]: ['KIND', 'VALUE'],
-  [BLOCK.variable]: ['NAME'],
+  [BLOCK.variable]: ['NAME', 'TYPEARGS'],
   [BLOCK.binop]: ['OP'],
   [BLOCK.unop]: ['OP'],
-  [BLOCK.call]: ['NAME'],
+  [BLOCK.call]: ['NAME', 'TYPEARGS'],
   [BLOCK.qualifiedCall]: ['MODULE', 'NAME'],
   [BLOCK.field]: ['NAME'],
   [BLOCK.index]: [],
@@ -127,30 +127,30 @@ export const BLOCK_FIELDS: Record<string, string[]> = {
   [BLOCK.array]: [],
   [BLOCK.if]: [],
   [BLOCK.while]: [],
-  [BLOCK.for]: ['NAME'],
+  [BLOCK.for]: ['NAME', 'FORM'],
   [BLOCK.return]: [],
   [BLOCK.break]: [],
   [BLOCK.continue]: [],
   [BLOCK.print]: ['FMT'],
   [BLOCK.input]: ['KIND'],
-  [BLOCK.func]: ['NAME', 'RET'],
+  [BLOCK.func]: ['NAME', 'RET', 'TYPEPARAMS', 'ATTRS'],
   [BLOCK.param]: ['NAME', 'TYPE'],
-  [BLOCK.structDef]: ['NAME'],
+  [BLOCK.structDef]: ['NAME', 'TYPEPARAMS'],
   [BLOCK.fieldDecl]: ['NAME', 'TYPE'],
-  [BLOCK.enumDef]: ['NAME'],
+  [BLOCK.enumDef]: ['NAME', 'TYPEPARAMS'],
   [BLOCK.variantDecl]: ['NAME', 'TYPE'],
-  [BLOCK.structLit]: ['TYPE'],
+  [BLOCK.structLit]: ['TYPE', 'TYPEARGS'],
   [BLOCK.fieldInit]: ['NAME'],
   [BLOCK.match]: [],
   [BLOCK.matchArm]: ['PATTERN'],
-  [BLOCK.enumVariant]: ['TYPE', 'VARIANT'],
-  [BLOCK.typedef]: ['NAME', 'TYPE'],
+  [BLOCK.enumVariant]: ['TYPE', 'VARIANT', 'TYPEARGS'],
+  [BLOCK.typedef]: ['NAME', 'TYPE', 'TYPEPARAMS'],
   [BLOCK.import]: ['MODULE'],
   [BLOCK.externFn]: ['NAME', 'PARAMS', 'RET'],
   [BLOCK.opaque]: ['CODE'],
   [BLOCK.opaqueValue]: ['CODE'],
   [BLOCK.arg]: [],
-  [BLOCK.callStmt]: ['NAME'],
+  [BLOCK.callStmt]: ['NAME', 'TYPEARGS'],
   [BLOCK.qualifiedCallStmt]: ['MODULE', 'NAME'],
   [BLOCK.setValue]: [],
   [BLOCK.ifValue]: [],
@@ -235,6 +235,21 @@ export const UN_OPS = ['-', '!', '~'] as const
 
 /** 字面量种类。 */
 export const VALUE_KINDS = ['number', 'string', 'bool', 'char'] as const
+
+/**
+ * `for` 块的循环形态。
+ *
+ * ⚠️ **这两种循环的语义完全不同** ⇒ 必须区分：
+ * - `'RANGE'` —— 区间循环 `for i in a..b`（**半开** ⇒ 迭代 b-a 次）
+ * - `'SLICE'` —— 切片循环 `for x in s`（**遍历元素**）
+ *
+ * 以前块树里没有这个信息 ⇒ 切片循环被编译成 `for x in s..0`
+ * ⇒ 循环体一次都不跑，而**编译器不报错**（它只是迭代了一个空区间）✗✗
+ */
+export const FOR_FORM = {
+  range: 'RANGE',
+  slice: 'SLICE',
+} as const
 
 /** 类型下拉的可选项。 */
 export const TYPE_CHOICES = [
