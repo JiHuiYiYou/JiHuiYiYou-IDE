@@ -138,8 +138,22 @@ export function buildCommandChain(shell: TerminalShell, steps: CommandStep[]): s
     }
     return build(0)
   }
-  // bash / cmd：`&&` 天生就是「上一步失败就不跑下一步」✓
-  return steps.map(body).join(' && ')
+  /*
+    ⚠️⚠️ **bash / cmd：cd 后面要用 `&&`，不是 `;`** ——
+    `;` 和 `&&` 在 bash 里**优先级相同、从左往右** ⇒
+    `cd A; 编译 && cd B; 跑产物` 实际是：
+      ① cd A        （总是）
+      ② 编译        （总是！）
+      ③ && cd B     （编译成功才跑）
+      ④ ; 跑产物    （**总是**！）✗✗
+    ⇒ **编译失败产物照样跑**，而且跑在**错的目录**里 ✗
+
+    ⇒ 改成 `cd A && 编译 && cd B && 跑产物` ⇒ 一步失败后面全不跑 ✓
+    （cmd.exe 也不支持 `;` ⇒ 以前整条命令塌成一条 ⇒ 编译器和程序都跑不了 ✗）
+  */
+  const chained = (step: CommandStep): string =>
+    (step.cwd ? `${cd(step.cwd)} && ` : '') + step.command
+  return steps.map(chained).join(' && ')
 }
 
 /**
@@ -283,6 +297,17 @@ export interface LiveStep {
 const CD_STEP_TIMEOUT_MS = 5_000
 /** 编译那一步的超时（要链 gcc ⇒ 可能慢，但也别无限等）。 */
 const COMPILE_STEP_TIMEOUT_MS = 120_000
+
+/**
+ * **输出缓冲的上限**（8 MB）—— 主进程这边攒的两份输出都受它管。
+ *
+ * ⚠️ **必须有上限** —— 用户报过「运行类似 `while true` 的程序时整个 IDE 卡死」。
+ *   以前这两个缓冲**无上限** ⇒ 疯狂打印 ⇒ 内存被吃光 ⇒ 机器换页 ⇒ 谁都动不了 ✗
+ *
+ * ⚠️ **8 MB 而不是 512 KB** —— 512 KB 的话，一个正常打印表格的程序就被杀了
+ *   （CLAUDE.md 里记过这条教训）✓
+ */
+const MAX_CAPTURE = 8 * 1024 * 1024
 
 /**
  * **「运行」/「检查」在活的 shell 里的命令序列**（生产代码的唯一出处）。
@@ -567,6 +592,10 @@ export class TerminalSession implements PtySession {
   captureOutput = false
   /** 攒下来的输出（纯文本，OSC 序列已抠掉） */
   private captured = ''
+  /**
+   * **这一轮已经因为「输出太多」打断过程序了** ⇒ 别反复打断 ✓
+   */
+  private outputOverflowed = false
   /** 攒下来的输出。 */
   get capturedOutput(): string {
     return this.captured
@@ -622,6 +651,16 @@ export class TerminalSession implements PtySession {
    * ⚠️ **PowerShell 只能靠这个**（它不报 `C` ⇒ `state.idle` 永远是 true）✓
    */
   private userCommandRunning = false
+  /**
+   * **IDE 自己在这个终端里跑着东西**（`runCommand` 发出去、还没收场）。
+   *
+   * ⚠️ **两个「忙」的信号都不覆盖它** ——
+   * - `userCommandRunning` 只记**用户**敲的行（IDE 自己发的命令绕过 `write()`）
+   * - `reportsCommandStart` 只在 shell 报 `C` 时为真 ⇒ **PowerShell 永远不报**
+   * ⇒ ⇒ **IDE 在 PowerShell 里跑程序时，终端会被当成空闲** ⇒
+   *    第二次「运行」会把命令敲进还在跑程序的终端 ⇒ 两个运行互相踩 ✗✗
+   */
+  private ideCommandRunning = false
   /**
    * 用户提交那一行之后，**又收到过一条「命令执行完」**（`D;`）。
    *
@@ -752,6 +791,16 @@ export class TerminalSession implements PtySession {
    * ⚠️ **旧的那个 pty 必须已经退出了** —— 否则会有两个进程抢同一个终端 ✓
    */
   restart(shellCommand: string, initialText?: string): void {
+    /*
+      ⚠️⚠️ **在等的运行要先收场** ——
+      `runCommand()` 给调用者的 promise **只有 `finishRun` 会 resolve** ⇒
+      以前这里直接 `this.pendingRun = null` ⇒ 那个 promise **永远不 settle**
+      ⇒ `await session.runCommand(...)` **永远挂住** ✗✗
+      （保底那条路的 IPC handler 也在等它 ⇒ 界面一直转圈）
+
+      ⇒ 重启之前先把它收场（退出码 null = 「没跑完就断了」）✓
+    */
+    if (this.pendingRun) this.finishRun(null, false, true)
     this.resetPromises()
     // ⚠️ **解析器也要重置** —— 上一轮可能留了半个 OSC 序列在里面 ✓
     this.parser = new ShellIntegrationParser()
@@ -794,10 +843,35 @@ export class TerminalSession implements PtySession {
       //    「命令执行完」的事件跟输出**可能在同一块里**
       //    （管道后端 16ms 攒一批 ⇒ stdout/stderr 会被合到一起）⇒
       //    先 resolve 的话，**这一块的输出就丢了** ✗
-      if (r.text && this.pendingRun) this.pendingRun.output += r.text
+      if (r.text && this.pendingRun) {
+        this.pendingRun.output += r.text
+        /*
+          ⚠️⚠️ **输出缓冲必须有上限** ——
+          用户报过「运行类似 `while true` 的程序时整个 IDE 卡死」。
+          这个缓冲以前**无上限** ⇒ 疯狂打印 ⇒ 内存被吃光 ⇒ 机器换页
+          ⇒ 谁都动不了 ✗
+
+          ⇒ 超了就**打断正在跑的程序** ——
+          ⚠️ **不能杀 pty**！那可能是**用户自己的 shell** ⇒ 杀了 = 毁掉
+          用户的会话（历史、conda、当前目录全丢）✗✗
+          （`overflow()` 那条路也是这个规矩 ✓）
+        */
+        if (this.pendingRun.output.length > MAX_CAPTURE && !this.outputOverflowed) {
+          this.outputOverflowed = true
+          this.pendingRun.output = this.pendingRun.output.slice(0, MAX_CAPTURE)
+          this.enqueue('\r\n\x1b[31m[输出太多（超过 8 MB），已打断正在运行的程序]\x1b[0m\r\n')
+          this.interrupt()
+        }
+      }
       // ⚠️ **一次性终端**：命令是 shell 的启动参数 ⇒ 没有 `runCommand` ⇒
       //    ⇒ 输出得**自己攒**（「运行」要靠它解析诊断、拿程序的输出）✓
-      if (r.text && this.captureOutput) this.captured += r.text
+      if (r.text && this.captureOutput) {
+        this.captured += r.text
+        // ⚠️ **同样要有上限** —— 一次性终端也是用户的会话，不能让它无限涨 ✗
+        if (this.captured.length > MAX_CAPTURE) {
+          this.captured = this.captured.slice(0, MAX_CAPTURE)
+        }
+      }
       if (r.events.length) this.applyShellEvents(r.events)
       // ⚠️ **只发抠干净之后的文本** —— OSC 序列不该漏到输出面板 ✓
       if (r.text) this.enqueue(r.text)
@@ -1046,6 +1120,19 @@ export class TerminalSession implements PtySession {
    *   （用户在 vim 里 / 在跑长命令 ⇒ 我们就把命令敲进去了 ⇒ 成了 vim 的按键 ⇒ 危险 ✗）
    */
   get shellBusy(): boolean {
+    /*
+      ⚠️⚠️ **IDE 自己正在跑的东西也算「忙」** ——
+      以前只有两个信号：用户的命令（`userCommandRunning`）和 shell 报的「命令开始」
+      （`C`）⇒ ⇒ **PowerShell 两个都没有**（它的集成脚本故意不报 `C`）
+      ⇒ ⇒ **IDE 自己在 PowerShell 里跑程序时，`shellBusy` 恒为 false** ✗
+
+      ⇒ 后果：第二次「运行」会把自己的 cd / 编译命令**敲进还在跑程序的终端**
+      ⇒ 两个运行互相踩 ⇒ 而且 `runCommand` 会把**上一次**的运行用
+      `finishRun(null, false)` 收掉 ⇒ 上一次报一个假的「编译失败」✗✗
+
+      ⇒ 所以：**IDE 自己发的命令也要记一笔** ✓
+    */
+    if (this.ideCommandRunning) return true
     if (this.userCommandRunning) return true
     if (this.reportsCommandStart && this.state.idle === false) return true
     return false
@@ -1236,6 +1323,11 @@ export class TerminalSession implements PtySession {
     const started = Date.now()
     // 已经有一条在等了 ⇒ 旧的收场（新的优先）
     if (this.pendingRun) this.finishRun(null, false)
+    // ⚠️ **记一笔「IDE 正在跑」** ⇒ 终端被当成忙 ⇒ 第二次运行不会敲进来
+    //    （PowerShell 那边两个「忙」的信号都不覆盖这种情况 ⇒ 见 shellBusy）
+    this.ideCommandRunning = true
+    // ⚠️ **新一轮 ⇒ 「输出太多」的闸重新武装** ✓
+    this.outputOverflowed = false
 
     let resolveRun!: (r: TerminalRunResult) => void
     const result = new Promise<TerminalRunResult>((resolve) => {
@@ -1395,6 +1487,8 @@ export class TerminalSession implements PtySession {
     const run = this.pendingRun
     if (!run) return
     this.pendingRun = null
+    // ⚠️ **IDE 不再占用这个终端了** ⇒ 终端恢复「空闲」✓
+    this.ideCommandRunning = false
     if (run.timer) clearTimeout(run.timer)
     if (run.graceTimer) clearTimeout(run.graceTimer)
     run.resolve({

@@ -71,6 +71,26 @@ export function buildSubprocessEnv(extra?: Record<string, string>): NodeJS.Proce
     .map((p) => p.trim())
     .filter(Boolean)
 
+  /*
+    ⚠️ **MSYS 风格的 PATH 得转成 Windows 风格** ——
+    MSYS2 的 PATH 用 `:` 分隔、目录写成 `/c/Users/…`（**没有盘符**）⇒
+    按 `;` 切完还是**一整条** ⇒ 子进程（cmd.exe / gcc）**一个目录都认不出来**
+    ⇒ 用户的工具**全找不到** ✗
+
+    ⇒ 把它**追加**一份 Windows 风格的（**绝不替换** —— W-156 的教训）✓
+  */
+  const converted: string[] = []
+  for (const part of parts) {
+    // `/c/Users/x` ⇒ `C:\Users\x`（MSYS2 的盘符映射就是「小写字母 + 冒号」）
+    const m = /^\/([a-zA-Z])\/(.*)$/.exec(part)
+    if (m) converted.push(`${m[1].toUpperCase()}:\\${m[2].replace(/\//g, '\\')}`)
+  }
+  if (converted.length > 0) {
+    for (const dir of converted) {
+      if (!parts.some((p) => p.toLowerCase() === dir.toLowerCase())) parts.push(dir)
+    }
+  }
+
   // 编译器要 gcc 链接。ucrt64 的 gcc 排最前 —— PATH 里别处的 gcc 版本不对，
   // 挑错会 PE 链接失败（语言仓库 W-027 的根因之一）。
   if (!parts.some((p) => p.toLowerCase().endsWith('\\ucrt64\\bin'))) {

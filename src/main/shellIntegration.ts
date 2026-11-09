@@ -235,6 +235,19 @@ if ($null -ne $__jhyyInitial) {
 }
 
 function Global:Prompt() {
+	# ⚠️⚠️ **$? 必须第一个读** ——
+	#    $? 反映的是**上一条命令**的结果，而函数里随便执行一条命令
+	#    就会把它覆盖掉 ⇒ 以前这里先做了 Set-StrictMode + 两句赋值
+	#    ⇒ 读到的时候 $? 已经是 True ⇒ **失败也报 0** ✗✗
+	#
+	#    ⇒ 后果：Set-Location（cd）失败也报成功 ⇒ IDE 的
+	#    「cd 失败 ⇒ 停下整条序列」那道护栏**永远不触发** ⇒
+	#    编译会在**用户的项目目录**里跑 ⇒ 凭空造出 compiler/build/obj/ 垃圾 ✗
+	#
+	#    实测（这台机器，PowerShell 5.1）：
+	#    - 把 $? 放在函数**第一条** ⇒ 拿到的就是调用者的值 ✓
+	#      （cd 失败 ⇒ False ⇒ fakeCode = 1 ✓）
+	$ok = $?
 	# $LastHistoryEntry 为 null 时，严格模式会直接抛 —— 关掉
 	Set-StrictMode -Off
 	$esc = [char]0x1b
@@ -250,7 +263,7 @@ function Global:Prompt() {
 	$realCode = $global:LASTEXITCODE
 	$global:LASTEXITCODE = $null
 	# 上一条命令的退出码（VS Code 那一套：用 $? 的反面）
-	$fakeCode = [int]!$global:?
+	$fakeCode = [int]!$ok
 	$exitCode = if ($null -ne $realCode) { $realCode } else { $fakeCode }
 	$result = ""
 

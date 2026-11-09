@@ -65,6 +65,8 @@ export type ShellIntegrationEvent =
 
 /** OSC 的前缀（`ESC ]`）。 */
 const OSC = '\x1b]'
+/** ESC —— OSC 前缀的第一个字节（跨块时它可能单独到达 ⇒ 得留着等下一块）。 */
+const ESC = '\x1b'
 /** BEL —— OSC 的结束符之一。 */
 const BEL = '\x07'
 /** ST（String Terminator）—— OSC 的另一个结束符（`ESC \`）。 */
@@ -175,9 +177,24 @@ export class ShellIntegrationParser {
     while (i < buf.length) {
       const esc = buf.indexOf(OSC, i)
       if (esc < 0) {
-        // 后面没有 OSC 了 ⇒ 全是普通文本
-        text += buf.slice(i)
-        i = buf.length
+        /*
+          后面没有 OSC 了 ⇒ 全是普通文本。
+
+          ⚠️⚠️ **但结尾那个孤零零的 `ESC` 要留着！** ——
+            `OSC` 是 `ESC ]` **两个**字符 ⇒ 一块数据正好以 `ESC` 结尾时
+            （`ESC ]` 的第一个字节到了、`]` 还没到）⇒ `indexOf` 找不到 ⇒
+            以前这里把那个 `ESC` 当正文冲掉了 ⇒ 下一块以 `]633;…` 开头
+            ⇒ **前缀没了 ⇒ 整条 OSC 633 丢了** ✗✗
+
+            ⇒ 后果：`D;<code>` 永远不来 ⇒ 「命令执行完」永远等不到
+            ⇒ **「运行」会永远挂着**（跑产物那一步故意不设超时）✗
+            ⇒ 而且那个 `ESC]633;…` 还会漏到终端和输出面板里 ✗
+
+            ⇒ 正确做法：**结尾的 `ESC` 留在 `pending` 里**，等下一块拼上 ✓
+        */
+        const tail = buf.endsWith(ESC) ? buf.length - 1 : buf.length
+        text += buf.slice(i, tail)
+        i = tail
         break
       }
       // `ESC ]` 后面不是 `633;` ⇒ 不是 shell 集成序列 ⇒ **原样放行**

@@ -164,6 +164,25 @@ describe('shell 集成的协议层', () => {
     expect(b.events).toEqual([{ type: 'commandFinished', exitCode: 7 }])
   })
 
+  /**
+   * ⚠️ **一块数据正好以 `ESC` 结尾** —— `ESC ]` 的第一个字节到了、`]` 还没到。
+   *
+   * ⇒ 以前那个 `ESC` 被当成正文冲掉了 ⇒ 下一块以 `]633;…` 开头
+   * ⇒ **前缀没了 ⇒ 整条 OSC 633 丢了** ✗
+   *
+   * ⇒ 后果特别严重：`D;<code>` 永远不来 ⇒ 「命令执行完」永远等不到
+   * ⇒ **「运行」会永远挂着**（跑产物那一步故意不设超时）✗
+   */
+  it('块尾那个孤零零的 ESC 要留着等下一块（不然 OSC 就丢了）', () => {
+    const p = new ShellIntegrationParser()
+    const a = p.push('hello\x1b')
+    expect(a.text, 'ESC 不能被当成正文冲掉').toBe('hello')
+    expect(a.events).toEqual([])
+    const b = p.push(']633;D;7\x07world')
+    expect(b.text).toBe('world')
+    expect(b.events, 'OSC 必须被认出来').toEqual([{ type: 'commandFinished', exitCode: 7 }])
+  })
+
   it('不是 633 的 OSC 序列原样放行（改标题那些得让 xterm 自己处理）', () => {
     const p = new ShellIntegrationParser()
     const r = p.push('\x1b]0;my title\x07after')
@@ -479,6 +498,62 @@ describe('PowerShell 的 shell 集成', () => {
         .filter((e) => e.type === 'commandLine')
         .map((e) => (e as { commandLine: string }).commandLine)
       expect(lines.some((l) => l.includes('cmd.exe'))).toBe(true)
+    } finally {
+      child.kill()
+    }
+  })
+
+  /**
+   * ⚠️ **cmdlet 失败 ⇒ 退出码不能是 0**。
+   *
+   * ⚠️ 以前 `$?` 是在 `Prompt` 函数**中间**读的 ⇒ 函数里执行过的语句
+   *    （`Set-StrictMode`、两句赋值）已经把它覆盖成 True ⇒ **失败也报 0** ✗
+   *
+   * ⇒ 后果：IDE 的「cd 失败 ⇒ 停下整条序列」那道护栏**永远不触发**
+   * ⇒ 编译会在**用户的项目目录**里跑 ⇒ 凭空造出 `compiler/build/obj/` 垃圾 ✗
+   */
+  it.skipIf(!ps)('PowerShell：cmdlet 失败 ⇒ 退出码不是 0（$? 要第一个读）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jhyy-ps3-'))
+    const script = integrationScriptPath('powershell')
+    const child = spawn(
+      ps as string,
+      [
+        '-NoLogo',
+        '-NoProfile',
+        '-NoExit',
+        '-Command',
+        `try { . '${script}' } catch {}`,
+      ],
+      { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'] },
+    ) as ChildProcessWithoutNullStreams
+
+    const parser = new ShellIntegrationParser()
+    const events: ShellIntegrationEvent[] = []
+    const onData = (chunk: Buffer): void => {
+      events.push(...parser.push(chunk.toString('utf8')).events)
+    }
+    child.stdout.on('data', onData)
+    child.stderr.on('data', onData)
+
+    try {
+      const t0 = Date.now()
+      while (Date.now() - t0 < 20_000 && !events.some((e) => e.type === 'promptEnd')) {
+        await new Promise((r) => setTimeout(r, 25))
+      }
+      // ⚠️ **故意失败**：Set-Location 到一个不存在的目录
+      child.stdin.write(`Set-Location -LiteralPath 'C:\\jhyy-no-such-dir' -ErrorAction SilentlyContinue\n`)
+
+      const t1 = Date.now()
+      while (
+        Date.now() - t1 < 20_000 &&
+        !events.some((e) => e.type === 'commandFinished' && e.exitCode === 1)
+      ) {
+        await new Promise((r) => setTimeout(r, 25))
+      }
+      const done = events.filter((e) => e.type === 'commandFinished')
+      expect(done.length).toBeGreaterThan(0)
+      // ⚠️ **失败必须报非 0** —— 报 0 就等于说「成功」⇒ 护栏失效 ✗
+      expect(done[done.length - 1]).toEqual({ type: 'commandFinished', exitCode: 1 })
     } finally {
       child.kill()
     }

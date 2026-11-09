@@ -214,6 +214,26 @@ npx vite-node scripts/claude-smoke.ts   # Claude 集成冒烟（会消耗 API �
 - **从 XML 读回块时，查找必须用 `:scope >`** —— `querySelector` 搜的是**所有后代**，
   嵌套的同名输入会**遮蔽**外层的那个：`fib(n-1) + fib(n-2)` 里的 `fib(n-2)`
   会被读成 `1`，**用户的源码被悄悄改掉**。见 `src/renderer/blocks/xml.ts`。
+- ⚠️⚠️ **块视图会**回写**用户的源文件** ⇒ 块树表达不了的东西就**没了** ——
+  `onBlockChange` ⇒ `blocksToSource(tree)` ⇒ 直接替换编辑器里的内容 ⇒
+  ⇒ **块树是「有损」的**（泛型参数、turbofish 实参、`#[inline]` 属性、
+  `for x in slice`、短枚举名的绑定…… 每加一种块能力之前它就多丢一样东西）✗
+  ⇒ ⇒ **必须有一道兜底的闸**：`isLosslessForBlocks(source)`（`src/renderer/sync/doc.ts`）
+  判「文本视图和块视图**能不能一字不差**」⇒ 不能 ⇒ **不许回写**（状态栏说明原因）✓
+  ⇒ ⇒ **回归网**：`tests/blocks/blockVsText.test.ts` ——
+  拿语料逐个走「源码 → 块 → 源码」，断言**两条路打印出来的一字不差** ✓
+  （这条测试一加，当场抓出 9 个 bug：`for x in slice` 被改成 `..0`、
+  短枚举名 `Some(v)` 变成 `Some`（绑定丢了）、字面量的 `KIND` 下拉没用、
+  `let x;` 不是合法 JHYY、`defer` 语句凭空消失、泛型参数 / turbofish /
+  `#[inline]` / `#[no_std]` 全丢、`else { if }` 与 `else if` 形状不一致）
+  ⇒ ⇒ **加块能力时先跑它** ✓
+- **块树要承载「块子集表达不了的东西」** —— 泛型参数（`TYPEPARAMS`）、
+  turbofish 实参（`TYPEARGS`）、属性（`ATTRS`）、区间/切片（`FORM`）——
+  ⇒ 少一个，块视图就会**静悄悄改坏用户的代码** ⇒ 都登记进 `tree.ts` 的
+  `BLOCK_FIELDS`（**字段名必须跟 Blockly 那边对上**，否则读回来就没了）✓
+  ⇒ 「有值才显示」的字段用 `optionalField()`（`definitions.ts`）——
+  ⚠️ **Blockly 13 没有 `Field.setOnChange`** ⇒ 只能**包一层 `setValue`** ✓
+  （⚠️ 隐藏的 input 里的字段**照样进 XML** ⇒ 藏起来只是视觉上的 ✓）
 - **Electron 默认应用菜单的 accelerator 会在渲染进程看到按键之前就被吃掉**
   （`F5`/`Ctrl+R` 重载、`Ctrl+W` 关窗、`Ctrl+C/V/Z/A`）⇒ 主进程**必须**
   `Menu.setApplicationMenu(null)`。菜单是我们自己在渲染进程画的。
@@ -286,6 +306,10 @@ npx vite-node scripts/claude-smoke.ts   # Claude 集成冒烟（会消耗 API �
   而且**超时单独报**（`timedOut` ⇒ 「程序超时，已终止」），**不跟「中断」混** ✓
   ⚠️ 同理 **输出上限别太小** —— 512 KB 的话，一个正常打印表格的程序就被杀了 ⇒
   现在 8 MB（有了**背压**之后，IPC 队列是有界的 ⇒ 这个上限守的是内存）✓
+  ⚠️ **那个 8 MB 的上限在 `terminal.ts` 的 `MAX_CAPTURE`** ——
+  它守着**主进程攒的两份输出**（`pendingRun.output` / `captured`）⇒
+  超了 ⇒ **打断正在跑的程序**（**不能杀 pty** —— 那是用户的 shell！）✗
+  （以前这两份缓冲**无上限** ⇒ 疯狂打印 ⇒ 内存被吃光 ⇒ 机器换页 ⇒ 整机卡住 ✗）
 
 - **`CreatePseudoConsole` 要用「命名管道」，不是匿名管道** —— 我们自己写的
   ConPTY 助手（已删，被 node-pty 取代）就是死在这儿：用 `CreatePipe` ⇒
@@ -371,6 +395,12 @@ npx vite-node scripts/claude-smoke.ts   # Claude 集成冒烟（会消耗 API �
     **PowerShell 故意不报 `C`**（CLAUDE.md：劫持 `PSConsoleHostReadLine`
     会把终端搞废）⇒ ⇒ 得靠「**用户提交了一行**」那个状态机
     （`TerminalSession.shellBusy`）✓
+    ⇒ ⚠️⚠️ **「IDE 自己发的命令」也要算「忙」** ——
+      上面那两个信号**都不覆盖它**（`userCommandRunning` 只记用户的按键；
+      `C` PowerShell 不报）⇒ ⇒ **IDE 在 PowerShell 里跑程序时 `shellBusy` 恒为
+      false** ⇒ 第二次「运行」把命令敲进还在跑程序的终端 ⇒ 两个运行互相踩
+      ⇒ 而且 `runCommand` 会把**上一次**用 `finishRun(null, false)` 收掉
+      ⇒ 上一次报一个假的「编译失败」✗✗ ⇒ `ideCommandRunning` 这个标记 ✓
   - ⚠️⚠️ **集成脚本加载失败 ⇒ 静悄悄地没有 OSC** ⇒ 「让 shell 跑命令」
     等不到结果 ⇒ **整个「运行」会挂住** ✗
     ⇒ 所以要能判断「集成**真的起来**了吗」⇒
@@ -396,6 +426,11 @@ npx vite-node scripts/claude-smoke.ts   # Claude 集成冒烟（会消耗 API �
     ⇒ **终端列表不会越攒越多** ✓ 而且「反复运行不新开」保住了 ✓
     ⇒ `TerminalSession.restart()` 重启会话（换 pty、重置 promise/解析器/攒的输出）
     ⇒ 复用时渲染进程要**清屏**（VS Code 也 `clearBuffer()` ⇒ `IPC.terminalRestart`）✓
+    ⇒ ⚠️⚠️ **重启时「在等的运行」要先收场** ——
+      `runCommand()` 给调用者的 promise **只有 `finishRun` 会 resolve** ⇒
+      以前 `restart()` 直接 `pendingRun = null` ⇒ 那个 promise **永远不 settle**
+      ⇒ `await session.runCommand(...)` **永远挂住** ✗✗
+      （保底那条路的 IPC handler 也在等它 ⇒ 界面一直转圈）✓
     ⇒ 「检查」和「运行」**各用一个终端**（VS Code 也是两个不同的 task ⇒ 两个终端）
       ⇒ 否则点「检查」会把「运行」的输出冲掉 ✗
   - ⚠️ **「补提示符」那个机制整个删了** ——
@@ -495,6 +530,19 @@ npx vite-node scripts/claude-smoke.ts   # Claude 集成冒烟（会消耗 API �
     Ctrl+C 打断 ⇒ `$LASTEXITCODE = -1073741510`（= 0xC000013A）✓
     ⚠️ **必须用调用运算符 `&`**（不带扩展名的命令名 PowerShell 会解析成别的
     ⇒ `$LASTEXITCODE` 是空的）
+  - ⚠️⚠️ **cmdlet 的退出码靠 `$?` ⇒ 而 `$?` 必须在 `Prompt` 里**第一个**读** ——
+    `$?` 反映的是**上一条命令**的结果，而函数里随便执行一条语句就会覆盖它 ⇒
+    以前脚本先做了 `Set-StrictMode` + 两句赋值 ⇒ 读到时 `$?` 已是 True
+    ⇒ **失败也报 0** ✗ ⇒ IDE 的「cd 失败 ⇒ 停下整条序列」那道护栏**永远不触发**
+    ⇒ 编译会在**用户的项目目录**里跑 ⇒ 凭空造出 `compiler/build/obj/` 垃圾 ✗
+    ⇒ ⇒ 脚本里**第一句**就是 `$ok = $?` ✓（实测：cd 失败 ⇒ `$ok` = False ✓）
+  - ⚠️⚠️ **OSC 序列可能**跨块**（切在 `ESC` 和 `]` 之间）——
+    `OSC` 是 `ESC ]` **两个**字符 ⇒ 一块数据正好以 `ESC` 结尾时
+    `indexOf` 找不到前缀 ⇒ 以前那个 `ESC` 被当成正文冲掉了 ⇒ 下一块以 `]633;…`
+    开头 ⇒ **整条 OSC 633 丢了** ✗ ⇒ `D;<code>` 永远不来 ⇒ **「运行」永远挂着**
+    （跑产物那一步故意不设超时 ⇒ 没有兜底）✗
+    ⇒ ⇒ 解析器要把**结尾那个孤零零的 `ESC` 留在 `pending` 里** ✓
+    （`src/shared/shellIntegration.ts`）
   - ⚠️⚠️⚠️ **别劫持 `PSConsoleHostReadLine`**（VS Code 靠它报「命令开始执行」）
     —— **我们劫持不了** ⇒ 装得太早 ⇒ 抓到的**不是 PSReadLine 的那个**，
     而是 PowerShell 控制台主机的**默认实现**（返回空行）⇒
@@ -644,6 +692,13 @@ npx vite-node scripts/claude-smoke.ts   # Claude 集成冒烟（会消耗 API �
   **捕获阶段** `preventDefault()` + `stopPropagation()` ⇒ 浏览器因此**不再
   触发 `paste` 事件** ⇒ CodeMirror 的粘贴处理收不到东西 ⇒ **粘不上**
   （用户报过）。⇒ 这类命令标 `native`（见 `commands/types.ts`），直接放行。
+- ⚠️ **按住 Shift 时 `KeyboardEvent.key` 会变** —— 反引号键在美式布局上
+  按住 Shift 报的是 **`~`**（不是 `` ` ``）⇒ `Ctrl+Shift+Backquote`
+  （新建终端）**永远匹配不上** ✗ ⇒ `KEY_ALIASES` 里**得有 `'~'`** ✓
+  （更稳的是用 `event.code`，跟 Shift / 布局无关 —— VS Code 就是这么做的）
+- ⚠️ **命令面板也要查 `enabled`** —— 菜单那条路查了（`App.tsx` 的 `runCommand`）
+  ⇒ 命令面板不查 ⇒ 两个入口行为不一致 ✗
+  （例：程序正在跑时「运行」是禁用的 ⇒ 从面板选它会**再起一个** ⇒ 两个运行互相踩 ✗）
 - **主进程里别做同步的慢操作** —— `execFileSync` 探测 python 的 fastmcp 要好几秒
   ⇒ **整个 IDE 卡住**（用户报过「特别慢特别卡」）。⇒ 一律用异步，
   并且**启动时就在后台预热**。
@@ -697,6 +752,14 @@ npx vite-node scripts/claude-smoke.ts   # Claude 集成冒烟（会消耗 API �
   ⇒ 拼法在 **`buildLiveSteps`**（`src/main/terminal.ts`）⇒
   ⇒ **测试跟生产代码用同一个函数** ⇒ 不会再漂 ✓
   ⇒ ⚠️ **保底那条老路**用 `buildRunCommandChain`（还是一条链）✓
+  - ⚠️⚠️ **保底那条链的 `cd` 后面必须用 `&&`，不能用 `;`** ——
+    bash 里 `;` 和 `&&` **优先级相同、从左往右** ⇒
+    `cd A; 编译 && cd B; 跑产物` 实际是「cd A → 编译 →（成功才）cd B → **跑产物**」
+    ⇒ **编译失败产物照样跑**，而且跑在**错的目录**里 ✗✗
+    ⇒ cmd.exe 更糟：它**根本不支持 `;`** ⇒ 整条命令塌成一条 `cd`
+    ⇒ **编译器和程序都跑不了** ✗
+    ⇒ ⇒ bash/cmd 用 `cd X && …`；**PowerShell 5.1 没有 `&&`** ⇒ 用嵌套
+    `if ($LASTEXITCODE -eq 0) { … }` ✓
 - ⚠️⚠️⚠️ **pty 宿主进程那条路必须传 `shellCommand`** ——
   「pty 宿主进程」是**首选后端**（真控制台跑在独立进程里）⇒
   ⇒ 但它以前**只收到 `shell`/`cwd`/`cols`/`rows`/`command`** ⇒

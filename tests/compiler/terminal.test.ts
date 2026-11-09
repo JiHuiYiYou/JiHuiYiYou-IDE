@@ -89,8 +89,54 @@ describe('终端输入路由', () => {
   })
 })
 
-describe('终端的背压', () => {
-  it('渲染进程不回执 ⇒ 主进程不会一股脑往前推（不然 IDE 会卡死）', async () => {
+/**
+ * **终端「忙不忙」** —— 能不能往它敲命令。
+ *
+ * ⚠️⚠️ **IDE 自己发的命令也要算「忙」** ——
+ *   以前只有两个信号：用户的命令（`userCommandRunning`）和 shell 报的「命令开始」
+ *   （`C`）⇒ ⇒ **PowerShell 两个都没有**（它的集成脚本故意不报 `C`）
+ *   ⇒ ⇒ **IDE 自己在 PowerShell 里跑程序时，`shellBusy` 恒为 false** ✗
+ *   ⇒ ⇒ 第二次「运行」会把自己的命令**敲进还在跑程序的终端** ⇒ 两个运行互相踩 ✗
+ */
+describe('终端的「忙」', () => {
+  it('**IDE 自己发了命令 ⇒ 终端就是忙的**', async () => {
+    const { session } = makeSession()
+    // ⚠️ 用**管道后端**（`child` 是 null ⇒ 命令写不出去也没关系）⇒
+    //   我们要验的是「忙不忙」这个状态，不是命令有没有跑 ✓
+    expect(session.shellBusy, '还没发命令 ⇒ 不忙').toBe(false)
+
+    // ⚠️ **不等它跑完**（管道后端不会回报）⇒ 直接看状态 ✓
+    void session.runCommand('echo hi', { match: 'hi', timeoutMs: 0 })
+    expect(session.shellBusy, 'IDE 的命令在跑 ⇒ 忙').toBe(true)
+  })
+})
+
+/**
+ * **重启会话时，在等的运行要收场**。
+ *
+ * ⚠️ `runCommand()` 给调用者的 promise **只有 `finishRun` 会 resolve** ⇒
+ *   以前 `restart()` 直接 `pendingRun = null` ⇒ 那个 promise **永远不 settle**
+ *   ⇒ `await session.runCommand(...)` **永远挂住** ✗✗
+ *   （保底那条路的 IPC handler 也在等它 ⇒ 界面一直转圈）
+ */
+describe('重启会话', () => {
+  it('**在等的运行不会永远挂着**（重启要把它收场）', async () => {
+    const { session } = makeSession()
+    const settled = session.runCommand('echo hi', { match: 'hi', timeoutMs: 0 })
+    // ⚠️ **重启** ⇒ 那个在等的运行必须被收场 ✓
+    session.restart('echo done')
+    // ⚠️ **给 promise 一个超时的兜底** —— 万一没收场，测试会挂死 ⇒
+    //   5 秒还没 settle 就当失败 ✓
+    //   （真结果的 `timedOut` 是 false ⇒ 用它跟哨兵（true）区分 ✓）
+    const after = await Promise.race([
+      settled,
+      new Promise<{ timedOut: true }>((r) => setTimeout(() => r({ timedOut: true }), 5000)),
+    ])
+    expect((after as { timedOut?: boolean }).timedOut, '重启后不能挂着').toBe(false)
+  })
+})
+
+describe('终端的背压', () => {  it('渲染进程不回执 ⇒ 主进程不会一股脑往前推（不然 IDE 会卡死）', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'jhyy-bp-'))
     const chunks: string[] = []
     const seqs: number[] = []

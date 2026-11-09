@@ -217,3 +217,59 @@ describe('「运行」的完整命令链（端到端，真编译器）', () => {
     }
   })
 })
+
+/**
+ * **命令链里的 `cd` 必须用 `&&`，不能用 `;`**。
+ *
+ * ⚠️⚠️ **以前 cd 后面是 `;`** ⇒ bash 里 `;` 和 `&&` **优先级相同、从左往右** ⇒
+ *   `cd A; 编译 && cd B; 跑产物` 实际是：
+ *     ① cd A     （总是）
+ *     ② 编译     （总是！）
+ *     ③ && cd B  （编译成功才跑）
+ *     ④ ; 跑产物 （**总是**！）✗✗
+ *   ⇒ **编译失败产物照样跑**，而且跑在**错的目录**里 ✗
+ *
+ * ⇒ cmd.exe 更糟：它**根本不支持 `;`** ⇒ 整条命令塌成一条 `cd`
+ *   ⇒ **编译器和程序都跑不了** ✗
+ */
+describe('命令链的连接符', () => {
+  const OPTS = {
+    compiler: 'C:\\jh\\jhyy.exe',
+    src: 'C:\\work\\a.jhyy',
+    outBase: 'C:\\work\\out',
+    workDir: 'C:\\work',
+    runDir: 'C:\\run',
+  }
+
+  it('**bash：cd 后面是 `&&` 不是 `;`**', () => {
+    const cmd = buildRunCommandChain('bash', OPTS)
+    expect(cmd).toContain('&&')
+    // ⚠️ **不能有 `;`** —— 它会把 `&&` 链拆断（`;` 和 `&&` 同优先级）
+    expect(cmd).not.toContain(';')
+  })
+
+  it('**cmd：同样用 `&&`**（cmd 压根不支持 `;`）', () => {
+    const cmd = buildRunCommandChain('cmd', OPTS)
+    expect(cmd).toContain('&&')
+    expect(cmd).not.toContain(';')
+  })
+
+  it('**PowerShell：用嵌套 if**（PS 5.1 没有 `&&`）', () => {
+    const cmd = buildRunCommandChain('powershell', OPTS)
+    expect(cmd).toContain('if ($LASTEXITCODE -eq 0)')
+    expect(cmd).not.toContain('&&')
+  })
+
+  it('**bash：编译失败 ⇒ 产物不跑**（真跑一遍 bash）', async () => {
+    // ⚠️ 用**真 bash** 验 ⇒ 光看字符串不够（`;` 和 `&&` 的差别只有真跑才知道）✓
+    const cmd = `cd /tmp && false && echo SHOULD_NOT_PRINT`
+    const session = runOneShot('bash', cmd, '/tmp')
+    try {
+      const exitCode = await session.exited
+      expect(exitCode).not.toBe(0)
+      expect(session.capturedOutput).not.toContain('SHOULD_NOT_PRINT')
+    } finally {
+      await session.kill()
+    }
+  })
+})

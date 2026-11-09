@@ -79,6 +79,19 @@ describe('子进程的环境变量', () => {
     expect(env[pathKey]).toContain('C:\\wanted')
     expect(env[pathKey]).not.toContain('C:\\inherited')
   })
+
+  it('**MSYS 风格的 PATH（`:` 分隔、`/c/…`）也得能用**', () => {
+    // ⚠️ MSYS2 的 PATH 用 `:` 分隔、目录写成 `/c/Users/…`（**没有盘符**）⇒
+    //   按 `;` 切完还是**一整条** ⇒ 子进程**一个目录都认不出来**
+    //   ⇒ 用户的工具全找不到 ✗
+    // ⇒ ⇒ 得**追加**一份 Windows 风格的（**绝不替换** —— W-156 的教训）✓
+    const env = buildSubprocessEnv({ PATH: '/c/my/tools:/c/Windows' })
+    const pathKey = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') as string
+    expect(env[pathKey]).toContain('C:\\my\\tools')
+    expect(env[pathKey]).toContain('C:\\Windows')
+    // ⚠️ **继承来的那份一个字都不能丢** ✓
+    expect(env[pathKey]).toContain('/c/my/tools')
+  })
 })
 
 describe('输出攒批（流控）', () => {
