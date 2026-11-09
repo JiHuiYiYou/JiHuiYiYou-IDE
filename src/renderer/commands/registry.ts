@@ -26,6 +26,8 @@ export interface CommandContext {
   showCommandPalette(): void
   /** 打开设置对话框（编辑区的字体/字号） */
   openSettings(): void
+  /** **聚焦聊天**（打开侧栏并把光标放进输入框） */
+  focusChat(): void
   toggleBlocks(): void
   togglePanel(): void
   showPanelTab(tab: PanelTab): void
@@ -39,7 +41,16 @@ export interface CommandContext {
   editor(): CodePaneHandle | null
 
   // ── 状态（用来决定菜单项灰不灰、勾不勾） ──────────────────
+  /**
+   * 有没有**活动的缓冲区**。
+   *
+   * ⚠️ **跟「有没有路径」是两回事** —— 新建（未命名）的文件**没有路径**，
+   *    但它**照样能存**（⇒ 弹「另存为」）⇒ 「保存」的 `enabled` 要用这个 ✓
+   *    （以前用「有没有路径」⇒ 未命名文件按 Ctrl+S **一点反应都没有** ✗）
+   */
   hasFile(): boolean
+  /** 有没有**已经落盘**的文件（编译/运行要的是这个 —— 它们编的是磁盘上的文件） */
+  hasPath(): boolean
   isBusy(): boolean
   isBlocksView(): boolean
   isPanelOpen(): boolean
@@ -145,7 +156,8 @@ export function createCommands(ctx: { current: CommandContext }): Command[] {
       category: 'JHYY',
       keybinding: 'Ctrl+Shift+D',
       run: () => ctx.current.compile(),
-      enabled: () => ctx.current.hasFile() && !ctx.current.isBusy(),
+      // ⚠️ 编译/运行编的是**磁盘上的文件** ⇒ 未命名的新文件**编不了** ⇒ 用 hasPath
+      enabled: () => ctx.current.hasPath() && !ctx.current.isBusy(),
     },
     {
       id: 'build.run',
@@ -154,7 +166,7 @@ export function createCommands(ctx: { current: CommandContext }): Command[] {
       category: 'JHYY',
       keybinding: 'F5',
       run: () => ctx.current.run(),
-      enabled: () => ctx.current.hasFile() && !ctx.current.isBusy(),
+      enabled: () => ctx.current.hasPath() && !ctx.current.isBusy(),
     },
     {
       id: 'build.stop',
@@ -241,7 +253,9 @@ export function createCommands(ctx: { current: CommandContext }): Command[] {
       titleEn: 'View: Focus Chat',
       category: '查看',
       keybinding: 'Ctrl+Alt+I',
-      run: () => ctx.current.toggleSidebar(),
+      // ⚠️ **不是「切换侧栏」** —— 侧栏开着的时候按它反而会把它**关掉**
+      //    （命令名是「聚焦聊天」，干的事却是「切换」）✗
+      run: () => ctx.current.focusChat(),
     },
     {
       id: 'view.toggleStatusBar',

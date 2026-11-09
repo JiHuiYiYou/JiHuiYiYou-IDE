@@ -56,6 +56,10 @@ export default function CommandPalette({ open, commands, onClose, initialQuery }
 
   const run = (cmd: Command | undefined) => {
     if (!cmd) return
+    // ⚠️ **禁用的命令不许跑** —— 菜单那条路是查了 `enabled` 的（`App.tsx` 的
+    //    `runCommand`）⇒ 命令面板这条不查 ⇒ 两个入口行为不一致 ✗
+    //    （例：程序正在跑时「运行」是禁用的 ⇒ 从面板选它会**再起一个**）
+    if (cmd.enabled && !cmd.enabled()) return
     onClose()
     void cmd.run()
   }

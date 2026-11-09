@@ -1,6 +1,6 @@
-import { useRef } from 'react'
+import { forwardRef, useRef } from 'react'
 import { useResizable } from '../hooks/useResizable'
-import ChatPane from '../panes/ChatPane'
+import ChatPane, { type ChatPaneHandle } from '../panes/ChatPane'
 
 interface Props {
   open: boolean
@@ -35,7 +35,7 @@ interface Props {
  * 宽度可拖，折叠时聊天**不卸载**（Claude 会话在主进程里跑着，卸载只是把 UI 藏了，
  * 但组件还在 —— 所以这里用 `display:none` 而不是条件渲染）。
  */
-export default function SecondarySidebar(props: Props) {
+const SecondarySidebar = forwardRef<ChatPaneHandle, Props>(function SecondarySidebar(props, chatRef) {
   /** 侧栏的 DOM（拖动时直接改它的 style ⇒ 不进 React） */
   const ref = useRef<HTMLDivElement>(null)
   const drag = useResizable({
@@ -63,6 +63,7 @@ export default function SecondarySidebar(props: Props) {
     >
       {props.open && <div className="sidebar-resize-handle" onPointerDown={drag.onPointerDown} />}
       <ChatPane
+        ref={chatRef}
         filePath={props.filePath}
         fileName={props.fileName}
         cwd={props.cwd}
@@ -73,4 +74,6 @@ export default function SecondarySidebar(props: Props) {
       />
     </div>
   )
-}
+})
+
+export default SecondarySidebar

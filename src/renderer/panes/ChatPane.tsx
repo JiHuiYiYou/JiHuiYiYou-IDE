@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import type { ClaudeEvent, ClaudeStatus } from '@shared/claude'
 import { Icon } from '../workbench/icons'
 import { Markdown } from './Markdown'
@@ -47,7 +47,8 @@ interface SavedSession {
   turns?: {
     userText: string
     answer?: string
-    steps: { kind: 'thinking' | 'tool' | 'tool-result'; text?: string; name?: string; input?: unknown; result?: string; isError?: boolean }[]
+    // ⚠️ **`'text'`** —— 首段正文归到「过程」时用的那一种
+    steps: { kind: 'thinking' | 'tool' | 'tool-result' | 'text'; text?: string; name?: string; input?: unknown; result?: string; isError?: boolean }[]
   }[]
 }
 
@@ -64,7 +65,7 @@ const THINKING_WORDS = ['正在思考…', '思考中…', '让我想想…', '�
  * 现在它们收进一个折叠块里。
  */
 interface ChatStep {
-  kind: 'thinking' | 'tool' | 'tool-result'
+  kind: 'thinking' | 'tool' | 'tool-result' | 'text'
   /** 思考的正文 */
   text?: string
   /** 工具名 */
@@ -89,7 +90,15 @@ interface ChatTurn {
   userText: string
   /** 过程 */
   steps: ChatStep[]
-  /** 助手最后一条**完整**消息的正文 */
+  /**
+   * 助手说过的**每一段**正文（按顺序）。
+   *
+   * ⚠️ **一轮里可能有好几段** —— 模型常常「先说一段 → 调工具 → 再说一段」
+   *    ⇒ 以前只留**最后一段** ⇒ 前面的**凭空消失** ✗
+   *    （用户定的规矩：**首段归「过程」，其余是正文** ✓）
+   */
+  bodies: string[]
+  /** 助手最后一条**完整**消息的正文（= bodies 的最后一段；历史里存的就是它） */
   answer?: string
   /** 正在流式输出的正文（最后一条完整消息之后又收到的增量） */
   streaming: string
@@ -117,15 +126,24 @@ interface ChatTurn {
  * 流式机制（增量文本、工具调用、思考）跟主进程的对接一个字没动，
  * 改的是**怎么展示**：过程收进折叠块，只留最终回答。
  */
-export default function ChatPane({
-  filePath,
-  fileName,
-  cwd,
-  externalChange,
-  onReload,
-  readOnly = false,
-  onReadOnlyChange,
-}: Props) {
+/** 外面能叫它做的事（现在只有「聚焦输入框」）。 */
+export interface ChatPaneHandle {
+  /** 把光标放进输入框（命令「聚焦聊天」用） */
+  focusInput(): void
+}
+
+const ChatPane = forwardRef<ChatPaneHandle, Props>(function ChatPane(
+  {
+    filePath,
+    fileName,
+    cwd,
+    externalChange,
+    onReload,
+    readOnly = false,
+    onReadOnlyChange,
+  },
+  ref,
+) {
   const [turns, setTurns] = useState<ChatTurn[]>([])
   const [input, setInput] = useState('')
   const [status, setStatus] = useState<ClaudeStatus>({ state: 'idle' })
@@ -134,6 +152,17 @@ export default function ChatPane({
   const [sessions, setSessions] = useState<SavedSession[]>([])
   const [showHistory, setShowHistory] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
+  /** 输入框 —— 「聚焦聊天」要把光标放进来 */
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+
+  // ⚠️ **「聚焦聊天」命令**（Ctrl+Alt+I）要能把光标放进输入框 ⇒ 暴露一个方法
+  useImperativeHandle(
+    ref,
+    () => ({
+      focusInput: () => inputRef.current?.focus(),
+    }),
+    [],
+  )
   const startedRef = useRef(false)
   /** 这次会话用的 sessionId —— 用来存历史 */
   const sessionIdRef = useRef<string | null>(null)
@@ -266,10 +295,17 @@ export default function ChatPane({
                   但实际上还没干完活」）。
 
                   ⇒ 折叠只发生在**这一轮真的结束**时（`status.turnComplete`）✓。
+
+                  ⚠️⚠️ **正文要**累加**，不是覆盖** ——
+                  以前 `answer: m.text` ⇒ 第二段正文把第一段**整个冲掉**了
+                  （而 body 里还在引用第一段的变量 ⇒ 读了一个未定义的东西）✗
+                  ⇒ 现在每一段都进 `bodies` ⇒
+                  **首段归「过程」、其余是正文**（见 `splitBodies`）✓
                 */
                 return {
                   ...t,
                   steps,
+                  bodies: [...t.bodies, m.text],
                   answer: m.text,
                   streaming: '',
                   // 完整消息到了 ⇒ 它是**最新**的正文（增量被它取代）
@@ -310,6 +346,7 @@ export default function ChatPane({
                     id: `turn-${turnCounter.current}`,
                     userText: text,
                     steps: [],
+                    bodies: [],
                     streaming: '',
                     streamingIsNewer: false,
                     collapsed: false,
@@ -422,6 +459,7 @@ export default function ChatPane({
         id: `turn-${turnCounter.current}`,
         userText: text,
         steps: [],
+        bodies: [],
         streaming: '',
         streamingIsNewer: false,
         collapsed: false,
@@ -467,6 +505,8 @@ export default function ChatPane({
           id: `turn-${turnCounter.current}-${i}`,
           userText: t.userText,
           steps: t.steps ?? [],
+          // 历史里存的是「最终回答」⇒ 恢复时它就是**唯一**的一段
+          bodies: t.answer !== undefined ? [t.answer] : [],
           streaming: '',
           streamingIsNewer: false,
           ...(t.answer !== undefined ? { answer: t.answer } : {}),
@@ -529,7 +569,9 @@ export default function ChatPane({
         return {
           userText: t.userText,
           ...(answer ? { answer } : {}),
-          steps: t.steps,
+          // ⚠️ **用 processSteps** —— 首段正文（归到「过程」的那段）也在里面
+          //    ⇒ 不然恢复历史时**首段就丢了** ✗
+          steps: processSteps(t),
         }
       })
       const next = existing
@@ -655,7 +697,9 @@ export default function ChatPane({
                 <details className="chat-turn-steps">
                   <summary>已完成</summary>
                   <div className="chat-turn-body">
-                    {turn.steps.map((step, i) => (
+                    {/* ⚠️ **用 processSteps** —— 首段正文（归到「过程」的那段）
+                        也在里面 ⇒ 它不会凭空消失 ✓ */}
+                    {processSteps(turn).map((step, i) => (
                       <StepView key={i} step={step} />
                     ))}
                   </div>
@@ -696,6 +740,7 @@ export default function ChatPane({
           </div>
         )}
         <textarea
+          ref={inputRef}
           className="chat-textarea"
           value={input}
           placeholder="跟 Claude 说点什么…"
@@ -756,7 +801,9 @@ export default function ChatPane({
       </div>
     </div>
   )
-}
+})
+
+export default ChatPane
 
 function dirnameOf(p: string): string {
   const i = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/'))
@@ -778,14 +825,52 @@ function dirnameOf(p: string): string {
  * （用户报过「有时候根本就没有最终的回复，也被吞了」）。
  */
 function answerOf(turn: ChatTurn): string {
-  if (turn.streamingIsNewer && turn.streaming) return turn.streaming
-  return turn.answer ?? turn.streaming
+  return splitBodies(turn).answer
+}
+
+/**
+ * **把这一轮的正文拆成「首段（过程）」和「正文」。**
+ *
+ * ⚠️ **一轮里可能有好几段** —— 模型常常「先说一段 → 调工具 → 再说一段」
+ *    ⇒ 以前只留**最后一段** ⇒ 前面的**凭空消失** ✗
+ *
+ * ⇒ **用户定的规矩**：**首段归「过程」，其余是正文** ✓
+ *   - 只有一段（没别的了）⇒ 它就是**答案**（别把唯一的回答藏进折叠块里）✓
+ *   - 首段 + 后续 ⇒ 首段进「过程」，后续是正文 ✓
+ *
+ * ⚠️ **只有增量的 CLI 版本**（只发增量、不发完整消息）⇒ `bodies` 是空的
+ *    ⇒ 全部走 `streaming` ✓（用户报过「有时候根本就没有最终的回复，也被吞了」）
+ */
+function splitBodies(turn: ChatTurn): { opening?: string; answer: string } {
+  const bodies = turn.bodies ?? []
+  // ⚠️ 增量比完整消息新 ⇒ 以增量为准（见 ChatTurn.streamingIsNewer 的说明）
+  const newer = turn.streamingIsNewer && turn.streaming ? turn.streaming : ''
+  if (bodies.length === 0) return { answer: newer }
+  const rest = bodies.slice(1)
+  const parts = [...rest]
+  if (newer) parts.push(newer)
+  // 只有首段、后面什么都没有 ⇒ 它就是答案
+  if (parts.length === 0) return { answer: bodies[0] }
+  return { opening: bodies[0], answer: parts.join('\n\n') }
+}
+
+/**
+ * 这一轮的**过程条目** —— 首段正文（如果它被归到「过程」了）排在最前面。
+ *
+ * ⚠️ 首段正文**排在工具调用前面** —— 它是模型**先**说的 ✓
+ */
+function processSteps(turn: ChatTurn): ChatStep[] {
+  const { opening } = splitBodies(turn)
+  if (!opening) return turn.steps
+  return [{ kind: 'text', text: opening }, ...turn.steps]
 }
 
 /** 折叠块里的一个「过程」条目。 */
 function StepView({ step }: { step: ChatStep }) {
   switch (step.kind) {
     case 'thinking':
+      return <div className="bubble thinking">{step.text}</div>
+    case 'text':
       return <div className="bubble thinking">{step.text}</div>
     case 'tool':
       return (

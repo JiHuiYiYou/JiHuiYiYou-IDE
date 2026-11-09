@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync, mkdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import type { CompileResult, RunResult } from '@shared/jhyy'
@@ -332,7 +332,7 @@ export async function compileFile(opts: CompileOptions): Promise<CompileResult> 
 /**
  * 编译一个程序，**返回产物 exe 的路径**。
  *
- * ⇒ 「在 pty 里跑」（`runPty.ts`）要用它 —— pty 后端要的是**可执行文件**，
+ * ⇒ 「在 pty 里跑」那条路要用它 —— pty 后端要的是**可执行文件**，
  * 而 `runFile`（管道版）把「编译 + 跑」包在一起了。
  */
 export async function compileToProgram(
@@ -347,6 +347,59 @@ export async function compileToProgram(
     : join(work, basename(file).replace(/\.jhyy$/i, '') || 'program')
   const compile = await compileFile({ ...opts, outBase })
   return { ...compile, exe: outBase + '.exe' }
+}
+
+/**
+ * **编「编辑器里现在这段内容」**，而不是磁盘上的那个文件。
+ *
+ * ⚠️ **后台实时诊断必须用它** ——
+ *    诊断要反映**编辑器里现在是什么**，而不是**上次存盘时是什么** ⇒
+ *    以前编的是磁盘上的旧文件 ⇒ **边打字边不报错**（用户改错了都看不见）✗
+ *    而且诊断的行/列是**旧版本**的 ⇒ 波浪线落在错的行上 ✗
+ *
+ * ## 临时文件为什么放在「源文件旁边」
+ *
+ * ⚠️ 编译器解析 `import X` 是**先看主文件所在目录**（`main_dir/X.jhyy`），
+ *   **找不到才回落到标准库目录** ⇒
+ *   ⇒ 临时文件放在别处（哪怕是 scratch 目录）⇒ **本地模块 import 全部找不到**
+ *   ⇒ 编译器报「cannot open import」⇒ **一条假诊断**（用户看到红波浪线）✗
+ *   ⇒ 放在**源文件同一个目录** ⇒ 行为跟编真文件**完全一致** ✓
+ *
+ * ⚠️ **文件名不带 `.jhyy`** ⇒ 文件监听器只认 `.jhyy` ⇒ 它压根不会被看到 ✓
+ *   （编完就删 ⇒ 不留垃圾在用户的项目目录里 ✓）
+ */
+export async function compileContents(
+  opts: CompileOptions & { contents: string },
+): Promise<CompileResult> {
+  const dir = dirname(resolve(opts.file))
+  const stem = basename(opts.file).replace(/\.jhyy$/i, '')
+  const tmp = join(dir, `.jhyy-ide-diag-${stem}`)
+  writeFileSync(tmp, opts.contents, 'utf8')
+  try {
+    const result = await compileFile({ ...opts, file: tmp })
+    /*
+      ⚠️ **诊断里的文件名换回用户的文件** ——
+        不然「问题」面板里点路径跳不过去（跳到临时文件去了）✗
+      ⚠️ **只换「确实是那个临时文件」的** —— import 进来的模块自己的报错
+        **不能**被换（行/列指的是别的文件）✗
+      ⚠️ **斜杠方向要归一** —— 编译器报的是**正斜杠**（`C:/x/y`），
+        而 `join` 出来的是**反斜杠** ⇒ 不归一就比不上 ✗
+    */
+    const norm = (p: string): string => p.replace(/\\/g, '/').toLowerCase()
+    const key = norm(tmp)
+    return {
+      ...result,
+      diagnostics: result.diagnostics.map((d) =>
+        norm(d.file) === key ? { ...d, file: opts.file } : d,
+      ),
+    }
+  } finally {
+    try {
+      rmSync(tmp, { force: true })
+    } catch {
+      /* 删不掉也不是大事（下次会被覆写） */
+    }
+  }
 }
 
 export interface RunOptions {

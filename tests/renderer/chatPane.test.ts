@@ -332,6 +332,63 @@ describe('历史会话', () => {
     expect(answer, '不能是思考过程那句').not.toContain('我先看看')
   })
 
+  /**
+   * **一轮里模型说了好几段** ⇒ 前面的段落**不能凭空消失**。
+   *
+   * ⚠️ 以前 `answer: m.text`（覆盖）⇒ 第二段把第一段**整个冲掉**了
+   *    ⇒ 而 body 里还在引用第一段的变量 ⇒ 读了一个未定义的东西 ✗
+   *
+   * ⇒ **用户定的规矩**：**首段归「过程」，其余是正文** ✓
+   */
+  it('一轮里说了好几段 ⇒ 首段进「过程」，其余都是正文（都不丢）', async () => {
+    localStorage.clear()
+    const { host, bridge } = await mount()
+
+    await send(host, '写个程序')
+    await act(async () => {
+      bridge.status({ state: 'running', sessionId: 'sess-multi' })
+    })
+    await act(async () => {
+      bridge.emit({ type: 'message', message: { role: 'assistant', text: '第一段：先看看文件' } })
+      bridge.emit({
+        type: 'message',
+        message: {
+          role: 'assistant',
+          toolUses: [{ id: 't1', name: 'Read', input: { file_path: 'a.jhyy' } }],
+        },
+      })
+      bridge.emit({ type: 'message', message: { role: 'assistant', text: '第二段：结论是这样' } })
+      bridge.status({ state: 'waiting', turnComplete: true })
+    })
+
+    // ⚠️ **正文气泡里要有第二段** ✓
+    const bubbles = [...host.querySelectorAll('.bubble.assistant')].map((b) => b.textContent ?? '')
+    const body = bubbles.find((t) => t.includes('第二段'))
+    expect(body, '第二段必须是正文').toBeTruthy()
+    expect(body, '正文里不该混着首段').not.toContain('第一段')
+
+    // ⚠️ **首段进了「过程」折叠块**（不是消失）✓
+    const steps = host.querySelector('details.chat-turn-steps')?.textContent ?? ''
+    expect(steps, '首段要进「过程」').toContain('第一段')
+    expect(steps, '工具调用也要在').toContain('Read')
+
+    // ⇒ 存进历史时，**两段都在**（首段在 steps 里）✓
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 800))
+    })
+    const raw = localStorage.getItem('jhyy-ide.claude-sessions.v1')
+    expect(raw).toBeTruthy()
+    const list = JSON.parse(raw!) as {
+      turns?: { answer?: string; steps?: { kind: string; text?: string }[] }[]
+    }[]
+    const saved = list[0].turns?.[0]
+    expect(saved?.answer ?? '', '历史里的答案是第二段').toContain('第二段')
+    expect(
+      saved?.steps?.map((s) => s.text ?? '').join('\n') ?? '',
+      '历史里首段也在（不能丢）',
+    ).toContain('第一段')
+  })
+
   it('重开面板能从 localStorage 里读回历史', async () => {    localStorage.setItem(
       'jhyy-ide.claude-sessions.v1',
       JSON.stringify([{ sessionId: 'sess-abc', title: '上次的会话', cwd: 'C:\\w', ts: 1 }]),

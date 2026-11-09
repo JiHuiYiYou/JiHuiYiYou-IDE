@@ -22,7 +22,7 @@ import {
   type Status,
   type StatusTag,
 } from './state/status'
-import { blocksToSource, sourceToBlocks } from './sync/doc'
+import { blocksToSource, isLosslessForBlocks, sourceToBlocks } from './sync/doc'
 import { detectEol, normalizeEol, toEol, type Eol } from './sync/caret'
 import { accumulateOutput } from './sync/output'
 import Breadcrumbs from './workbench/Breadcrumbs'
@@ -31,6 +31,7 @@ import ErrorBoundary from './workbench/ErrorBoundary'
 import LayoutMenu from './workbench/LayoutMenu'
 import PanelView from './workbench/PanelView'
 import SecondarySidebar from './workbench/SecondarySidebar'
+import type { ChatPaneHandle } from './panes/ChatPane'
 import SettingsDialog from './workbench/SettingsDialog'
 import StatusBar from './workbench/StatusBar'
 import TabStrip, { type EditorTab } from './workbench/TabStrip'
@@ -198,8 +199,18 @@ export default function App() {
 
   const codeRef = useRef<CodePaneHandle>(null)
   const blockRef = useRef<BlockPaneHandle>(null)
+  /** 聊天面板 —— 「聚焦聊天」命令要把光标放进它的输入框 */
+  const chatRef = useRef<ChatPaneHandle>(null)
+  /** 「聚焦聊天」的请求号 —— 侧栏刚打开时输入框还没渲染出来 ⇒ 渲染完再聚焦 */
+  const [chatFocusTick, setChatFocusTick] = useState(0)
   /** 块视图的重建计数 —— 错误边界点「重来一次」时 +1，整个块视图重新挂载 */
   const [blockPaneKey, setBlockPaneKey] = useState(0)
+
+  // 「聚焦聊天」⇒ 渲染完之后再把光标放进输入框
+  useEffect(() => {
+    if (chatFocusTick === 0) return
+    chatRef.current?.focusInput()
+  }, [chatFocusTick])
 
   // ── 派生值 ────────────────────────────────────────────────
   const active = useMemo(() => files.find((f) => f.id === activeId) ?? null, [files, activeId])
@@ -408,7 +419,13 @@ export default function App() {
   /** 后台检查是不是正在跑 */
   const diagInFlight = useRef(false)
 
-  const scheduleDiagnostics = useCallback(() => {
+  /**
+   * 排一次后台实时诊断。
+   *
+   * @param source **当前编辑器里的内容** —— 必须传进来，不能从 ref 里读：
+   *   `updateActive()` 之后 ref 要等下一次渲染才更新 ⇒ 读到的是**旧内容** ✗
+   */
+  const scheduleDiagnostics = useCallback((source: string) => {
     const path = filePathRef.current
     if (!path) return
     if (diagTimer.current) clearTimeout(diagTimer.current)
@@ -421,7 +438,10 @@ export default function App() {
         // ⚠️ `quiet: true` —— 后台实时诊断**不回显到终端**。
         // 每敲一个字就往终端里打一行 `> jhyy compile …`，终端会被刷满
         // （用户报过「都会触发就很烦人」）。
-        .compile({ file: path, noLink: true, quiet: true, timeoutMs: 15_000 })
+        // ⚠️⚠️ **编的是「编辑器里现在这段」，不是磁盘上的旧文件** ——
+        //   以前编磁盘那份 ⇒ **边打字边不报错**（改错了都看不见）✗
+        //   而且诊断的行/列是旧版本的 ⇒ 波浪线落在错的行上 ✗
+        .compile({ file: path, contents: source, noLink: true, quiet: true, timeoutMs: 15_000 })
         .then((r) => {
           setDiagnostics(r.diagnostics)
           /*
@@ -497,18 +517,34 @@ export default function App() {
 
   const reloadFromDisk = useCallback(async () => {
     if (!externalChange) return
-    const raw = await window.jhyyIde.file.read(externalChange)
+    const path = externalChange
+    const raw = await window.jhyyIde.file.read(path)
     // ⚠️ 行尾统一成 LF（编辑器里是 LF）
     const content = normalizeEol(raw)
-    updateActive({
-      source: content,
-      saved: content,
-      blocksAt: content,
-      blocks: sourceToBlocks(content).trees,
-      eol: detectEol(raw),
-    })
+    /*
+      ⚠️⚠️ **要改的是「被改动的那个文件」，不是当前活动文件！**
+      以前这里用的是 `updateActive(...)` ⇒ 写进了**当前活动**的文件 ⇒
+      而读的是**别的**文件的内容 ⇒
+      **当前文件被另一个文件的内容覆盖了**（还标成「已保存」⇒ 未保存的编辑全丢）✗✗
+      （用户报过：「点运行跳到别的终端」那种「张冠李戴」）
+      ⇒ 按路径改那个文件本身 ✓（跟上面 Claude 内部改动那条分支一个路子）
+    */
+    setFiles((prev) =>
+      prev.map((f) =>
+        f.path === path
+          ? {
+              ...f,
+              source: content,
+              saved: content,
+              blocksAt: content,
+              blocks: sourceToBlocks(content).trees,
+              eol: detectEol(raw),
+            }
+          : f,
+      ),
+    )
     setExternalChange(null)
-  }, [externalChange, updateActive])
+  }, [externalChange])
 
   /** 打开（或者切到）一个文件。 */
   const openFile = useCallback(async () => {
@@ -641,7 +677,7 @@ export default function App() {
   const onSourceChange = useCallback(
     (code: string) => {
       updateActive({ source: code })
-      scheduleDiagnostics()
+      scheduleDiagnostics(code)
     },
     [scheduleDiagnostics, updateActive],
   )
@@ -649,10 +685,29 @@ export default function App() {
   /** 块视图改了 → 重新生成源码 → 写回文本视图。 */
   const onBlockChange = useCallback(
     (tree: BlockTree[]) => {
+      const current = filesRef.current.find((f) => f.id === activeIdRef.current)
+      /*
+        ⚠️⚠️ **块视图表达不了这份源码 ⇒ 不许回写** ——
+        块视图**会替换用户编辑器里的内容**（`source: generated`）⇒
+        块树丢掉的那些东西（泛型参数、turbofish、`#[inline]` 属性、
+        源码本身有语法错误时那一堆碎片……）就**从用户的文件里消失了** ✗✗
+
+        ⇒ 判据：文本视图和块视图**能不能一字不差**（`isLosslessForBlocks`）⇒
+          不能 ⇒ **宁可不回写**，也不能把用户的代码改坏 ✓
+          （用户可以回文本视图改；这条状态栏消息告诉他为什么没生效）
+      */
+      if (current && !isLosslessForBlocks(current.source)) {
+        setStatus({
+          text: '这个文件里有块视图表达不了的内容（或源码有语法错误），块编辑不会写回 —— 请在文本视图里改',
+          kind: 'bad',
+          tag: 'blocks',
+        })
+        return
+      }
       const generated = blocksToSource(tree)
       // 块是**最新的** ⇒ 块视图不再过期（blocksAt 跟着源码走）
       updateActive({ source: generated, blocksAt: generated, blocks: tree })
-      scheduleDiagnostics()
+      scheduleDiagnostics(generated)
     },
     [scheduleDiagnostics, updateActive],
   )
@@ -771,7 +826,9 @@ export default function App() {
     async (noLink: boolean) => {
       const path = filePathRef.current
       if (!path) {
-        setStatus({ text: '先打开一个 .jhyy 文件', kind: 'bad', tag: 'file' })
+        // ⚠️ **没路径** ⇒ 未命名的新文件 ⇒ 编译/运行要的是磁盘上的文件 ⇒
+        //    先保存 ⇒ 提示要说清楚（别让用户以为 IDE 坏了）
+        setStatus({ text: '先保存这个文件（编译/运行的是磁盘上的文件）', kind: 'bad', tag: 'file' })
         return
       }
       if (dirty) await saveFile()
@@ -819,7 +876,8 @@ export default function App() {
   const doRun = useCallback(async () => {
     const path = filePathRef.current
     if (!path) {
-      setStatus({ text: '先打开一个 .jhyy 文件', kind: 'bad', tag: 'file' })
+      // ⚠️ **没路径** ⇒ 未命名的新文件 ⇒ 先保存 ✓
+      setStatus({ text: '先保存这个文件（编译/运行的是磁盘上的文件）', kind: 'bad', tag: 'file' })
       return
     }
     if (dirty) await saveFile()
@@ -871,7 +929,18 @@ export default function App() {
             tag: 'run',
           }
         } else if (!result.ran) {
-          failure = { text: '编译失败，未运行', kind: 'bad', tag: 'compile' }
+          failure = {
+            text: '编译失败，未运行',
+            kind: 'bad',
+            tag: 'compile',
+            /*
+              ⚠️ **要让后台诊断能撤掉它** ——
+              用户改完代码、后台检查说「没错了」⇒ 状态栏还挂着「编译失败，未运行」
+              就是**骗人** ✗（这正是 `state/status.ts` 那个模块要消灭的现象）
+              ⇒ 跟「检查」那条失败消息一个口径 ✓
+            */
+            clearsWhenDiagnosticsClean: result.diagnostics.some((d) => d.severity === 'error'),
+          }
         } else if (result.crashed) {
           failure = {
             text: `程序崩溃：${result.crashName}（退出码 ${result.exitCode}）`,
@@ -945,6 +1014,20 @@ export default function App() {
 
   const toggleSidebar = useCallback(() => {
     setLayout((l) => ({ ...l, sidebarOpen: !l.sidebarOpen }))
+  }, [])
+
+  /**
+   * **聚焦聊天**（`Ctrl+Alt+I`）—— 打开侧栏**并**把光标放进输入框。
+   *
+   * ⚠️ 以前这条命令挂的是 `toggleSidebar` ⇒ 侧栏开着的时候按它反而**把它关掉**
+   *    （命令名是「聚焦聊天」，干的事是「切换侧栏」）✗
+   */
+  const focusChat = useCallback(() => {
+    // ⚠️ **侧栏开着就保持开着** —— 聚焦不是切换 ✓
+    setLayout((l) => ({ ...l, sidebarOpen: true }))
+    // ⚠️ 侧栏刚打开 ⇒ 输入框还没渲染出来 ⇒ 用一个「请求号」让 effect 在
+    //    渲染**之后**再聚焦 ✓
+    setChatFocusTick((n) => n + 1)
   }, [])
 
   const toggleStatusBar = useCallback(() => {
@@ -1026,9 +1109,11 @@ export default function App() {
     showPanelTab,
     newTerminal,
     toggleSidebar,
+    focusChat,
     toggleStatusBar,
     editor: () => codeRef.current,
-    hasFile: () => filePathRef.current !== null,
+    hasFile: () => activeIdRef.current !== null,
+    hasPath: () => filePathRef.current !== null,
     isBusy: () => busyRef.current,
     isBlocksView: () => centerViewRef.current === 'blocks',
     isPanelOpen: () => layoutRef.current.panelOpen,
@@ -1194,6 +1279,7 @@ export default function App() {
         </div>
 
         <SecondarySidebar
+          ref={chatRef}
           open={layout.sidebarOpen}
           width={layout.sidebarWidth}
           onWidthChange={(w) => setLayout((l) => ({ ...l, sidebarWidth: w }))}

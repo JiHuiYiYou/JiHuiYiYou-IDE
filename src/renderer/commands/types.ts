@@ -92,9 +92,14 @@ export interface KeyChord {
  * 键名别名 —— `KeyboardEvent.key` 的原始值跟 VS Code 的写法对不上。
  *
  * ⚠️ 别名表和注册表必须用**同一套写法**，否则匹配不上。
+ *
+ * ⚠️ **`~` 也要别名** —— 按住 Shift 时反引号键报的是 `~`（不是 `` ` ``）⇒
+ *    `Ctrl+Shift+Backquote`（新建终端）**永远匹配不上** ✗
+ *    （`Ctrl+Backquote` 能用 —— 它不按 Shift ⇒ `e.key` 还是 `` ` `` ✓）
  */
 const KEY_ALIASES: Record<string, string> = {
   '`': 'Backquote',
+  '~': 'Backquote',
   ' ': 'Space',
   ArrowUp: 'Up',
   ArrowDown: 'Down',

@@ -21,6 +21,7 @@ import { ClaudeSession } from './claude/session'
 import { locateJhyy } from './compiler/locate'
 import { parseDiagnostics } from './compiler/diagnostics'
 import {
+  compileContents,
   compileFile,
   ensureWorkDir,
   isControlCExit,
@@ -369,6 +370,23 @@ function registerIpc(): void {
         而且它 quiet（`req.quiet`）⇒ 终端里一个字都不显示 ✓
     */
     if (req.quiet) {
+      /*
+        ⚠️⚠️ **`contents` ⇒ 编的是「编辑器里现在这段」，不是磁盘上的旧文件** ——
+          以前后台诊断直接编磁盘上那份 ⇒ **边打字边不报错**（用户改错了都看不见）✗
+          而且诊断的行/列是**旧版本**的 ⇒ 波浪线落在错的行上 ✗
+          ⇒ `compileContents` 把它写成一个临时文件再编（临时文件放在**源文件旁边**
+          ⇒ 本地模块的 import 照样能解析 ⇒ 不会冒出假诊断）✓
+      */
+      if (req.contents !== undefined) {
+        return compileContents({
+          exePath: toolchain.exePath,
+          file: req.file,
+          contents: req.contents,
+          noLink: req.noLink,
+          extraArgs: req.extraArgs,
+          timeoutMs: req.timeoutMs,
+        })
+      }
       return compileFile({
         exePath: toolchain.exePath,
         file: req.file,
