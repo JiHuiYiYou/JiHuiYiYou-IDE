@@ -4,6 +4,12 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
+  MAX_CLAUDE_CONTEXT_MAX_KB,
+  MAX_LARGE_FILE_THRESHOLD,
+  MIN_CLAUDE_CONTEXT_MAX_KB,
+  MIN_LARGE_FILE_THRESHOLD,
+} from '../../src/renderer/editor/largeFile'
+import {
   DEFAULT_SETTINGS,
   loadSettings,
   saveSettings,
@@ -60,6 +66,31 @@ describe('用户设置', () => {
   it('字体是空字符串 ⇒ 默认值', () => {
     localStorage.setItem(KEY, JSON.stringify({ editorFontFamily: '   ' }))
     expect(loadSettings().editorFontFamily).toBe(DEFAULT_SETTINGS.editorFontFamily)
+  })
+
+  /*
+    ⚠️ **大文件阈值 / Claude 上下文上限** ——
+      这两个是「大文件模式」的旋钮 ⇒ 存进 localStorage ⇒ 重开窗口还在 ✓
+  */
+  it('大文件阈值和 Claude 上限都存得住', () => {
+    const s = {
+      ...DEFAULT_SETTINGS,
+      largeFileThreshold: 2 * 1024 * 1024,
+      claudeContextMaxKb: 512,
+    }
+    saveSettings(s)
+    expect(loadSettings()).toEqual(s)
+  })
+
+  it('阈值 / 上限不靠谱 ⇒ 夹到合理范围', () => {
+    localStorage.setItem(KEY, JSON.stringify({ largeFileThreshold: 999999999 }))
+    expect(loadSettings().largeFileThreshold).toBe(MAX_LARGE_FILE_THRESHOLD)
+    localStorage.setItem(KEY, JSON.stringify({ largeFileThreshold: -1 }))
+    expect(loadSettings().largeFileThreshold).toBe(MIN_LARGE_FILE_THRESHOLD)
+    localStorage.setItem(KEY, JSON.stringify({ claudeContextMaxKb: 0 }))
+    expect(loadSettings().claudeContextMaxKb).toBe(MIN_CLAUDE_CONTEXT_MAX_KB)
+    localStorage.setItem(KEY, JSON.stringify({ claudeContextMaxKb: 999999 }))
+    expect(loadSettings().claudeContextMaxKb).toBe(MAX_CLAUDE_CONTEXT_MAX_KB)
   })
 })
 

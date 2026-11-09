@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { Icon } from './icons'
 
 export interface EditorTab {
@@ -5,6 +6,12 @@ export interface EditorTab {
   name: string
   /** 有未保存的改动 */
   dirty: boolean
+  /**
+   * **进了「大文件模式」** —— 后台检查 / 拖块视图 / 送源码给 Claude 都关了。
+   *
+   * ⚠️ **要在标签上标出来** —— 用户得知道「为什么这个文件没有块视图」✓
+   */
+  large?: boolean
   active: boolean
 }
 
@@ -28,7 +35,7 @@ interface Props {
  *
  * ⚠️ 这里**没有**块视图按钮 —— 标题栏已经有一个了（🧩），重复。
  */
-export default function TabStrip(props: Props) {
+function TabStrip(props: Props) {
   return (
     <div className="tab-strip">
       <div className="tab-strip-tabs">
@@ -50,6 +57,20 @@ export default function TabStrip(props: Props) {
               **鼠标移上去**圆点变成 ×。
             */}
             {tab.dirty && <span className="editor-tab-dirty" title="有未保存的改动" />}
+            {/*
+              ⚠️ **大文件模式的标记** ——
+              这个文件太大 ⇒ IDE 自动关掉了后台实时检查、拖块视图，
+              还有「把整份源码送进 Claude」⇒
+              ⇒ 用户得看得见（不然会以为是 IDE 坏了）✓
+            */}
+            {tab.large && (
+              <span
+                className="editor-tab-large"
+                title="大文件模式：后台实时检查、拖块视图、送源码给 Claude 都已关掉"
+              >
+                大
+              </span>
+            )}
             <button
               className="editor-tab-close"
               title="关闭"
@@ -92,3 +113,12 @@ export default function TabStrip(props: Props) {
     </div>
   )
 }
+
+/**
+ * ⚠️ **要 `memo`** —— 标签条每次渲染都要把**每个标签**重新画一遍 ⇒
+ *   `App` 因为别的事重渲染时（诊断更新 …）它**不该**跟着画 ✓
+ *
+ * ⚠️ **前提：回调得是稳定的** —— `App` 里那几个 `onSelect` / `onClose` …
+ *   都得是 `useCallback` ⇒ 不然每次都是新函数 ⇒ `memo` 白加 ✗
+ */
+export default memo(TabStrip)

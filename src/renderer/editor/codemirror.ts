@@ -9,15 +9,13 @@ import {
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import {
   bracketMatching,
-  foldGutter,
-  foldKeymap,
   indentOnInput,
   indentUnit,
   syntaxHighlighting,
 } from '@codemirror/language'
 import { lintKeymap, linter, type Diagnostic as CmDiagnostic } from '@codemirror/lint'
 import { highlightSelectionMatches, searchKeymap } from '@codemirror/search'
-import { EditorState, Compartment, type Text } from '@codemirror/state'
+import { EditorState, Compartment, Transaction, type Extension, type Text } from '@codemirror/state'
 import {
   crosshairCursor,
   drawSelection,
@@ -31,10 +29,13 @@ import {
   placeholder as placeholderExt,
   rectangularSelection,
   type Tooltip,
+  type ViewUpdate,
 } from '@codemirror/view'
 import { KEYWORD_LIST } from '@lang/token'
 import { findSpecForWord, formatSectionRef } from '@lang/spec'
 import { BUILTINS, STDLIB_MODULES, findStdlibModule } from '@lang/stdlib'
+import type { Diagnostic } from '@shared/jhyy'
+import { cursorStore, type CursorInfo } from '../state/cursorStore'
 import { jhyyHighlightStyle, jhyyLanguage } from './jhyyLanguage'
 
 /** 主题（暗色）。 */
@@ -116,34 +117,40 @@ const theme = EditorView.theme(
   { dark: true },
 )
 
-/** 关键字 / 类型 / 内建 的补全项。 */
+/**
+ * 关键字 / 类型 / 内建 的补全项。
+ *
+ * ⚠️ **选项表是模块级常量** —— 以前每次补全激活都重建一遍（~90 项对象）
+ * ⇒ 白白分配 ⇒ 现在只建一次 ✓
+ */
+const KEYWORD_COMPLETION_OPTIONS: CompletionResult['options'] = [
+  ...KEYWORD_LIST.map((k) => ({ label: k, type: 'keyword' as const })),
+  { label: 'true', type: 'constant' as const },
+  { label: 'false', type: 'constant' as const },
+  { label: 'null', type: 'constant' as const },
+  { label: 'i8', type: 'type' as const },
+  { label: 'i16', type: 'type' as const },
+  { label: 'i32', type: 'type' as const },
+  { label: 'i64', type: 'type' as const },
+  { label: 'u8', type: 'type' as const },
+  { label: 'u16', type: 'type' as const },
+  { label: 'u32', type: 'type' as const },
+  { label: 'u64', type: 'type' as const },
+  { label: 'f32', type: 'type' as const },
+  { label: 'f64', type: 'type' as const },
+  { label: 'bool', type: 'type' as const },
+  { label: 'Cap', type: 'type' as const },
+  { label: 'PhantomData', type: 'type' as const },
+  ...BUILTINS.map((b) => ({
+    label: b.name,
+    type: 'function' as const,
+    detail: b.doc,
+  })),
+  { label: 'printf', type: 'function' as const, detail: 'C 风格格式化输出' },
+]
+
 function keywordCompletions(): CompletionResult {
-  const options = [
-    ...KEYWORD_LIST.map((k) => ({ label: k, type: 'keyword' as const })),
-    { label: 'true', type: 'constant' as const },
-    { label: 'false', type: 'constant' as const },
-    { label: 'null', type: 'constant' as const },
-    { label: 'i8', type: 'type' as const },
-    { label: 'i16', type: 'type' as const },
-    { label: 'i32', type: 'type' as const },
-    { label: 'i64', type: 'type' as const },
-    { label: 'u8', type: 'type' as const },
-    { label: 'u16', type: 'type' as const },
-    { label: 'u32', type: 'type' as const },
-    { label: 'u64', type: 'type' as const },
-    { label: 'f32', type: 'type' as const },
-    { label: 'f64', type: 'type' as const },
-    { label: 'bool', type: 'type' as const },
-    { label: 'Cap', type: 'type' as const },
-    { label: 'PhantomData', type: 'type' as const },
-    ...BUILTINS.map((b) => ({
-      label: b.name,
-      type: 'function' as const,
-      detail: b.doc,
-    })),
-    { label: 'printf', type: 'function' as const, detail: 'C 风格格式化输出' },
-  ]
-  return { from: 0, options, validFor: /^[\w]*$/ }
+  return { from: 0, options: KEYWORD_COMPLETION_OPTIONS, validFor: /^[\w]*$/ }
 }
 
 /** `mod::` 之后的补全 —— 标准库的成员。 */
@@ -285,21 +292,47 @@ function wordAt(
 
 export interface CreateEditorOptions {
   doc: string
-  onChange?: (value: string) => void
+  /**
+   * **文档内容变了** —— 只报「变了」，**不报内容**！
+   *
+   * ⚠️⚠️ **这里原来是把整份文档传出去的**（`onChange(value: string)`）⇒
+   *   以前每次按键都要 `update.state.doc.toString()` ⇒
+   *   **把整个文件重新物化成字符串** ⇒
+   *   ⇒ 文件越大越卡（10 MB 的文件：每次按键几十毫秒 + 几十 MB 垃圾）✗✗
+   *   ⇒ ⇒ 现在**只报「变了」** ⇒ 谁要内容谁自己**按需**去取 ⇒ **O(1)** ✓
+   *
+   * ⇒ 需要内容的时候（比如存盘、编译前）用 `docStore.text(id)` 取**一次** ✓
+   *
+   * ⇒ 传的是整个 `ViewUpdate`（要 `startState` 才能认出「撤销 / 重做」）✓
+   */
+  onDocChange?: (update: ViewUpdate) => void
   readOnly?: boolean
-  /** 诊断来源（来自真实编译器的 stderr） */
-  linter?: ReturnType<typeof linter>
   placeholder?: string
-  /** 光标位置 / 选区变了 —— 状态栏的 "Ln x, Col y" 用 */
-  onCursorChange?: (info: CursorInfo) => void
 }
 
 /** 光标位置（行列都是 **1-based**，跟编译器一致）。 */
-export interface CursorInfo {
-  line: number
-  col: number
-  /** 选区跨了几行（没有选区时是 0） */
-  selectedLines: number
+export type { CursorInfo } from '../state/cursorStore'
+
+/**
+ * **这次改动是不是「撤销 / 重做」**？
+ *
+ * ⚠️ **为什么认这个** ——
+ *   脏标记要在「撤销回存盘点」的那一刻**准确地消失**（VS Code 的行为）⇒
+ *   ⇒ 撤销/重做之后必须**精确比一次内容**（O(n)）⇒
+ *   ⇒ 但**普通打字不能比**（O(n) ⇒ 每敲一个字都全文件比较 ⇒ 卡）✗
+ *   ⇒ ⇒ 得认得出「这是撤销」⇒ 只在撤销/重做时才付 O(n) 的代价 ✓
+ *
+ * ⚠️ **怎么认** —— CodeMirror 的 `history` 扩展在撤销/重做时会给事务打上
+ *   `Transaction.userEvent` 注解：`"undo"` / `"redo"`
+ *   （源码：`@codemirror/commands` 的 `HistoryState.pop`）✓
+ *   ⇒ 别的路子（比 `undoDepth`）都靠不住 —— 它会**饱和**，而且
+ *   「普通编辑」和「重做」都会让它**变大** ⇒ 分不出来 ✗
+ */
+export function isHistoryJump(update: ViewUpdate): boolean {
+  return update.transactions.some((tr) => {
+    const ev = tr.annotation(Transaction.userEvent)
+    return ev === 'undo' || ev === 'redo'
+  })
 }
 
 /**
@@ -325,13 +358,42 @@ export function cursorInfoOf(state: EditorState): CursorInfo {
   }
 }
 
-/** 创建一个 JHYY 代码编辑器。 */
-export function createCodeEditor(parent: HTMLElement, opts: CreateEditorOptions): EditorView {
-  const extensions = [
+/**
+ * **编辑器里当前的诊断**（波浪线）。
+ *
+ * ⚠️ **为什么是模块级的** ——
+ *   linter 扩展是**跟着 `EditorState` 走的**（每个文件一份）⇒
+ *   ⇒ 它不能闭包捕获 `App` 的 state ⇒ ⇒ 诊断放在这儿，谁要谁取 ✓
+ *   （`CodePane` 每次诊断变了就往这儿写一份 + `forceLinting`）
+ */
+let editorDiagnostics: Diagnostic[] = []
+
+/** 把诊断写进编辑器（`CodePane` 在诊断变化时调）。 */
+export function setEditorDiagnostics(diagnostics: Diagnostic[]): void {
+  editorDiagnostics = diagnostics
+}
+
+/**
+ * 建一个 JHYY 编辑器的**扩展集**。
+ *
+ * ⚠️ **每个打开的文件各有一份 `EditorState`** ⇒ 每个文件也就各有一份扩展集
+ * （`history` / `Language.state` 这些 state 字段都是**跟着 state 走**的）⇒
+ * ⇒ 切标签 = `view.setState(别的文件的 state)` ⇒ 撤销历史、语法树、光标
+ * **全都各归各的** ✓（VS Code 的 model ↔ view 模型）
+ */
+export function jhyyExtensions(opts: Omit<CreateEditorOptions, 'doc'>): Extension[] {
+  const extensions: Extension[] = [
     lineNumbers(),
     highlightActiveLineGutter(),
     highlightActiveLine(),
-    foldGutter(),
+    /*
+      ⚠️ **这里以前有 `foldGutter()` —— 现在删掉了** ——
+      折叠要语言数据里有 `foldable` 才会生效，而 JHYY 的语言数据
+      （`jhyyLanguage.ts` 的 `languageData`）**没有** `foldable` ⇒
+      ⇒ 折叠箭头**从来没出现过** ⇒ 那是个纯死代码（还白占一点渲染开销）✗
+      ⇒ 真要折叠 ⇒ 得给语言数据加 `foldable`（按 `{`/`}` 配对），
+      那是一件独立的活儿。
+    */
     history(),
     drawSelection(),
     dropCursor(),
@@ -346,13 +408,20 @@ export function createCodeEditor(parent: HTMLElement, opts: CreateEditorOptions)
     syntaxHighlighting(jhyyHighlightStyle),
     jhyyLanguage,
     theme,
-    lineWrapCompartment.of(EditorView.lineWrapping),
+    /*
+      ⚠️ **自动换行默认关**（跟 VS Code 的 `editor.wordWrap: off` 一个路子）。
+
+      自动换行是**大文件的头号性能杀手** —— 一行 5 万字符的代码会被拆成
+      几十万个视觉行盒子 ⇒ 布局计算暴增 ⇒ 滚动直接卡住。
+
+      ⇒ 用户想开随时按 **Alt+Z**（命令 `view.toggleWordWrap`）✓
+    */
+    lineWrapCompartment.of([]),
     keymap.of([
       ...closeBracketsKeymap,
       ...defaultKeymap,
       ...searchKeymap,
       ...historyKeymap,
-      ...foldKeymap,
       ...completionKeymap,
       ...lintKeymap,
       indentWithTab,
@@ -366,19 +435,54 @@ export function createCodeEditor(parent: HTMLElement, opts: CreateEditorOptions)
     }),
     hoverTooltip(jhyyHover()),
     EditorView.updateListener.of((update) => {
-      if (update.docChanged) opts.onChange?.(update.state.doc.toString())
+      /*
+        ⚠️⚠️ **这里原来是把整份文档传出去的** ——
+        `opts.onChange?.(update.state.doc.toString())` ⇒
+        **每次按键都把整个文件重新物化成字符串** ⇒
+        文件越大越卡（10 MB ⇒ 每次按键几十毫秒）✗✗
+        ⇒ ⇒ 现在**只报「变了」**（state 本身就在那儿，要内容自己去取）⇒ O(1) ✓
+      */
+      if (update.docChanged) opts.onDocChange?.(update)
       if (update.docChanged || update.selectionSet) {
-        opts.onCursorChange?.(cursorInfoOf(update.state))
+        /*
+          ⚠️ **光标直接写进自己的 store** —— 不经过 `App` 的 state ⇒
+          ⇒ 光标一动，**只有状态栏重渲染**（它订阅了这个 store）⇒
+          ⇒ App 那一大棵树完全不受影响 ✓（打字不再「整个 IDE 都抖」）
+        */
+        cursorStore.set(cursorInfoOf(update.state))
       }
     }),
     readOnlyCompartment.of(EditorState.readOnly.of(Boolean(opts.readOnly))),
   ]
 
   if (opts.placeholder) extensions.push(placeholderExt(opts.placeholder))
-  if (opts.linter) extensions.push(opts.linter)
+  /*
+    ⚠️ **诊断的波浪线** —— 扩展是**每个文件一份**（跟着 state 走）⇒
+    ⇒ 它不能闭包捕获 `App` 的 state ⇒ 诊断从模块级的 `editorDiagnostics` 读 ✓
+  */
+  extensions.push(linter((v) => toCmDiagnostics(v.state.doc, editorDiagnostics)))
 
+  return extensions
+}
+
+/**
+ * 建一个 JHYY 编辑器的**状态**（文档 + 扩展）。
+ *
+ * ⚠️ **状态是「不可变」的** —— 每次事务都会产生一个新的 state 对象 ⇒
+ * ⇒ 谁持有最新那份，谁就得在每次事务后更新它 ⇒
+ * **这就是 `DocStore` 的活**（见 `src/renderer/editor/docStore.ts`）✓
+ */
+export function createEditorState(
+  doc: string,
+  opts: Omit<CreateEditorOptions, 'doc'> = {},
+): EditorState {
+  return EditorState.create({ doc, extensions: jhyyExtensions(opts) })
+}
+
+/** 创建一个 JHYY 代码编辑器（一步到位：建状态 + 建视图）。 */
+export function createCodeEditor(parent: HTMLElement, opts: CreateEditorOptions): EditorView {
   const view = new EditorView({
-    state: EditorState.create({ doc: opts.doc, extensions }),
+    state: createEditorState(opts.doc, opts),
     parent,
   })
   return view

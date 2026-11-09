@@ -1,5 +1,6 @@
 import type { CodePaneHandle } from '../panes/CodePane'
 import type { EditorCommand } from '../editor/editorCommands'
+import { isWordWrapOn } from '../editor/editorCommands'
 import type { PanelTab } from '../state/layout'
 import type { Command, MenuSpec } from './types'
 
@@ -204,6 +205,20 @@ export function createCommands(ctx: { current: CommandContext }): Command[] {
       run: () => ctx.current.toggleBlocks(),
     },
     {
+      id: 'view.toggleWordWrap',
+      title: '切换自动换行',
+      titleEn: 'Editor: Toggle Word Wrap',
+      category: '查看',
+      keybinding: 'Alt+Z',
+      /*
+        ⚠️ **这个命令以前根本不存在** —— `CodePane` 里有 `toggleLineWrapping()`，
+        但**全项目没有任何地方调用它** ⇒ 等于「自动换行永远开着、还关不掉」✗
+        ⇒ 现在把它接进命令表 ⇒ 用户想开的时候按 Alt+Z 就能开 ✓
+      */
+      run: () => ctx.current.editor()?.exec('toggleLineWrapping'),
+      checked: () => isWordWrapOn(),
+    },
+    {
       id: 'view.togglePanel',
       title: '显示/隐藏 底部面板',
       titleEn: 'View: Toggle Panel',
@@ -363,6 +378,7 @@ export function createMenus(): MenuSpec[] {
         { commandId: 'view.togglePanel' },
         { commandId: 'view.toggleSidebar' },
         { commandId: 'view.toggleStatusBar' },
+        { commandId: 'view.toggleWordWrap' },
         { label: '' },
         { commandId: 'view.problems' },
         { commandId: 'view.terminal' },

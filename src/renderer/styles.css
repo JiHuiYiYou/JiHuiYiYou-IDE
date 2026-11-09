@@ -677,6 +677,22 @@ button.mini {
   flex: 0 0 auto;
 }
 
+/*
+  ⚠️ **大文件模式的标记** ——
+  这个文件太大 ⇒ IDE 自动关掉了后台实时检查、拖块视图、送源码给 Claude。
+  ⇒ 用户得看得见（不然会以为是 IDE 坏了）✓
+*/
+.editor-tab-large {
+  flex: 0 0 auto;
+  font-size: 10px;
+  line-height: 14px;
+  padding: 0 4px;
+  border-radius: 3px;
+  border: 1px solid var(--text-dim);
+  color: var(--text-dim);
+  cursor: help;
+}
+
 .tab-strip-actions {
   margin-left: auto;
   display: flex;

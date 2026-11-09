@@ -1,27 +1,27 @@
-import { forceLinting, linter } from '@codemirror/lint'
-import { EditorState } from '@codemirror/state'
+import { forceLinting } from '@codemirror/lint'
+import { EditorState, Transaction } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
 import { useEffect, useImperativeHandle, useRef, type Ref } from 'react'
 import type { Diagnostic } from '@shared/jhyy'
 import {
   createCodeEditor,
   cursorInfoOf,
-  lineWrapCompartment,
   readOnlyCompartment,
-  toCmDiagnostics,
+  setEditorDiagnostics,
   type CursorInfo,
 } from '../editor/codemirror'
+import type { DocStore } from '../editor/docStore'
 import { revealLine, runEditorCommand, type EditorCommand } from '../editor/editorCommands'
+import { applyTextChange } from '../sync/caret'
 import { DEFAULT_SETTINGS } from '../state/settings'
-import { applyTextChange, normalizeEol } from '../sync/caret'
 
 interface Props {
-  value: string
-  onChange?: (value: string) => void
+  /** 当前显示的是哪个文件（null = 没开文件） */
+  fileId: string | null
+  /** 文档仓库 —— 文本只存在这儿（编辑器里） */
+  store: DocStore
   diagnostics?: Diagnostic[]
   readOnly?: boolean
-  /** 光标位置变了（状态栏用） */
-  onCursorChange?: (info: CursorInfo) => void
   /** 编辑区字体（CSS font-family）—— 用户设置里改的 */
   fontFamily?: string
   /** 编辑区字号（像素）—— 用户设置里改的 */
@@ -44,23 +44,29 @@ export interface CodePaneHandle {
   getSelectionInfo(): CursorInfo
   /** 执行一条编辑器命令 */
   exec(cmd: EditorCommand): void
-  /** 切换自动换行（Alt+Z） */
-  toggleLineWrapping(): void
   /** 切换只读 */
   setReadOnly(readOnly: boolean): void
+  /** 把整个文档换成另一段（块视图回写用）—— 是一次**真事务** ⇒ 可以撤销 ✓ */
+  replaceDoc(text: string): void
+  /** 把整个文档换成另一段，**不进撤销历史**（磁盘上被改了 ⇒ 重新加载） */
+  setDoc(text: string): void
 }
 
 /**
  * 文本视图 —— CodeMirror 6。
  *
  * React 19 里 `ref` 就是一个普通 prop，不用 forwardRef。
+ *
+ * ⚠️⚠️ **这里不持有文本** ——
+ *   文本在 `DocStore` 里（每个文件一份 `EditorState`）⇒
+ *   ⇒ 切标签 = `view.setState(store.get(fileId))` ⇒ **O(1)** ✓
+ *   ⇒ 而且**每个文件的撤销历史各归各的**（VS Code 的 model ↔ view 模型）✓
  */
 export default function CodePane({
-  value,
-  onChange,
+  fileId,
+  store,
   diagnostics = [],
   readOnly,
-  onCursorChange,
   fontFamily,
   fontSize,
   ref,
@@ -68,32 +74,27 @@ export default function CodePane({
   const hostRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
   const diagnosticsRef = useRef<Diagnostic[]>(diagnostics)
-  const onChangeRef = useRef(onChange)
-  const onCursorRef = useRef(onCursorChange)
-  /** 正在把外部的值写进编辑器 —— 这时不要回调 onChange（否则自激） */
-  const applyingRef = useRef(false)
-  /** 自动换行当前开没开（用来做切换） */
-  const wrappedRef = useRef(true)
   diagnosticsRef.current = diagnostics
-  onChangeRef.current = onChange
-  onCursorRef.current = onCursorChange
+  /** 上一次显示的是哪个文件（切走时要记它的滚动位置） */
+  const prevIdRef = useRef<string | null>(null)
+  /** 每个文件的滚动位置（VS Code：切回来还在原处） */
+  const scrollMem = useRef(new Map<string, number>())
 
-  // 建编辑器（只建一次）
+  /*
+    建编辑器（只建一次）。
+
+    ⚠️⚠️ **这里现在什么回调都不传** ——
+    「文档变了」「光标动了」这些回调**跟着每个文件自己的 `EditorState` 走**
+    （`App` 建 state 的时候传进去）⇒ ⇒ 切标签时 `view.setState(...)`
+    ⇒ ⇒ 回调也跟着换成了**那个文件的** ⇒ ⇒ 分得清「是哪个文件变了」✓
+  */
   useEffect(() => {
     if (!hostRef.current) return
     const view = createCodeEditor(hostRef.current, {
-      doc: value,
-      onChange: (v) => {
-        if (applyingRef.current) return
-        onChangeRef.current?.(v)
-      },
-      onCursorChange: (info) => onCursorRef.current?.(info),
+      doc: '',
       readOnly,
-      linter: linter((v) => toCmDiagnostics(v.state.doc, diagnosticsRef.current)),
     })
     viewRef.current = view
-    // 建好之后立刻报一次位置 —— 否则状态栏在第一次移动光标前是空的
-    onCursorRef.current?.(cursorInfoOf(view.state))
     return () => {
       view.destroy()
       viewRef.current = null
@@ -101,27 +102,54 @@ export default function CodePane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // 外部（块视图）改了内容 → 同步进编辑器，并保住光标
+  /*
+    切文件 ⇒ 把视图换成**那个文件的 state**（O(1)）。
+
+    ⚠️ **以前这里是「按内容 diff」** ——
+      `view.state.doc.toString() !== normalizeEol(value)` ⇒
+      然后 `applyTextChange` 用**逐字符**的最长公共前后缀去算改动区间 ⇒
+      ⇒ 一个 10 MB 的文件 ⇒ **上千万次 JS 字符比较** ⇒ 切一下卡一下 ✗✗
+      ⇒ 而且那个 dispatch **没带 `addToHistory: false`** ⇒
+      ⇒ **切文件后按 Ctrl+Z 会把上一个文件的文本恢复进当前文件**（真 bug）✗
+
+    ⇒ 现在：**换 state**，不碰内容 ⇒ O(1) ⇒ 而且**根本没有事务** ⇒
+    ⇒ 撤销历史各归各的 ⇒ 那个 bug 自动没了 ✓
+
+    ⚠️⚠️ **但 `view.setState()` 会把滚动位置重置掉** ——
+      它建的是**全新的 `ViewState`** ⇒ 滚动锚点归零 ⇒
+      ⇒ 切一下标签，文件就跳回顶部 ✗
+      ⇒ ⇒ **每个文件各记一份滚动位置**（VS Code 就是这样的）⇒
+      ⇒ 切回去 ⇒ 回到你离开时的那一行 ✓
+  */
   useEffect(() => {
     const view = viewRef.current
     if (!view) return
-    // ⚠️ 比的是**归一化成 LF 之后**的文本 —— CodeMirror 的文档里
-    // 永远是 LF（灌字符串时 `\r` 会被丢掉），而磁盘上的文件可能是 CRLF。
-    // 不归一化就会每次都判成「变了」，白白应用一次（还会让选区越界）。
-    if (view.state.doc.toString() !== normalizeEol(value)) {
-      applyingRef.current = true
-      try {
-        applyTextChange(view, value)
-      } finally {
-        applyingRef.current = false
-      }
+    // ① 记住**上一个**文件的滚动位置
+    const prevId = prevIdRef.current
+    if (prevId && prevId !== fileId) {
+      scrollMem.current.set(prevId, view.scrollDOM.scrollTop)
     }
-  }, [value])
+    // ② 换 state
+    const next = fileId ? store.get(fileId) : undefined
+    view.setState(next ?? EditorState.create({ doc: '' }))
+    // ③ 恢复**这个**文件的滚动位置
+    const top = fileId ? (scrollMem.current.get(fileId) ?? 0) : 0
+    const restore = (): void => {
+      view.scrollDOM.scrollTop = top
+    }
+    restore()
+    // ⚠️ **布局还没量完的时候设 scrollTop 会被吃掉** ⇒ 再补一次（下一帧）✓
+    requestAnimationFrame(restore)
+    prevIdRef.current = fileId
+    // 切过去之后，诊断要重新画一遍（lint 状态随 state 换了）
+    forceLinting(view)
+  }, [fileId, store])
 
   // 诊断变了 → 让 lint 重新跑一遍
   useEffect(() => {
     const view = viewRef.current
     if (!view) return
+    setEditorDiagnostics(diagnostics)
     forceLinting(view)
   }, [diagnostics])
 
@@ -130,13 +158,16 @@ export default function CodePane({
   // ⚠️ 以前这里是 `view.dispatch({ effects: [] })` —— **空操作**。
   // `EditorState.readOnly` 只在**建视图时**生效，所以运行时切只读根本不生效。
   // 现在用 compartment 重配。
+  //
+  // ⚠️ **切文件也要重配** —— 每个文件的状态里都存着自己的 `readOnly`
+  //   （`view.setState()` 会把它一起换掉）⇒ ⇒ 切完得再压一次 ✓
   useEffect(() => {
     const view = viewRef.current
     if (!view) return
     view.dispatch({
       effects: readOnlyCompartment.reconfigure(EditorState.readOnly.of(Boolean(readOnly))),
     })
-  }, [readOnly])
+  }, [readOnly, fileId])
 
   useImperativeHandle(
     ref,
@@ -163,21 +194,38 @@ export default function CodePane({
         const view = viewRef.current
         if (view) runEditorCommand(view, cmd)
       },
-      toggleLineWrapping() {
-        const view = viewRef.current
-        if (!view) return
-        wrappedRef.current = !wrappedRef.current
-        view.dispatch({
-          effects: lineWrapCompartment.reconfigure(
-            wrappedRef.current ? EditorView.lineWrapping : [],
-          ),
-        })
-      },
       setReadOnly(next) {
         const view = viewRef.current
         if (!view) return
         view.dispatch({
           effects: readOnlyCompartment.reconfigure(EditorState.readOnly.of(next)),
+        })
+      },
+      replaceDoc(text) {
+        const view = viewRef.current
+        if (!view) return
+        /*
+          ⚠️⚠️ **别用「整段替换」** ——
+          块视图回写时整份源码都变了 ⇒ 直接换掉 ⇒ **光标跳到开头** ✗
+          ⇒ 用户刚从块视图切回文本 ⇒ 光标在第一行 ⇒ 体验很差 ⇒
+          ⇒ 用 `applyTextChange`（最长公共前后缀 ⇒ 只改真正变了的那一段，
+          光标映射过去）✓
+          ⚠️ 代价是 O(n) 的一次全文比较 —— 但块编辑本来就是 O(n)
+          （要解析、要打印）⇒ 不改变复杂度 ✓
+        */
+        applyTextChange(view, text)
+      },
+      setDoc(text) {
+        const view = viewRef.current
+        if (!view) return
+        /*
+          ⚠️ **不进撤销历史** ——
+          「磁盘上被改了 ⇒ 重新加载」不是用户的编辑 ⇒
+          ⇒ 用户按 Ctrl+Z 不该把它变回去 ⇒ `addToHistory: false` ✓
+        */
+        view.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: text },
+          annotations: Transaction.addToHistory.of(false),
         })
       },
     }),
@@ -193,9 +241,12 @@ export default function CodePane({
           /*
             ⚠️ **字体/字号走 CSS 变量** ——
             CSS 变量是「活」的 ⇒ 改完**立刻生效**，不用重建编辑器 ✓
-            （CodeMirror 的主题只在建视图时生效 ⇒ 走主题就得用 compartment 重配，
+            （而 CodeMirror 的主题只在建视图时生效 ⇒ 走主题就得用 compartment 重配，
               那套更绕 ⇒ 用变量 ✓）
-            ⚠️ **React 支持自定义属性**（名字里有 `--` 就行）✓
+            ⚠️ **字号设在 `&`（编辑器根）上** —— 设 `.cm-content` 的话
+            **行号那一栏还是 body 的字号** ⇒ 大小不一致 ✗（gutter 继承 `&` ⇒ 一起变 ✓）
+            ⚠️ **字体要设两处** —— base theme 里 `.cm-content` 写死了自己的 font-family，
+            它的选择器比 `&` 具体 ⇒ 只改 `&` 的话**正文还是老的字体** ⇒ 一起改 ✓
           */
           '--editor-font-family': fontFamily ?? DEFAULT_SETTINGS.editorFontFamily,
           '--editor-font-size': `${fontSize ?? DEFAULT_SETTINGS.editorFontSize}px`,

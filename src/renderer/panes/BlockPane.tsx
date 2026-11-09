@@ -1,6 +1,6 @@
 import * as Blockly from 'blockly/core'
 import type { BlockTree } from '@lang/blocks/tree'
-import { useEffect, useImperativeHandle, useRef, type Ref } from 'react'
+import { memo, useEffect, useImperativeHandle, useRef, type Ref } from 'react'
 import { canonicalTree } from '../blocks/canonical'
 import { treeToWorkspace, workspaceToTree } from '../blocks/adapter'
 import { buildToolbox, DARK_THEME, defineJhyyBlocks } from '../blocks/definitions'
@@ -33,7 +33,7 @@ export interface BlockPaneHandle {
  * `offsetWidth`，`display:none` 时是 0，SVG 会被设成 0×0 且缓存被污染。
  * 要藏就用 `visibility:hidden`（布局盒子还在，尺寸还是真的）。
  */
-export default function BlockPane({ tree, onChange, ref }: Props & { ref?: Ref<BlockPaneHandle> }) {
+function BlockPane({ tree, onChange, ref }: Props & { ref?: Ref<BlockPaneHandle> }) {
   const hostRef = useRef<HTMLDivElement>(null)
   const workspaceRef = useRef<Blockly.WorkspaceSvg | null>(null)
   /** 正在重建工作区 —— 抑制 change 回调（避免自激循环） */
@@ -195,3 +195,12 @@ export default function BlockPane({ tree, onChange, ref }: Props & { ref?: Ref<B
 
   return <div ref={hostRef} className="block-pane" tabIndex={-1} />
 }
+
+/**
+ * ⚠️⚠️ **要 `memo`** ——
+ *   里面是 **Blockly 工作区**（几千个块 ⇒ 几千个 SVG 节点）⇒
+ *   ⇒ 别的组件重渲染时**不该**把它带着重渲染一遍 ✗
+ *   ⇒ ⇒ 它的 props 全是稳定的（`tree` 只在块真的变了时才换，
+ *   `onChange` 是 `useCallback`）⇒ ⇒ `memo` 一加就完全不重渲染 ✓
+ */
+export default memo(BlockPane)

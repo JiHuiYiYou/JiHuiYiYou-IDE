@@ -35,7 +35,6 @@ function render(
   act(() => {
     root?.render(
       createElement(StatusBar, {
-        cursor: { line: 1, col: 1, selectedLines: 0 },
         diagnostics: [],
         toolchain: null,
         ptyBackend,
@@ -59,8 +58,7 @@ describe('状态栏的 PTY 徽章', () => {
     act(() => {
       root?.render(
         createElement(StatusBar, {
-          cursor: { line: 1, col: 1, selectedLines: 0 },
-          diagnostics: [],
+            diagnostics: [],
           toolchain: null,
           ptyBackend: { backend: 'pipe', reason: 'node-pty 模块没装' },
           message: undefined,
@@ -102,8 +100,7 @@ describe('状态栏上的程序行为', () => {
     act(() => {
       root?.render(
         createElement(StatusBar, {
-          cursor: { line: 1, col: 1, selectedLines: 0 },
-          diagnostics: [],
+            diagnostics: [],
           toolchain: null,
           ptyBackend: null,
           message: { text: '编译失败（12ms）', kind: 'bad' },

@@ -18,8 +18,15 @@
  * - `'blocks'` —— 块视图只重建了能解析的部分（源码有语法问题）
  * - `'claude-overwrite'` —— Claude 改文件时把用户未保存的修改覆盖了
  * - `'file'` —— 文件打不开 / 还没打开文件
+ * - `'large-file'` —— 大文件模式关掉了某几样功能（拖块视图 / 后台检查 …）
  */
-export type StatusTag = 'compile' | 'run' | 'blocks' | 'claude-overwrite' | 'file'
+export type StatusTag =
+  | 'compile'
+  | 'run'
+  | 'blocks'
+  | 'claude-overwrite'
+  | 'file'
+  | 'large-file'
 
 export interface Status {
   text: string

@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import type { ClaudeEvent, ClaudeStatus } from '@shared/claude'
 import { Icon } from '../workbench/icons'
 import { Markdown } from './Markdown'
@@ -822,7 +822,14 @@ const ChatPane = forwardRef<ChatPaneHandle, Props>(function ChatPane(
   )
 })
 
-export default ChatPane
+/**
+ * ⚠️ **要 `memo`** —— 聊天面板里有**一长串历史消息** ⇒
+ *   `App` 因为别的事重渲染时（后台诊断每 600 ms 更新一次 …）
+ *   它**不该**把整串历史重画一遍 ✗ ⇒ ⇒ `memo` 一加就省掉了 ✓
+ *
+ * ⚠️ **前提：回调得是稳定的** —— `App` 里那个 `onReload` 得是 `useCallback` ✓
+ */
+export default memo(ChatPane)
 
 function dirnameOf(p: string): string {
   const i = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/'))

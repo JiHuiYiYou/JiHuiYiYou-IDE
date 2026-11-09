@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import type { Diagnostic } from '@shared/jhyy'
 import { Icon } from '../workbench/icons'
 
@@ -11,7 +12,7 @@ interface Props {
  *
  * 点一条会跳到编辑器对应位置（`onSelect` 由 App 接上 → `CodePane.revealLine`）。
  */
-export default function ProblemsPane({ diagnostics, onSelect }: Props) {
+function ProblemsPane({ diagnostics, onSelect }: Props) {
   const errors = diagnostics.filter((d) => d.severity === 'error').length
   const warnings = diagnostics.length - errors
 
@@ -52,3 +53,6 @@ export default function ProblemsPane({ diagnostics, onSelect }: Props) {
 function fileNameOf(p: string): string {
   return p.split(/[\\/]/).pop() ?? p
 }
+
+/** ⚠️ **要 `memo`** —— 诊断没变就别重画（`App` 因为别的事重渲染时）✓ */
+export default memo(ProblemsPane)

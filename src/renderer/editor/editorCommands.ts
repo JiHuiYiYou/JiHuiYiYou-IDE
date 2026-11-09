@@ -23,6 +23,7 @@ import {
 } from '@codemirror/search'
 import { EditorSelection } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
+import { lineWrapCompartment } from './codemirror'
 
 /**
  * 编辑器命令 —— 菜单项和快捷键共用。
@@ -57,6 +58,7 @@ export type EditorCommand =
   | 'addCursorAbove'
   | 'addCursorBelow'
   | 'selectMatchingBracket'
+  | 'toggleLineWrapping'
 
 /** 复制选区到剪贴板。 */
 export async function copySelection(view: EditorView): Promise<void> {
@@ -99,6 +101,29 @@ export function openReplacePanel(view: EditorView): void {
     const input = view.dom.querySelector<HTMLInputElement>('input[name="replace"]')
     input?.focus()
     input?.select()
+  })
+}
+
+/**
+ * **自动换行开没开** —— 全局一份（跟 VS Code 的 `editor.wordWrap` 一样是全局设置）。
+ *
+ * ⚠️ 默认**关** —— 自动换行是大文件的头号性能杀手（一行 5 万字符会被拆成
+ * 几十万个视觉行盒子 ⇒ 布局计算暴增 ⇒ 滚动卡住）。
+ */
+let wordWrapOn = false
+
+/** 自动换行当前开没开（菜单项打勾用）。 */
+export function isWordWrapOn(): boolean {
+  return wordWrapOn
+}
+
+/** 切换自动换行（Alt+Z）。 */
+export function toggleWordWrap(view: EditorView): void {
+  wordWrapOn = !wordWrapOn
+  view.dispatch({
+    effects: lineWrapCompartment.reconfigure(
+      wordWrapOn ? EditorView.lineWrapping : [],
+    ),
   })
 }
 
@@ -173,6 +198,9 @@ export function runEditorCommand(view: EditorView, cmd: EditorCommand): void {
       return
     case 'selectMatchingBracket':
       selectMatchingBracket(view)
+      return
+    case 'toggleLineWrapping':
+      toggleWordWrap(view)
       return
   }
 }

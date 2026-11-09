@@ -1,5 +1,7 @@
+import { memo, useSyncExternalStore } from 'react'
 import type { Diagnostic, ToolchainInfo } from '@shared/jhyy'
 import type { PtyBackendInfo } from '@shared/terminal'
+import { cursorStore } from '../state/cursorStore'
 import { Icon } from './icons'
 
 export interface StatusMessage {
@@ -16,8 +18,6 @@ export interface StatusMessage {
 }
 
 interface Props {
-  /** 光标位置（1-based 行列） */
-  cursor: { line: number; col: number; selectedLines: number }
   diagnostics: Diagnostic[]
   toolchain: ToolchainInfo | null
   /**
@@ -51,14 +51,22 @@ interface Props {
  *    ⇒ **运行状态在终端页签上**（转圈 / ✓ / ✗，VS Code 的 task 页签一样）✓
  *    ⇒ 编译诊断在**问题面板**里 ✓
  */
-export default function StatusBar({
-  cursor,
+function StatusBar({
   diagnostics,
   toolchain,
   ptyBackend,
   message,
   view,
 }: Props) {
+  /*
+    ⚠️ **光标自己订阅自己的 store** —— 不再从 `App` 的 state 拿 ⇒
+    ⇒ 光标一动，**只有状态栏重渲染**，App 那一大棵树完全不受影响 ✓
+    （以前光标在 `App` 的 state 里 ⇒ 每敲一个字整棵树重渲染 ✗）
+  */
+  const cursor = useSyncExternalStore(
+    cursorStore.subscribe,
+    cursorStore.getSnapshot,
+  )
   const errors = diagnostics.filter((d) => d.severity === 'error').length
   const warnings = diagnostics.length - errors
 
@@ -133,10 +141,17 @@ export default function StatusBar({
  * 编译器的版本文本往往很长
  * （"jhyy compiler v2.5.0 (self-hosted, v2.0 series)"）——
  * 状态栏只留第一段，完整内容放 title 里。
- */
-function shortenVersion(text: string | undefined): string {
+ */function shortenVersion(text: string | undefined): string {
   if (!text) return '编译器就绪'
   const first = text.split('\n')[0].trim()
   const short = first.replace(/^jhyy\s+compiler\s+/i, '')
   return short.length > 28 ? `${short.slice(0, 27)}…` : short
 }
+
+/**
+ * ⚠️ **要 `memo`** ——
+ *   状态栏订阅的是**自己的** store（`cursorStore`）⇒ 光标一动只有它重渲染 ✓
+ *   ⇒ 但 `App` 因为别的事重渲染时（诊断更新、文件列表变化 …）
+ *   ⇒ 它**不该**跟着重渲染 ⇒ `memo` 一加就省掉了 ✓
+ */
+export default memo(StatusBar)

@@ -1,9 +1,17 @@
+import type { EditorState } from '@codemirror/state'
 import type { BlockTree } from '@lang/blocks/tree'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Diagnostic, ToolchainInfo } from '@shared/jhyy'
 import type { PtyBackendInfo, ShellState, TerminalInfo } from '@shared/terminal'
 import BlockPane, { type BlockPaneHandle } from './panes/BlockPane'
 import CodePane, { type CodePaneHandle } from './panes/CodePane'
+import { createEditorState, isHistoryJump } from './editor/codemirror'
+import { DocStore } from './editor/docStore'
+import {
+  formatBytes,
+  isLargeFile,
+  LARGE_FILE_DISABLED_FEATURES,
+} from './editor/largeFile'
 import type { OutputLine } from './sync/output'
 import { createCommands, createMenus, type CommandContext } from './commands/registry'
 import type { Command } from './commands/types'
@@ -22,7 +30,7 @@ import {
   type Status,
   type StatusTag,
 } from './state/status'
-import { blocksToSource, isLosslessForBlocks, sourceToBlocks } from './sync/doc'
+import { blocksToSource, isLosslessRewrite, sourceToBlocks } from './sync/doc'
 import { detectEol, normalizeEol, toEol, type Eol } from './sync/caret'
 import { accumulateOutput } from './sync/output'
 import Breadcrumbs from './workbench/Breadcrumbs'
@@ -59,11 +67,29 @@ const EMPTY_BLOCKS: BlockTree[] = []
 const MAX_OUTPUT_LINES = 5000
 
 /**
+ * **送进 Claude 系统提示的源码上限**（字节）—— 现在**由设置决定**。
+ *
+ * ⚠️ 超过这个大小就**不贴源码**了 —— 只把路径报上去，让 Claude 自己
+ * `Read` 磁盘上的文件。
+ *
+ * ⇒ 理由：① 几 MB 的源码塞进系统提示 = 每轮对话都要重发一遍（token 爆炸）；
+ *   ② Claude Code 本来就有 `Read` 工具，磁盘上那份它自己会读；
+ *   ③ 唯一读不到的是「**还没保存的修改**」⇒ 那就明说，让用户先保存 ✓
+ */
+
+/**
  * 一个打开着的文件（一个标签页）。
  *
- * ⚠️ **脏标记不存布尔值**，而是拿「当前内容」跟「上次保存的内容」比 ——
- * VS Code 就是这么做的：撤销回保存点，小圆点自动消失。
- * 同理，「块视图已过期」也是拿源码跟「块上次重建时的源码」比。
+ * ⚠️⚠️ **这里没有「内容」字段** —— 文本**只存在编辑器里**
+ * （`DocStore` 里的 `EditorState`）⇒
+ * ⇒ 以前这里有 `source` / `saved` / `blocksAt` **三份全文副本** ⇒
+ * ⇒ 一个大文件在内存里躺了四遍（还有一份在 CodeMirror 里）✗✗
+ * ⇒ ⇒ 现在：**元信息在这里，内容在编辑器里** ✓
+ *
+ * ⚠️ **脏标记是「状态」，不是每次 render 派生的值** ——
+ * 以前是 `source !== saved`（**每次 render 都全文比较一遍**）⇒
+ * ⇒ 现在由 `DocStore` 算（编辑时置脏；撤销/重做时精确比一次）✓
+ * ⇒ ⇒ 而且它**只在翻转的那一刻**才变 ⇒ ⇒ **打字不会引发 React 重渲染** ✓
  */
 interface EditorFile {
   /** 稳定标识（磁盘文件用路径，新建文件用 untitled:N） */
@@ -72,13 +98,9 @@ interface EditorFile {
   path: string | null
   /** 标签上显示的名字 */
   name: string
-  /** 当前内容（**永远是 LF** —— 见 `normalizeEol`） */
-  source: string
-  /** 上次保存（或打开）时的内容 —— 脏标记靠它算 */
-  saved: string
-  /** 块视图最后一次重建时的源码 —— 「块已过期」靠它算 */
-  blocksAt: string
-  /** 当前的块树 */
+  /** 有未保存的改动（撤销回存盘点 ⇒ 自动消失，跟 VS Code 一样） */
+  dirty: boolean
+  /** 当前的块树（**懒建** —— 切到块视图时才建） */
   blocks: BlockTree[]
   /**
    * 这个文件在磁盘上用什么行尾 —— 存盘时照原样写回去。
@@ -87,6 +109,10 @@ interface EditorFile {
    * 但存盘时要还原用户原来的行尾 —— 不然每次保存都把 CRLF 文件改成 LF。
    */
   eol: Eol
+  /** 文件的字节数（主进程 stat 出来的）—— 判「大文件」用 */
+  bytes: number
+  /** 这个文件是不是进了「大文件模式」 */
+  large: boolean
 }
 
 /**
@@ -159,6 +185,15 @@ export default function App() {
   // 打开的文件（标签页）
   const [files, setFiles] = useState<EditorFile[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
+  /**
+   * **文档仓库** —— 文本只存在这儿（每个文件一份 `EditorState`）。
+   *
+   * ⚠️⚠️ **以前 App 的 state 里存着三份全文**（`source` / `saved` / `blocksAt`），
+   *   加上 CodeMirror 那一份 ⇒ 一个大文件在内存里躺了四遍 ⇒
+   *   而且**每次按键**还要把整份文档重新物化一遍 ⇒ 卡 ✗✗
+   * ⇒ ⇒ 现在文本**只有一份**（在编辑器里）⇒ 每次按键 **O(1)** ✓
+   */
+  const docStore = useMemo(() => new DocStore(), [])
   /** 新建文件的计数器 */
   const untitledCounter = useRef(0)
 
@@ -177,8 +212,12 @@ export default function App() {
    * （不然用户看不到「请输入一个数字：」）。
    */
 
-  // 光标位置（状态栏）
-  const [cursor, setCursor] = useState({ line: 1, col: 1, selectedLines: 0 })
+  /*
+    ⚠️⚠️ **光标位置不在 `App` 的 state 里** ——
+    它在 `state/cursorStore.ts`（自己的小 store）⇒ 状态栏自己订阅 ✓
+    ⇒ 光标一动（每敲一个字、每按一次方向键）**只有状态栏重渲染**，
+      App 这一大棵树完全不受影响 ⇒ 不再「打字的时候整个 IDE 都跟着抖」✗
+  */
 
   // 布局
   const [layout, setLayout] = useState<LayoutState>(loadLayout)
@@ -205,6 +244,14 @@ export default function App() {
   const [chatFocusTick, setChatFocusTick] = useState(0)
   /** 块视图的重建计数 —— 错误边界点「重来一次」时 +1，整个块视图重新挂载 */
   const [blockPaneKey, setBlockPaneKey] = useState(0)
+  /**
+   * **块视图挂过没有** —— 第一次切到块视图时才挂 Blockly。
+   *
+   * ⚠️ **为什么要懒挂** —— Blockly 的工作区建起来不便宜
+   *   （注入 SVG、建工具箱、注册块定义 …）⇒
+   *   ⇒ 一直在文本视图里用的人**根本不该付这个钱** ✓
+   */
+  const [blocksMounted, setBlocksMounted] = useState(false)
 
   // 「聚焦聊天」⇒ 渲染完之后再把光标放进输入框
   useEffect(() => {
@@ -215,23 +262,11 @@ export default function App() {
   // ── 派生值 ────────────────────────────────────────────────
   const active = useMemo(() => files.find((f) => f.id === activeId) ?? null, [files, activeId])
   const filePath = active?.path ?? null
-  const source = active?.source ?? ''
   const blockTree = active?.blocks ?? EMPTY_BLOCKS
-  /** 脏标记 = 内容和上次保存的不一样 —— 撤销回保存点就自动消失（跟 VS Code 一样） */
-  const dirty = active ? active.source !== active.saved : false
-  /**
-   * 块视图过期 = 源码在块上次重建之后又变了。
-   *
-   * ⚠️ **只用来决定「切到块视图时要不要重建」** ——
-   *    **不再拿它做视觉提示**（用户明说：「本来如果要用，用户自然回去点，
-   *    所以这个黄点就没有存在的意义」）⇒ 标题栏上**没有小黄点**、
-   *    状态栏上**也没有「块视图已过期」** ✓
-   */
-  const blocksStale = active ? active.source !== active.blocksAt : false
+  /** 脏标记 —— **状态**（撤销回存盘点就消失，跟 VS Code 一样） */
+  const dirty = active?.dirty ?? false
 
   // 状态镜像 —— 让命令表和回调永远读到最新值，而不用到处挂依赖
-  const sourceRef = useRef(source)
-  const blocksStaleRef = useRef(blocksStale)
   const filePathRef = useRef(filePath)
   const busyRef = useRef(busy)
   const layoutRef = useRef(layout)
@@ -239,6 +274,8 @@ export default function App() {
   const activeIdRef = useRef(activeId)
   /** 打开着的文件列表（磁盘改动检测要用） */
   const filesRef = useRef(files)
+  /** 用户设置（Claude 上下文上限要从这儿读 —— 那个回调得是稳定的） */
+  const settingsRef = useRef(settings)
   /**
    * 最近一次「有路径的文件」所在目录。
    *
@@ -249,19 +286,37 @@ export default function App() {
   useEffect(() => {
     if (filePath) lastPathDirRef.current = dirnameOf(filePath)
   }, [filePath])
-  sourceRef.current = source
-  blocksStaleRef.current = blocksStale
   filePathRef.current = filePath
   busyRef.current = busy
   layoutRef.current = layout
   centerViewRef.current = centerView
   activeIdRef.current = activeId
   filesRef.current = files
+  settingsRef.current = settings
 
-  /** 改当前文件的某些字段。 */
-  const updateActive = useCallback((patch: Partial<EditorFile>) => {
+  /**
+   * 取当前缓冲区的内容 —— **只在「开始 Claude 会话」的那一刻调一次**。
+   *
+   * ⚠️ **这是个稳定的函数**（`useCallback(..., [])` + ref）⇒
+   *   聊天面板拿到它不会因为每次按键而重渲染 ✓
+   *
+   * ⚠️ 太大就返回 `undefined` ⇒ 主进程会改成一句话说明
+   *   「缓冲区有未保存的修改，但内容太大没带过来」—— 而不是贴一个空代码块
+   *   （那是在骗 Claude）。
+   */
+  const getClaudeSource = useCallback((): string | undefined => {
     const id = activeIdRef.current
-    if (!id) return
+    if (!id) return undefined
+    // ⚠️ **大文件模式 ⇒ 压根不贴源码** —— 就算上限调大了也不行
+    if (docStore.isLarge(id)) return undefined
+    const maxBytes = settingsRef.current.claudeContextMaxKb * 1024
+    const s = docStore.text(id)
+    if (s.length > maxBytes) return undefined
+    return s
+  }, [docStore])
+
+  /** 改**某个**文件的某些字段（不一定是当前那个）。 */
+  const updateFile = useCallback((id: string, patch: Partial<EditorFile>) => {
     setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, ...patch } : f)))
   }, [])
 
@@ -293,31 +348,44 @@ export default function App() {
     「用户没打开文件」和「用户开着一个还没保存的新文件」（用户报过：新建的
     未命名文件在聊天里显示成「没打开文件」，这不对）。⇒ 名字单独报一份，
     缓冲区**还没落盘**时把内容也带上（Claude 在磁盘上读不到它）。
+
+    ⚠️⚠️ **这里绝不能再带整份源码** ——
+    以前 `source: active.source` 在依赖数组里 ⇒ **每敲一个字**就把整个文件
+    结构化克隆一次过 IPC（几 MB 的字符串！）⇒ 用户报过「IDE 特别卡」✗
+    ⇒ 而且那份源码**只在会话开始时被读一次**（系统提示是烤死的，
+    `jhyyCheatSheet()` 只在 `claude.start` 里调一次）⇒
+    ⇒ **每次按键传它是纯浪费** ⇒ 现在走 `claude.start` 的参数（见 ChatPane）。
+
+    ⚠️ **防抖 300 ms** —— 依赖里有 `outputLines` ⇒ 程序每打印一行就发一次 IPC ⇒
+    ⇒ 攒一攒再发。
   */
+  const ctxTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
-    const unsaved = dirty || filePath === null
-    window.jhyyIde.ide.setContext({
-      filePath,
-      fileName: active?.name ?? null,
-      unsaved,
-      // ⚠️ 缓冲区跟磁盘不一致时，**内容也得带上** ——
-      //   未命名文件在磁盘上根本不存在；改了没保存的文件在磁盘上是旧的。
-      //   不给的话 Claude 读到的跟用户正在编辑的不是一回事。
-      ...(unsaved && active ? { source: active.source } : {}),
-      cwd: filePath ? dirnameOf(filePath) : null,
-      diagnostics: diagnostics.slice(0, 20).map((d) => ({
-        file: d.file,
-        line: d.line,
-        col: d.col,
-        message: d.message,
-      })),
-      readOnly: chatReadOnly,
-      outputTail: outputLines
-        .slice(-20)
-        .map((l) => l.text)
-        .join('\n'),
-    })
-  }, [filePath, active?.name, active?.source, dirty, diagnostics, outputLines, chatReadOnly])
+    if (ctxTimer.current) clearTimeout(ctxTimer.current)
+    ctxTimer.current = setTimeout(() => {
+      const unsaved = dirty || filePath === null
+      window.jhyyIde.ide.setContext({
+        filePath,
+        fileName: active?.name ?? null,
+        unsaved,
+        cwd: filePath ? dirnameOf(filePath) : null,
+        diagnostics: diagnostics.slice(0, 20).map((d) => ({
+          file: d.file,
+          line: d.line,
+          col: d.col,
+          message: d.message,
+        })),
+        readOnly: chatReadOnly,
+        outputTail: outputLines
+          .slice(-20)
+          .map((l) => l.text)
+          .join('\n'),
+      })
+    }, 300)
+    return () => {
+      if (ctxTimer.current) clearTimeout(ctxTimer.current)
+    }
+  }, [filePath, active?.name, dirty, diagnostics, outputLines, chatReadOnly])
 
   // 启动时探测工具链，并打开命令行带来的文件
   useEffect(() => {
@@ -327,23 +395,29 @@ export default function App() {
       // ⚠️ 行尾统一成 LF（编辑器里是 LF），原来的行尾记下来，存盘时还原
       const eol = detectEol(opened.content)
       const content = normalizeEol(opened.content)
-      const trees = sourceToBlocks(content).trees
+      const id = opened.path
+      // ⚠️ **块树是懒建的** —— 打开文件时**不**解析源码 ⇒
+      //   一个 10 MB 的文件打开是 O(1)（只建编辑器状态）⇒
+      //   ⇒ 切到块视图时才解析（那时候用户本来就在等）✓
+      const large = isLargeFile(opened.content.length, settingsRef.current.largeFileThreshold)
+      docStore.open(id, makeEditorState(id, content), content, large, opened.path)
       setFiles([
         {
-          id: opened.path,
+          id,
           path: opened.path,
           name: nameOf(opened.path),
-          source: content,
-          saved: content,
-          blocksAt: content,
-          blocks: trees,
+          dirty: false,
+          blocks: EMPTY_BLOCKS,
           eol,
+          bytes: opened.content.length,
+          large,
         },
       ])
-      setActiveId(opened.path)
+      setActiveId(id)
       setHistory({ stack: [opened.path], index: 0 })
       void window.jhyyIde.file.watch(dirnameOf(opened.path))
     })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   /**
@@ -422,43 +496,153 @@ export default function App() {
   /**
    * 排一次后台实时诊断。
    *
-   * @param source **当前编辑器里的内容** —— 必须传进来，不能从 ref 里读：
-   *   `updateActive()` 之后 ref 要等下一次渲染才更新 ⇒ 读到的是**旧内容** ✗
+   * ⚠️ **不再收「源码」参数** —— 以前是 `scheduleDiagnostics(source)`，
+   *   而 `source` 是**每次按键**传进来的 ⇒ 等于**每次按键都把整份源码
+   *   复制一遍**（参数按值传递）✗✗
+   *   ⇒ 现在：**定时器到点时**才从仓库里取**一次** ⇒
+   *   ⇒ 「每次按键」的成本降到 0 ⇒ 「每 600 ms 空闲」的成本是 1 次 ✓
+   *
+   * @param fileId 哪个文件
    */
-  const scheduleDiagnostics = useCallback((source: string) => {
-    const path = filePathRef.current
-    if (!path) return
-    if (diagTimer.current) clearTimeout(diagTimer.current)
-    diagTimer.current = setTimeout(() => {
-      // ⚠️ **别让后台检查堆积** —— 用户狂打字的时候会起一堆编译器进程，
-      // CPU 被吃光（用户报过「整个 IDE 卡死」）。上一个还在跑就跳过这次。
-      if (diagInFlight.current) return
-      diagInFlight.current = true
-      void window.jhyyIde.jhyy
-        // ⚠️ `quiet: true` —— 后台实时诊断**不回显到终端**。
-        // 每敲一个字就往终端里打一行 `> jhyy compile …`，终端会被刷满
-        // （用户报过「都会触发就很烦人」）。
-        // ⚠️⚠️ **编的是「编辑器里现在这段」，不是磁盘上的旧文件** ——
-        //   以前编磁盘那份 ⇒ **边打字边不报错**（改错了都看不见）✗
-        //   而且诊断的行/列是旧版本的 ⇒ 波浪线落在错的行上 ✗
-        .compile({ file: path, contents: source, noLink: true, quiet: true, timeoutMs: 15_000 })
-        .then((r) => {
-          setDiagnostics(r.diagnostics)
-          /*
-            ⚠️⚠️ **后台诊断干净了 ⇒ 把状态栏那条「编译失败」撤掉** ——
-              用户报过：「一次编译失败就一直留着了」✗
-              ⇒ 用户改完代码、后台说「没错了」⇒ 状态栏还挂着「编译失败」
-              ⇒ 就是**骗人** ✗ ⇒ 撤掉 ✓
-              ⇒ ⚠️ **只撤「有源码诊断」的那种** —— 后台是 `--no-link`
-                ⇒ 它看不见链接错误 ⇒ 「链接失败」那条留着 ✓
-          */
-          setStatus((prev) => clearWhenDiagnosticsClean(prev))
-        })
-        .finally(() => {
-          diagInFlight.current = false
-        })
+  const scheduleDiagnostics = useCallback(
+    (fileId: string) => {
+      const path = docStore.path(fileId)
+      if (!path) return
+      /*
+        ⚠️ **大文件模式：不做后台检查** ——
+        后台检查 = 「把整份源码写进临时文件 + 起一个 `jhyy.exe` 编全文件」⇒
+        ⇒ 大文件上跑一次要好几秒 ⇒ 而且**每 600 ms 空闲就一次** ⇒
+        ⇒ 机器被压满 ⇒ 「IDE 卡死」✗
+        ⇒ ⇒ 大文件直接不做（用户可以点「检查」手动跑）✓
+      */
+      if (docStore.isLarge(fileId)) return
+      if (diagTimer.current) clearTimeout(diagTimer.current)
+      diagTimer.current = setTimeout(() => {
+        // ⚠️ **别让后台检查堆积** —— 用户狂打字的时候会起一堆编译器进程，
+        // CPU 被吃光（用户报过「整个 IDE 卡死」）。上一个还在跑就跳过这次。
+        if (diagInFlight.current) return
+        diagInFlight.current = true
+        void window.jhyyIde.jhyy
+          // ⚠️ `quiet: true` —— 后台实时诊断**不回显到终端**。
+          // 每敲一个字就往终端里打一行 `> jhyy compile …`，终端会被刷满
+          // （用户报过「都会触发就很烦人」）。
+          // ⚠️⚠️ **编的是「编辑器里现在这段」，不是磁盘上的旧文件** ——
+          //   以前编磁盘那份 ⇒ **边打字边不报错**（改错了都看不见）✗
+          //   而且诊断的行/列是旧版本的 ⇒ 波浪线落在错的行上 ✗
+          .compile({
+            file: path,
+            contents: docStore.text(fileId),
+            noLink: true,
+            quiet: true,
+            timeoutMs: 15_000,
+          })
+          .then((r) => {
+            // ⚠️ **只更新当前那个文件的诊断** —— 切走了就别把别的文件的诊断盖掉
+            if (activeIdRef.current !== fileId) return
+            setDiagnostics(r.diagnostics)
+            /*
+              ⚠️⚠️ **后台诊断干净了 ⇒ 把状态栏那条「编译失败」撤掉** ——
+                用户报过：「一次编译失败就一直留着了」✗
+                ⇒ 用户改完代码、后台说「没错了」⇒ 状态栏还挂着「编译失败」
+                ⇒ 就是**骗人** ✗ ⇒ 撤掉 ✓
+                ⇒ ⚠️ **只撤「有源码诊断」的那种** —— 后台是 `--no-link`
+                  ⇒ 它看不见链接错误 ⇒ 「链接失败」那条留着 ✓
+            */
+            setStatus((prev) => clearWhenDiagnosticsClean(prev))
+          })
+          .finally(() => {
+            diagInFlight.current = false
+          })
     }, 600)
   }, [])
+
+  /**
+   * **给一个文件建编辑器状态**（文本 + 扩展 + 回调）。
+   *
+   * ⚠️⚠️ **回调是「按文件」绑定的** —— 每个文件的状态里都存着自己的
+   *   「文档变了」回调 ⇒ ⇒ 切标签时 `view.setState(别的文件的 state)`
+   *   ⇒ ⇒ 回调也跟着换成**那个文件的** ⇒ ⇒ 分得清「是哪个文件变了」✓
+   *   （VS Code 的 model ↔ view 模型：每个 model 有自己的 view state）
+   *
+   * ⚠️ **回调里绝对不碰内容** —— 只报「变了」⇒ **O(1)** ✓
+   *   需要内容的时候（存盘 / 编译前 / 建块树）从 `docStore.text(id)` 取**一次** ✓
+   */
+  const makeEditorState = useCallback(
+    (id: string, content: string): EditorState =>
+      createEditorState(content, {
+        onDocChange: (update) => {
+          // ⚠️ **撤销 / 重做要精确比一次内容** ⇒ 脏标记能准确地「撤销回存盘点就消失」
+          //   （普通打字不 比 ⇒ 每敲一个字都全文件比较 ⇒ 卡）✗
+          const jump = isHistoryJump(update)
+          const info = docStore.noteChange(id, update.state, jump)
+          /*
+            ⚠️⚠️ **脏标记翻转了才更新 React state** ——
+              每次按键都 `setFiles` ⇒ **整棵 React 树重渲染** ⇒ 卡 ✗✗
+              ⇒ ⇒ 只有 true↔false **翻转**的那一刻才通知 ⇒
+              ⇒ 一个编辑会话里 **React 只重渲染一次** ✓✓
+          */
+          if (info.dirtyChanged) updateFile(id, { dirty: info.dirty })
+          scheduleDiagnostics(id)
+        },
+      }),
+    [docStore, scheduleDiagnostics, updateFile],
+  )
+
+  /**
+   * **按当前源码重建某个文件的块树**。
+   *
+   * ⚠️ **这是 O(n) 的活儿** —— 解析整份源码 ⇒
+   *   ⇒ 所以**只在真的要显示块视图的时候**才做 ⇒
+   *   ⇒ 打开文件 / 打字都**不**做 ✓（打开一个大文件是 O(1)）
+   */
+  const rebuildBlocks = useCallback(
+    (id: string) => {
+      // ⚠️ **大文件不建块树** —— 兜底（`showBlocks` 已经拦了一道）✓
+      if (docStore.isLarge(id)) return
+      const source = docStore.text(id)
+      const { trees, parseErrors } = sourceToBlocks(source)
+      updateFile(id, { blocks: trees })
+      docStore.setBlocksVersion(id, docStore.version(id))
+      if (parseErrors.length > 0) {
+        // ⚠️ **这是「有问题」** —— 不是程序行为 ⇒ 值得说一声 ✓
+        setStatus({
+          text: `源码有语法问题，块视图只重建了能解析的部分（${parseErrors.length} 处）`,
+          kind: 'bad',
+          // ⚠️ **这一条跟编译无关** ⇒ 编译成功**不该**把它撤掉 ✓
+          tag: 'blocks',
+        })
+      }
+    },
+    [docStore, updateFile],
+  )
+
+  /**
+   * **把磁盘上的内容灌回某个文件**（外部改动重载 / Claude 改完了 / 历史跳转）。
+   *
+   * ⚠️⚠️ **要改的是「被改动的那个文件」，不是当前活动文件！**
+   *   以前这里用的是 `updateActive(...)` ⇒ 写进了**当前活动**的文件 ⇒
+   *   而读的是**别的**文件的内容 ⇒
+   *   **当前文件被另一个文件的内容覆盖了**（还标成「已保存」⇒ 未保存的编辑全丢）✗✗
+   *   ⇒ 按 **id** 改那个文件本身 ✓
+   *
+   * ⚠️ **当前文件 ⇒ 走编辑器**（用户在屏幕上看着 ⇒ 得同步刷新）
+   *   别的文件 ⇒ 直接换掉仓库里的状态（切过去的时候 `view.setState` 会带上）✓
+   */
+  const applyDiskContent = useCallback(
+    (id: string, raw: string) => {
+      const content = normalizeEol(raw)
+      if (id === activeIdRef.current) {
+        // ⚠️ **不进撤销历史** —— 这不是用户的编辑（`addToHistory: false`）✓
+        codeRef.current?.setDoc(content)
+      } else {
+        docStore.replaceDoc(id, content)
+      }
+      // 磁盘上现在就是这份内容 ⇒ 不脏了
+      docStore.markSaved(id, content)
+      updateFile(id, { eol: detectEol(raw), dirty: false })
+    },
+    [docStore, updateFile],
+  )
 
   // 文件在磁盘上被改了。
   //
@@ -473,23 +657,9 @@ export default function App() {
       if (e.internal) {
         // 本地有未保存的改动 ⇒ 会被覆盖（用户明确说了「直接改文件就好」），
         // 但要说一声，别让人以为自己的编辑还在。
-        const hadUnsaved = file.source !== file.saved
+        const hadUnsaved = docStore.isDirty(file.id)
         void window.jhyyIde.file.read(e.path).then((raw) => {
-          const content = normalizeEol(raw)
-          setFiles((prev) =>
-            prev.map((f) =>
-              f.path === e.path
-                ? {
-                    ...f,
-                    source: content,
-                    saved: content,
-                    blocksAt: content,
-                    blocks: sourceToBlocks(content).trees,
-                    eol: detectEol(raw),
-                  }
-                : f,
-            ),
-          )
+          applyDiskContent(file.id, raw)
           if (hadUnsaved) {
             // ⚠️ **这是「数据丢了」** —— 不是程序行为 ⇒ 值得说一声 ✓
             setStatus({
@@ -503,7 +673,7 @@ export default function App() {
       }
       setExternalChange((prev) => (prev === e.path ? prev : e.path))
     })
-  }, [])
+  }, [applyDiskContent, docStore])
 
   // IDE 自己跑了一条命令 —— 终端里已经显示了。
   // 只有「运行」才把面板切过去（程序输出就在终端里，跟 VS Code 一样）；
@@ -519,32 +689,10 @@ export default function App() {
     if (!externalChange) return
     const path = externalChange
     const raw = await window.jhyyIde.file.read(path)
-    // ⚠️ 行尾统一成 LF（编辑器里是 LF）
-    const content = normalizeEol(raw)
-    /*
-      ⚠️⚠️ **要改的是「被改动的那个文件」，不是当前活动文件！**
-      以前这里用的是 `updateActive(...)` ⇒ 写进了**当前活动**的文件 ⇒
-      而读的是**别的**文件的内容 ⇒
-      **当前文件被另一个文件的内容覆盖了**（还标成「已保存」⇒ 未保存的编辑全丢）✗✗
-      （用户报过：「点运行跳到别的终端」那种「张冠李戴」）
-      ⇒ 按路径改那个文件本身 ✓（跟上面 Claude 内部改动那条分支一个路子）
-    */
-    setFiles((prev) =>
-      prev.map((f) =>
-        f.path === path
-          ? {
-              ...f,
-              source: content,
-              saved: content,
-              blocksAt: content,
-              blocks: sourceToBlocks(content).trees,
-              eol: detectEol(raw),
-            }
-          : f,
-      ),
-    )
+    const file = filesRef.current.find((f) => f.path === path)
+    if (file) applyDiskContent(file.id, raw)
     setExternalChange(null)
-  }, [externalChange])
+  }, [applyDiskContent, externalChange])
 
   /** 打开（或者切到）一个文件。 */
   const openFile = useCallback(async () => {
@@ -552,24 +700,32 @@ export default function App() {
     if (!opened) return
     const eol = detectEol(opened.content)
     const content = normalizeEol(opened.content)
-    setFiles((prev) => {
-      // 已经开着就别再开一个标签 —— 直接切过去
-      if (prev.some((f) => f.path === opened.path)) return prev
-      return [
-        ...prev,
-        {
-          id: opened.path,
-          path: opened.path,
-          name: nameOf(opened.path),
-          source: content,
-          saved: content,
-          blocksAt: content,
-          blocks: sourceToBlocks(content).trees,
-          eol,
-        },
-      ]
-    })
-    setActiveId(opened.path)
+    // 已经开着就别再开一个标签 —— 直接切过去
+    const existing = filesRef.current.find((f) => f.path === opened.path)
+    if (existing) {
+      setActiveId(existing.id)
+      setDiagnostics([])
+      setStatus(undefined)
+      return
+    }
+    const id = opened.path
+    // ⚠️ **块树懒建** —— 打开时**不**解析源码 ⇒ 大文件打开是 O(1) ✓
+    const large = isLargeFile(opened.content.length, settings.largeFileThreshold)
+    docStore.open(id, makeEditorState(id, content), content, large, opened.path)
+    setFiles((prev) => [
+      ...prev,
+      {
+        id,
+        path: opened.path,
+        name: nameOf(opened.path),
+        dirty: false,
+        blocks: EMPTY_BLOCKS,
+        eol,
+        bytes: opened.content.length,
+        large,
+      },
+    ])
+    setActiveId(id)
     setDiagnostics([])
     // ⚠️ **清掉上一条错误消息** —— 换文件了 ⇒ 上个文件的问题不该还挂着 ✓
     //    （不然「先打开一个 .jhyy 文件」会一直挂在状态栏上 ✗）
@@ -581,32 +737,37 @@ export default function App() {
       return { stack, index: stack.length - 1 }
     })
     void window.jhyyIde.file.watch(dirnameOf(opened.path))
-  }, [])
+  }, [docStore, makeEditorState, settings.largeFileThreshold])
 
   /** 新建文件 —— 真的建一个未保存的缓冲区。 */
   const newFile = useCallback(() => {
     untitledCounter.current += 1
     const id = `untitled:${untitledCounter.current}`
+    /*
+      ⚠️ **未命名的新文件一上来就是「脏」的** ——
+      它还没存到磁盘上 ⇒ 关掉就没了 ⇒ 标签上得有那个小圆点 ✓
+      （VS Code 也是这样）
+    */
+    docStore.open(id, makeEditorState(id, NEW_FILE_TEMPLATE), '', false, null, true)
     setFiles((prev) => [
       ...prev,
       {
         id,
         path: null,
         name: `未命名-${untitledCounter.current}.jhyy`,
-        source: NEW_FILE_TEMPLATE,
-        saved: '',
-        // ⚠️ `blocksAt` 要等于当前源码 —— 不然状态栏会一直显示「块视图已过期」
-        // （新建的文件里块**已经是**按这份源码建好的）。
-        blocksAt: NEW_FILE_TEMPLATE,
-        blocks: sourceToBlocks(NEW_FILE_TEMPLATE).trees,
+        dirty: true,
+        // ⚠️ **块树懒建** —— 切到块视图时才建 ✓
+        blocks: EMPTY_BLOCKS,
         eol: '\n',
+        bytes: NEW_FILE_TEMPLATE.length,
+        large: false,
       },
     ])
     setActiveId(id)
     setDiagnostics([])
     // ⚠️ **清掉上一条错误消息** —— 换文件了 ⇒ 上个文件的错误不该还挂着 ✓
     setStatus(undefined)
-  }, [])
+  }, [docStore, makeEditorState])
 
   /** 切到另一个标签页。 */
   const switchFile = useCallback(
@@ -617,35 +778,57 @@ export default function App() {
       // ⚠️ **清掉上一条错误消息** ✓
       setStatus(undefined)
       setExternalChange(null)
-      // 正在块视图里切文件 ⇒ 那个文件的块是旧的，得按新源码重建
-      if (centerViewRef.current === 'blocks') {
-        const file = files.find((f) => f.id === id)
-        if (file && file.source !== file.blocksAt) {
-          const { trees } = sourceToBlocks(file.source)
-          setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, blocks: trees, blocksAt: file.source } : f)))
-        }
+      // 正在块视图里切文件 ⇒ 那个文件的块可能是旧的，得按新源码重建
+      if (centerViewRef.current === 'blocks' && docStore.blocksStale(id)) {
+        rebuildBlocks(id)
       }
     },
-    [files],
+    [docStore, rebuildBlocks],
   )
 
   /** 关掉一个标签页。 */
   const closeFile = useCallback(
     (id: string) => {
-      const idx = files.findIndex((f) => f.id === id)
+      const idx = filesRef.current.findIndex((f) => f.id === id)
       if (idx === -1) return
-      const next = files.filter((f) => f.id !== id)
+      const next = filesRef.current.filter((f) => f.id !== id)
+      // ⚠️ **连同它的撤销历史一起扔掉** —— VS Code 关标签页也是这样 ✓
+      docStore.delete(id)
       setFiles(next)
       if (id === activeIdRef.current) {
         // 关掉当前标签 ⇒ 落到隔壁那个
         setActiveId(next[Math.min(idx, next.length - 1)]?.id ?? null)
       }
     },
-    [files],
+    [docStore],
   )
 
+  const saveAs = useCallback(async () => {
+    const id = activeIdRef.current
+    if (!id) return
+    const file = filesRef.current.find((f) => f.id === id)
+    if (!file) return
+    const path = await window.jhyyIde.file.saveDialog(file.name)
+    if (!path) return
+    const text = docStore.text(id)
+    await window.jhyyIde.file.write(path, toEol(text, file.eol))
+    /*
+      ⚠️ **id 不变** —— 以前「另存为」会把 id 换成路径 ⇒
+      ⇒ 那样的话仓库里的键也变了 ⇒ 而「文档变了」那个回调闭包里存的是**旧 id**
+      ⇒ ⇒ 之后打字就找不到条目了 ⇒ **改动全丢** ✗✗
+      ⇒ ⇒ 现在 **id 永远不变**（只是 `path` 变了）⇒
+      ⇒ 「打开同一个文件别多出一个标签」靠**按 path 认**（`openFile` 里查 path）✓
+    */
+    docStore.setPath(id, path)
+    docStore.markSaved(id, text)
+    updateFile(id, { path, name: nameOf(path), dirty: false })
+    void window.jhyyIde.file.watch(dirnameOf(path))
+  }, [docStore, updateFile])
+
   const saveFile = useCallback(async () => {
-    const file = files.find((f) => f.id === activeIdRef.current)
+    const id = activeIdRef.current
+    if (!id) return
+    const file = filesRef.current.find((f) => f.id === id)
     if (!file) return
     if (!file.path) {
       await saveAs()
@@ -653,50 +836,33 @@ export default function App() {
     }
     // ⚠️ 存盘时**还原原来的行尾** —— 编辑器里统一是 LF，
     // 不还原的话每保存一次就把用户的 CRLF 文件改成 LF。
-    await window.jhyyIde.file.write(file.path, toEol(file.source, file.eol))
-    updateActive({ saved: file.source })
-
-  }, [files, updateActive])
-
-  const saveAs = useCallback(async () => {
-    const file = files.find((f) => f.id === activeIdRef.current)
-    if (!file) return
-    const path = await window.jhyyIde.file.saveDialog(file.name)
-    if (!path) return
-    await window.jhyyIde.file.write(path, toEol(file.source, file.eol))
-    // 未保存的文件存盘后，把 id 换成路径 —— 这样以后再打开同一个文件
-    // 不会多出一个标签页
-    const id = file.path ? file.id : path
-    updateActive({ id, path, name: nameOf(path), saved: file.source })
-    if (id !== file.id) setActiveId(id)
-    void window.jhyyIde.file.watch(dirnameOf(path))
-
-  }, [files, updateActive])
-
-  /** 文本视图改了 → 源码变 → 块视图过期。 */
-  const onSourceChange = useCallback(
-    (code: string) => {
-      updateActive({ source: code })
-      scheduleDiagnostics(code)
-    },
-    [scheduleDiagnostics, updateActive],
-  )
+    const text = docStore.text(id)
+    await window.jhyyIde.file.write(file.path, toEol(text, file.eol))
+    docStore.markSaved(id, text)
+    if (file.dirty) updateFile(id, { dirty: false })
+  }, [docStore, saveAs, updateFile])
 
   /** 块视图改了 → 重新生成源码 → 写回文本视图。 */
   const onBlockChange = useCallback(
     (tree: BlockTree[]) => {
-      const current = filesRef.current.find((f) => f.id === activeIdRef.current)
+      const id = activeIdRef.current
+      if (!id) return
+      const current = docStore.text(id)
+      const generated = blocksToSource(tree)
       /*
-        ⚠️⚠️ **块视图表达不了这份源码 ⇒ 不许回写** ——
-        块视图**会替换用户编辑器里的内容**（`source: generated`）⇒
+        ⚠️⚠️ **这次回写会改坏用户的代码 ⇒ 不许回写** ——
+        块视图**会替换用户编辑器里的内容** ⇒
         块树丢掉的那些东西（泛型参数、turbofish、`#[inline]` 属性、
         源码本身有语法错误时那一堆碎片……）就**从用户的文件里消失了** ✗✗
 
-        ⇒ 判据：文本视图和块视图**能不能一字不差**（`isLosslessForBlocks`）⇒
-          不能 ⇒ **宁可不回写**，也不能把用户的代码改坏 ✓
+        ⇒ 判据：**新块树打印出来 == 当前源码打印出来吗**（`isLosslessRewrite`）⇒
+          不等 ⇒ **宁可不回写**，也不能把用户的代码改坏 ✓
           （用户可以回文本视图改；这条状态栏消息告诉他为什么没生效）
+
+        ⚠️ **比的是「打印器」的输出**，不是原始文本 —— 原始文本的缩进
+        跟打印器不一定一样 ⇒ 拿原始文本比会误判 ✓
       */
-      if (current && !isLosslessForBlocks(current.source)) {
+      if (!isLosslessRewrite(current, generated)) {
         setStatus({
           text: '这个文件里有块视图表达不了的内容（或源码有语法错误），块编辑不会写回 —— 请在文本视图里改',
           kind: 'bad',
@@ -704,12 +870,19 @@ export default function App() {
         })
         return
       }
-      const generated = blocksToSource(tree)
-      // 块是**最新的** ⇒ 块视图不再过期（blocksAt 跟着源码走）
-      updateActive({ source: generated, blocksAt: generated, blocks: tree })
-      scheduleDiagnostics(generated)
+      /*
+        ⚠️ **回写走编辑器**（`replaceDoc`）⇒ 是一次**真事务** ⇒
+        ⇒ 用户能 Ctrl+Z 撤掉块编辑 ✓
+        ⇒ ⇒ 「文档变了」那个回调会触发 ⇒ 仓库里的内容、脏标记自动跟上 ✓
+        ⇒ ⇒ **不要**在这里再手动改 `source`（已经没有那个字段了）
+      */
+      codeRef.current?.replaceDoc(generated)
+      updateFile(id, { blocks: tree })
+      // 块是**最新的** ⇒ 块视图不再过期（版本号跟上）
+      docStore.setBlocksVersion(id, docStore.version(id))
+      scheduleDiagnostics(id)
     },
-    [scheduleDiagnostics, updateActive],
+    [docStore, scheduleDiagnostics, updateFile],
   )
 
   /**
@@ -720,21 +893,29 @@ export default function App() {
    * - 块**可见着的时候绝不重建** —— 那会把光标底下的块换掉，拖拽直接失效
    */
   const showBlocks = useCallback(() => {
-    if (blocksStaleRef.current) {
-      const { trees, parseErrors } = sourceToBlocks(sourceRef.current)
-      updateActive({ blocks: trees, blocksAt: sourceRef.current })
-      if (parseErrors.length > 0) {
-        // ⚠️ **这是「有问题」** —— 不是程序行为 ⇒ 值得说一声 ✓
-        setStatus({
-          text: `源码有语法问题，块视图只重建了能解析的部分（${parseErrors.length} 处）`,
-          kind: 'bad',
-          // ⚠️ **这一条跟编译无关** ⇒ 编译成功**不该**把它撤掉 ✓
-          tag: 'blocks',
-        })
-      }
+    const id = activeIdRef.current
+    if (!id) return
+    /*
+      ⚠️⚠️ **大文件模式 ⇒ 不给拖块视图** ——
+        解析一份几 MB 的源码 + 反编译成几千个块 ⇒ Blockly 直接趴窝 ✗
+        ⇒ ⇒ 明确告诉用户为什么没有（别让人以为是 IDE 坏了）✓
+    */
+    if (docStore.isLarge(id)) {
+      const file = filesRef.current.find((f) => f.id === id)
+      setStatus({
+        text: `这个文件太大（${formatBytes(file?.bytes ?? 0)}），拖块视图不处理它 —— 已关掉：${LARGE_FILE_DISABLED_FEATURES.join('、')}`,
+        kind: 'bad',
+        tag: 'large-file',
+      })
+      return
     }
+    // ⚠️ **第一次进块视图才挂 Blockly** ——
+    //   Blockly 的工作区建起来不便宜（建工具箱、注入 SVG …）⇒
+    //   ⇒ 一直在文本视图里用的人**根本不该付这个钱** ✓
+    setBlocksMounted(true)
+    if (docStore.blocksStale(id)) rebuildBlocks(id)
     setCenterView('blocks')
-  }, [updateActive])
+  }, [docStore, rebuildBlocks])
 
   const toggleBlocks = useCallback(() => {
     if (centerViewRef.current === 'blocks') {
@@ -992,6 +1173,17 @@ export default function App() {
     //    （主进程是唯一真相）⇒ 主进程收场时报状态 ⇒ 这里不用管 ✓
   }, [flushProgramOutput])
 
+  /*
+    ⚠️⚠️ **下面这几个回调必须包一层 `useCallback`** ——
+      标签条 / 聊天面板都加了 `React.memo` ⇒
+      ⇒ 回调**每次渲染都是新函数**的话 ⇒ `memo` 比不出来 ⇒ **白加** ✗
+      ⇒ ⇒ 包一层 ⇒ 引用稳定 ⇒ `memo` 才拦得住重渲染 ✓
+  */
+  const onTabRun = useCallback(() => void doRun(), [doRun])
+  const onTabCheck = useCallback(() => void doCompile(true), [doCompile])
+  const onTabStop = useCallback(() => void stop(), [stop])
+  const onReloadExternal = useCallback(() => void reloadFromDisk(), [reloadFromDisk])
+
   // ── 布局开关 ────────────────────────────────────────────────
   const togglePanel = useCallback(() => {
     setLayout((l) => ({ ...l, panelOpen: !l.panelOpen }))
@@ -1056,23 +1248,14 @@ export default function App() {
       const path = history.stack[target]
       try {
         const raw = await window.jhyyIde.file.read(path)
-        const content = normalizeEol(raw)
         setHistory((h) => ({ ...h, index: target }))
-        setFiles((prev) =>
-          prev.map((f) =>
-            f.path === path
-              ? {
-                  ...f,
-                  source: content,
-                  saved: content,
-                  blocksAt: content,
-                  blocks: sourceToBlocks(content).trees,
-                  eol: detectEol(raw),
-                }
-              : f,
-          ),
-        )
-        setActiveId(path)
+        // ⚠️ **按 path 找那个文件** —— 它的 id 未必是 path
+        //   （未命名的新文件另存为之后，id 还是 `untitled:N`）✓
+        const file = filesRef.current.find((f) => f.path === path)
+        if (file) {
+          applyDiskContent(file.id, raw)
+          setActiveId(file.id)
+        }
         void window.jhyyIde.file.watch(dirnameOf(path))
       } catch (err) {
         // ⚠️ **打不开文件** —— 这是「出错」⇒ 值得说一声 ✓
@@ -1083,7 +1266,7 @@ export default function App() {
         })
       }
     },
-    [history],
+    [applyDiskContent, history],
   )
 
   // ── 命令表 ──────────────────────────────────────────────────
@@ -1138,7 +1321,11 @@ export default function App() {
       files.map((f) => ({
         id: f.id,
         name: f.name,
-        dirty: f.source !== f.saved,
+        // ⚠️ **脏标记是「状态」** —— 不是每次 render 拿全文比一次
+        //   （那是一次 O(n) 的全文比较 ⇒ 打字卡）✓
+        dirty: f.dirty,
+        // ⚠️ **大文件模式** —— 标签上标出来（用户得知道少了几样功能）✓
+        large: f.large,
         active: f.id === activeId,
       })),
     [files, activeId],
@@ -1186,9 +1373,9 @@ export default function App() {
             tabs={tabs}
             onSelect={switchFile}
             onClose={closeFile}
-            onRun={() => void doRun()}
-            onCheck={() => void doCompile(true)}
-            onStop={() => void stop()}
+            onRun={onTabRun}
+            onCheck={onTabCheck}
+            onStop={onTabStop}
             busy={busy}
             canRun={filePath !== null}
           />
@@ -1200,6 +1387,12 @@ export default function App() {
               `svgResize` 才算得对；用 `display:none` 会把它变成 0，SVG 被设成 0×0。
             - `inert` 把隐藏的那棵子树移出 a11y 树并禁止聚焦。
             - 两个面板都活着 ⇒ Blockly 的缩放/平移、CodeMirror 的撤销历史都保得住。
+
+            ⚠️⚠️ **但块视图是「懒挂载」的** ——
+              Blockly 的工作区建起来不便宜（注入 SVG、建工具箱、注册块定义 …）⇒
+              ⇒ **只在第一次切到块视图的时候才挂** ⇒
+              ⇒ 一直在文本视图里用的人**一分钱都不付** ✓
+              （挂上之后就一直留着 —— 缩放/平移/块的位置才保得住）
           */}
           <div className="editor-surface">
             <div
@@ -1209,10 +1402,9 @@ export default function App() {
             >
               <CodePane
                 ref={codeRef}
-                value={source}
-                onChange={onSourceChange}
+                fileId={activeId}
+                store={docStore}
                 diagnostics={diagnostics}
-                onCursorChange={setCursor}
                 fontFamily={settings.editorFontFamily}
                 fontSize={settings.editorFontSize}
               />
@@ -1228,17 +1420,19 @@ export default function App() {
                 没有边界的话，一个块视图的异常会把**整个应用**炸掉。
                 「重来一次」= 换 key 把块视图整个重建。
               */}
-              <ErrorBoundary
-                label="块视图"
-                onRetry={() => setBlockPaneKey((k) => k + 1)}
-              >
-                <BlockPane
-                  key={blockPaneKey}
-                  ref={blockRef}
-                  tree={blockTree}
-                  onChange={onBlockChange}
-                />
-              </ErrorBoundary>
+              {blocksMounted && (
+                <ErrorBoundary
+                  label="块视图"
+                  onRetry={() => setBlockPaneKey((k) => k + 1)}
+                >
+                  <BlockPane
+                    key={blockPaneKey}
+                    ref={blockRef}
+                    tree={blockTree}
+                    onChange={onBlockChange}
+                  />
+                </ErrorBoundary>
+              )}
             </div>
             {files.length === 0 && (
               <WelcomeView onOpen={() => void openFile()} onNew={newFile} />
@@ -1287,15 +1481,15 @@ export default function App() {
           fileName={active?.name ?? null}
           cwd={filePath ? dirnameOf(filePath) : lastPathDirRef.current}
           externalChange={externalChange}
-          onReload={() => void reloadFromDisk()}
+          onReload={onReloadExternal}
           readOnly={chatReadOnly}
           onReadOnlyChange={setChatReadOnly}
+          getSource={getClaudeSource}
         />
       </div>
 
       {layout.statusBarVisible && (
         <StatusBar
-          cursor={cursor}
           diagnostics={diagnostics}
           toolchain={toolchain}
           ptyBackend={ptyBackend}

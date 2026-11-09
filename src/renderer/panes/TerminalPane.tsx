@@ -5,7 +5,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import type { TerminalInfo } from '@shared/terminal'
 import { TERMINAL_OPTIONS } from './terminalOptions'
 import { PtySizeDebouncer, TerminalResizeDebouncer } from './terminalResizeDebouncer'
@@ -103,7 +103,7 @@ interface TerminalView {
  * ⚠️ **`new Terminal()` 必须在 `useEffect` 里构造** —— 不能放 `useState` 或模块
  * 作用域。否则 React 19 StrictMode 的双调用会在同一个 DOM 节点上建两个终端。
  */
-export default function TerminalPane({
+function TerminalPane({
   cwd,
   active,
   terminals: list,
@@ -793,3 +793,15 @@ function createView(
     },
   }
 }
+
+/**
+ * ⚠️⚠️ **要 `memo`** ——
+ *   这个组件里面是 **xterm**（WebGL 画布 + 一堆插件）⇒
+ *   ⇒ 别的组件重渲染时**不该**把它也带着重渲染一遍 ✗
+ *   ⇒ ⇒ 它的 props 全是「稳定的」（`cwd` / `active` / `terminals` /
+ *   `activeTerminalId`）⇒ ⇒ `memo` 一加就完全不重渲染 ✓
+ *
+ *   （典型场景：**后台实时诊断**每 600 ms 更新一次 `diagnostics` ⇒
+ *   `App` 重渲染 ⇒ 以前终端也跟着重渲染 ⇒ 现在不会了 ✓）
+ */
+export default memo(TerminalPane)

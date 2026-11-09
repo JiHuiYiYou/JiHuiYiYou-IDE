@@ -35,7 +35,7 @@ export function sourceToBlocks(source: string): SourceToBlocksResult {
 }
 
 /**
- * **块视图能不能「无损」表达这份源码？**
+ * **这次块视图的回写会不会把用户的代码改坏？**
  *
  * ⚠️ **为什么要问这个** ——
  *   块视图**会回写用户的源文件**（`App.tsx` 的 `onBlockChange`：
@@ -45,22 +45,30 @@ export function sourceToBlocks(source: string): SourceToBlocksResult {
  *   块树是**有损**的：泛型参数、turbofish 实参、`#[inline]` 属性、
  *   某些语句形态…… 每加一种块能力之前，它就多丢一样东西。
  *   ⇒ 光靠「把块树补全」是**追不上的**（语言一直在长）⇒
- *   ⇒ **必须有一道兜底的闸**：表达不了就**不许回写** ✓
+ *   ⇒ **必须有一道兜底的闸**：改坏了就**不许回写** ✓
  *
  * ## 判据
  *
- *   print(parse(src))  ===  print(compileModule(decompileModule(parse(src))))
- *              ↑ 文本视图              ↑ 块视图
+ *   generated  ===  print(parse(src))
+ *      ↑ 新块树       ↑ 当前源码
  *
- * 两边**一字不差** ⇒ 块视图能无损表达这份源码 ⇒ 回写安全 ✓
+ * 两边**一字不差** ⇒ 回写是**空操作** ⇒ 用户的代码一个字都不会变 ⇒ 安全 ✓
+ * 不一样 ⇒ 这次回写会**改坏**用户的代码 ⇒ **不许回写** ✓
  *
- * ⚠️ **源码本身有语法错误 ⇒ 直接算「表达不了」** ——
- *    块视图是从**残缺的解析**建出来的（解析器没有错误恢复，第一个错就 bail）⇒
- *    那种块树回写出去是**一堆碎片**（实测：一个函数被拆成 `fn f() {}` + `i32;` + …）✗
+ * ⚠️ **比的是「打印器」的输出，不是原始文本** ——
+ *    原始文本的缩进/空格跟打印器不一定一样 ⇒ 拿原始文本比会误判
+ *    （用户只是改了个缩进就被判成「表达不了」）✗
+ *
+ * ⚠️ **源码本身有语法错误 ⇒ 直接算「不安全」** ——
+ *    解析器没有错误恢复，第一个错就 bail ⇒ 那种块树回写出去是**一堆碎片**
+ *    （实测：一个函数被拆成 `fn f() {}` + `i32;` + …）✗
+ *
+ * ⚠️ **比旧的判据便宜一半** —— 以前判「源码能不能被块表达」要跑
+ *    **两遍**全量往返（源码→AST→块树→AST→源码），现在只要**一遍**
+ *    （源码→AST→打印）✓
  */
-export function isLosslessForBlocks(source: string): boolean {
+export function isLosslessRewrite(source: string, generated: string): boolean {
   const parsed = parse(source)
   if (!parsed.module || parsed.errors.length > 0) return false
-  const trees = decompileModule(parsed.module, source)
-  return print(compileModule(trees)) === print(parsed.module)
+  return generated === print(parsed.module)
 }
