@@ -86,4 +86,17 @@ export interface ClaudeStartOptions {
   resumeSessionId?: string
   /** 系统提示词追加内容 */
   appendSystemPrompt?: string
+  /**
+   * 当前缓冲区的内容（**只在缓冲区还没落盘、且不太大的时候给**）。
+   *
+   * ⚠️ **为什么放在这儿，而不是放在每时每刻都发的 `IdeContext` 里** ——
+   *   系统提示**只在会话开始时烤一次**（`jhyyCheatSheet()`）⇒
+   *   ⇒ 每敲一个字就把整份源码过一遍 IPC（结构化克隆一个几 MB 的字符串）
+   *   **是纯浪费**（用户报过「IDE 特别卡」）⇒
+   *   ⇒ 改成：**开始会话的那一刻**取一次最新的内容传过来 ✓
+   *
+   * ⇒ `undefined` = 「有未保存的修改，但内容太大没带过来」⇒
+   *   主进程会改成一句话说明，而不是贴一个空代码块（那是在骗 Claude）。
+   */
+  source?: string
 }

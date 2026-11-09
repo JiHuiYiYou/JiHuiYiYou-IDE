@@ -26,6 +26,12 @@ interface Props {
   /** 只读模式（聊天里那个开关） */
   readOnly: boolean
   onReadOnlyChange: (readOnly: boolean) => void
+  /**
+   * 取当前缓冲区的内容（**只在开始会话的那一刻调一次**）。
+   *
+   * ⚠️ 传**函数**不传值 —— 传值的话每次按键聊天面板都要重渲染。
+   */
+  getSource?: () => string | undefined
 }
 
 /**
@@ -71,6 +77,7 @@ const SecondarySidebar = forwardRef<ChatPaneHandle, Props>(function SecondarySid
         onReload={props.onReload}
         readOnly={props.readOnly}
         onReadOnlyChange={props.onReadOnlyChange}
+        getSource={props.getSource}
       />
     </div>
   )

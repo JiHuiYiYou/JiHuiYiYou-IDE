@@ -358,11 +358,19 @@ export interface IdeContext {
    */
   unsaved: boolean
   /**
-   * 当前缓冲区的内容（**只在 `unsaved` 时给**）。
+   * ⚠️ **这里没有 `source` 了** ——
    *
-   * 已保存的文件 Claude 自己 `Read` 就行，不必塞进来（白白撑大系统提示）。
+   * 以前每次按键都把**整份源码**塞进这个上下文（`App.tsx` 的 `setContext`），
+   * 走一次 IPC（结构化克隆一整个文件）。
+   *
+   * ⇒ **但那份源码只在「会话开始」时被读一次**（`jhyyCheatSheet()` 在
+   *   `IPC.claudeStart` 里被调用一次，系统提示**烤死了**，之后不刷新）⇒
+   * ⇒ **每次按键传整份源码是纯浪费**（用户报过「IDE 特别卡」）。
+   *
+   * ⇒ 现在源码走 **`claude.start` 的参数**（`ClaudeStartOptions.source`），
+   *   只在**开始会话的那一刻**传一次 —— 而且那一刻传的是**最新的**内容 ✓
+   *   （以前传的是「上次按键时留下的那一版」）。
    */
-  source?: string
   /** 终端 / 程序的工作目录 */
   cwd: string | null
   /** 最近的诊断（问题面板里的那些） */

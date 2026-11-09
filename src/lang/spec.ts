@@ -27,8 +27,38 @@ export interface SpecMatch {
 const SECTIONS = specIndex.sections as SpecSection[]
 export const SPEC_VERSION = specIndex.version as string
 
-function excerptAround(body: string, needle: string): string {
-  const idx = body.toLowerCase().indexOf(needle.toLowerCase())
+/**
+ * **小写化索引 —— 建一次，用一辈子。**
+ *
+ * ⚠️ 以前 `searchSpec` 每次调用都把**每一节**的标题和正文
+ * `toLowerCase()` 一遍（整个索引 30 KB ⇒ 每次悬停都重新分配 30 KB）⇒
+ * ⇒ 鼠标在代码上晃一下就是一次大分配 ⇒ 卡 ✗
+ * ⇒ ⇒ 现在**模块加载时算一次**，之后每次搜索只是 `includes`（零分配）✓
+ */
+interface IndexedSection {
+  section: SpecSection
+  /** 小写化的标题 */
+  title: string
+  /** 小写化的正文 */
+  body: string
+}
+
+const INDEX: IndexedSection[] = SECTIONS.map((section) => ({
+  section,
+  title: section.title.toLowerCase(),
+  body: section.body.toLowerCase(),
+}))
+
+function excerptAround(body: string, lowerBody: string, needle: string): string {
+  const lowerNeedle = needle.toLowerCase()
+  /*
+    ⚠️ 少数 Unicode 字符小写化后**长度会变**（如 `İ`）⇒
+    ⇒ 长度对不上时就不能拿小写版的偏移去切原文 ⇒ 退回老办法 ✓
+  */
+  const idx =
+    lowerBody.length === body.length
+      ? lowerBody.indexOf(lowerNeedle)
+      : body.toLowerCase().indexOf(lowerNeedle)
   if (idx < 0) return body.slice(0, 160)
   const start = Math.max(0, idx - 60)
   const end = Math.min(body.length, idx + needle.length + 100)
@@ -49,19 +79,17 @@ export function searchSpec(query: string, limit = 5): SpecMatch[] {
   if (tokens.length === 0) return []
 
   const matches: SpecMatch[] = []
-  for (const section of SECTIONS) {
-    const title = section.title.toLowerCase()
-    const body = section.body.toLowerCase()
+  for (const entry of INDEX) {
     let score = 0
     for (const token of tokens) {
-      if (title.includes(token)) score += 3
-      else if (body.includes(token)) score += 1
+      if (entry.title.includes(token)) score += 3
+      else if (entry.body.includes(token)) score += 1
     }
     if (score === 0) continue
     matches.push({
-      section,
+      section: entry.section,
       score,
-      excerpt: excerptAround(section.body, tokens[0]),
+      excerpt: excerptAround(entry.section.body, entry.body, tokens[0]),
     })
   }
 

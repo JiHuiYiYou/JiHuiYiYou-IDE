@@ -16,7 +16,7 @@ import type {
   TypeExpr,
 } from '../ast'
 import { parse } from '../parser'
-import { BLOCK, decodeOpaque, type BlockTree } from './tree'
+import { BLOCK, decodeOpaque, walkBlocks, type BlockTree } from './tree'
 
 /**
  * 块树 → AST（编译器）。
@@ -821,7 +821,17 @@ export function compileModule(trees: BlockTree[]): ModuleNode {
   const declarations = compileDeclList(declTrees)
 
   // 用了打印块但文件里没有 printf 的 extern 声明 → 补一个
-  const usesPrintf = JSON.stringify(trees).includes('"jhyy_print"')
+  //
+  // ⚠️ 以前是 `JSON.stringify(trees).includes('"jhyy_print"')` ——
+  //    为了找一个块类型，把**整棵块树**序列化一遍（大文件上这是纯浪费）。
+  //    现在直接走一遍树（`walkBlocks`）⇒ O(节点数)，不分配。
+  let usesPrintf = false
+  for (const tree of trees) {
+    walkBlocks(tree, (node) => {
+      if (node.type === BLOCK.print) usesPrintf = true
+    })
+    if (usesPrintf) break
+  }
   const hasPrintfExtern = declarations.some(
     (d) => d.kind === 'extern_decl' && d.name === 'printf',
   )

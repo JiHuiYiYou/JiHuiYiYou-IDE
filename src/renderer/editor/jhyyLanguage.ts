@@ -78,6 +78,45 @@ interface JhyyState {
   inString: '' | '"' | "'"
 }
 
+/*
+  ⚠️ **字符类判断全是手写的，不用正则** ——
+  `@codemirror/streamparser` 的 `match(正则)` 会把「这一行从当前位置往后」
+  **切一份新的字符串出来**（`this.string.slice(this.pos).match(pattern)`）⇒
+  ⇒ 一行里有 N 个 token 就要切 N 次 ⇒ **O(行长²)** ✗
+  ⇒ ⇒ 一行 10000 字符（CodeMirror 自己的行长上限）能切出几千万次字符 ⇒ 卡 ✗
+  ⇒ ⇒ 下面这几个函数只读 `charCodeAt` / `charAt` ⇒ **O(1)，零分配** ✓
+*/
+
+function isDigit(c: string | undefined): boolean {
+  return c !== undefined && c >= '0' && c <= '9'
+}
+
+function isHexDigit(c: string | undefined): boolean {
+  return (
+    isDigit(c) || (c !== undefined && ((c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')))
+  )
+}
+
+function isIdentStart(c: string | undefined): boolean {
+  return (
+    c !== undefined &&
+    ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c === '_')
+  )
+}
+
+function isIdentPart(c: string | undefined): boolean {
+  return isIdentStart(c) || isDigit(c)
+}
+
+/** `[from, to)` 这段是不是全是十六进制数字（`\u{1F600}` 的那部分）。 */
+function isHex(s: string, from: number, to: number): boolean {
+  if (from >= to) return false
+  for (let i = from; i < to; i++) {
+    if (!isHexDigit(s.charAt(i))) return false
+  }
+  return true
+}
+
 const jhyyParser: StreamParser<JhyyState> = {
   name: 'jhyy',
 
@@ -104,13 +143,47 @@ const jhyyParser: StreamParser<JhyyState> = {
     */
     if (state.inString) {
       const quote = state.inString
-      // 转义序列：`\` + 下一个字符（`\u{1F600}` 的 `{…}` 也算一段）
-      if (stream.match(/\\u\{[0-9A-Fa-f]+\}|\\./)) return 'escape'
-      if (stream.eat(quote)) {
-        state.inString = ''
+      /*
+        ⚠️⚠️ **这里原来是一行 `stream.match(/…/)` —— 现在改成手写扫描** ——
+        `@codemirror/streamparser` 的 `match(正则)` 是
+        `this.string.slice(this.pos).match(pattern)` ⇒
+        **每次匹配都要把「这一行的剩余部分」切一份出来** ⇒
+        ⇒ 而这行正则**每个字符都要跑一次**（字符串字面量里）⇒
+        ⇒ 一个 5000 字符的字符串字面量 ⇒ 5000 次切片 ⇒ **O(行长²)** ✗✗
+
+        ⇒ 现在一次扫到「下一个 `\` 或结束引号」⇒ **O(行长)** ✓
+        （token 的颜色不变 —— 普通文字还是 `string`，转义还是 `escape`；
+          CodeMirror 会把相邻的同色 token 合并 ⇒ 渲染结果一模一样 ✓）
+      */
+      const s = stream.string
+      const p = stream.pos
+      if (s.charAt(p) === '\\') {
+        // 转义序列：`\u{1F600}` 整段算一个；`\n` 两个字符算一个
+        if (s.charAt(p + 1) === 'u' && s.charAt(p + 2) === '{') {
+          const close = s.indexOf('}', p + 3)
+          if (close > 0 && isHex(s, p + 3, close)) {
+            stream.pos = close + 1
+            return 'escape'
+          }
+        }
+        if (p + 1 < s.length) {
+          stream.pos = p + 2
+          return 'escape'
+        }
+        // 行尾一个孤零零的 `\` —— 没有可转义的字符 ⇒ 当普通文字
+        stream.pos = p + 1
         return 'string'
       }
-      stream.next()
+      // 扫到结束引号或者下一个反斜杠
+      let i = p
+      while (i < s.length && s.charAt(i) !== '\\' && s.charAt(i) !== quote) i++
+      if (i > p) {
+        stream.pos = i
+        return 'string'
+      }
+      // 到了结束引号
+      stream.pos = p + 1
+      state.inString = ''
       return 'string'
     }
 
@@ -138,22 +211,80 @@ const jhyyParser: StreamParser<JhyyState> = {
     }
 
     // 数字
-    if (stream.match(/^0[xX][0-9a-fA-F]+/)) return 'number'
-    if (stream.match(/^0[oO][0-7]+/)) return 'number'
-    if (stream.match(/^0[bB][01]+/)) return 'number'
-    if (stream.match(/^[0-9]+\.[0-9]+/)) return 'number'
-    if (stream.match(/^[0-9]+/)) return 'number'
+    //
+    // ⚠️ **手写扫描，不用正则** —— 理由跟上面字符串那句一样：
+    // `stream.match(/正则/)` 会把「这一行从当前位置往后」切一份出来 ⇒
+    // 一行里有 N 个数字就要切 N 次 ⇒ **O(行长²)** ✗
+    // （`@codemirror/streamparser` 的 `match`：`this.string.slice(this.pos).match(pattern)`）
+    {
+      const c0 = stream.peek()
+      if (isDigit(c0)) {
+        const s = stream.string
+        const i = stream.pos
+        if (c0 === '0' && i + 1 < s.length) {
+          const c1 = s.charAt(i + 1)
+          // 0x / 0o / 0b —— 后面**必须**有对应的数字，否则退回十进制
+          if (c1 === 'x' || c1 === 'X') {
+            let j = i + 2
+            while (j < s.length && isHexDigit(s.charAt(j))) j++
+            if (j > i + 2) {
+              stream.pos = j
+              return 'number'
+            }
+          } else if (c1 === 'o' || c1 === 'O') {
+            let j = i + 2
+            while (j < s.length && s.charAt(j) >= '0' && s.charAt(j) <= '7') j++
+            if (j > i + 2) {
+              stream.pos = j
+              return 'number'
+            }
+          } else if (c1 === 'b' || c1 === 'B') {
+            let j = i + 2
+            while (j < s.length && (s.charAt(j) === '0' || s.charAt(j) === '1')) j++
+            if (j > i + 2) {
+              stream.pos = j
+              return 'number'
+            }
+          }
+        }
+        // 十进制（可以带小数；小数点后**必须**有数字 —— `123.` 只吃 `123`）
+        let j = i
+        while (j < s.length && isDigit(s.charAt(j))) j++
+        if (
+          j < s.length &&
+          s.charAt(j) === '.' &&
+          j + 1 < s.length &&
+          isDigit(s.charAt(j + 1))
+        ) {
+          j++
+          while (j < s.length && isDigit(s.charAt(j))) j++
+        }
+        stream.pos = j
+        return 'number'
+      }
+    }
 
     // 标识符 / 关键字
-    if (stream.match(/^[A-Za-z_][A-Za-z0-9_]*/)) {
-      const word = stream.current()
-      if (word === 'true' || word === 'false') return 'bool'
-      if (word === 'null') return 'null'
-      if (TYPE_NAMES.has(word)) return 'typeName'
-      if (KEYWORDS.has(word)) return 'keyword'
-      // 大写开头的名字按类型名处理（语言约定类型名大写）
-      if (/^[A-Z]/.test(word)) return 'typeName'
-      return 'variableName'
+    //
+    // ⚠️ **同样手写扫描** —— 标识符是**最高频**的 token ⇒ 用正则的话
+    // 一行要切 N 次 ⇒ O(行长²)
+    {
+      const c0 = stream.peek()
+      if (isIdentStart(c0)) {
+        const s = stream.string
+        let j = stream.pos + 1
+        while (j < s.length && isIdentPart(s.charAt(j))) j++
+        stream.pos = j
+        const word = s.slice(stream.start, j)
+        if (word === 'true' || word === 'false') return 'bool'
+        if (word === 'null') return 'null'
+        if (TYPE_NAMES.has(word)) return 'typeName'
+        if (KEYWORDS.has(word)) return 'keyword'
+        // 大写开头的名字按类型名处理（语言约定类型名大写）
+        const first = word.charCodeAt(0)
+        if (first >= 65 && first <= 90) return 'typeName'
+        return 'variableName'
+      }
     }
 
     // 运算符
@@ -161,9 +292,24 @@ const jhyyParser: StreamParser<JhyyState> = {
       if (stream.match(op)) return 'operator'
     }
 
-    if (stream.match(/^[()[\]{}]/)) return 'bracket'
-    if (stream.match(/^[.,;:]/)) return 'punctuation'
-    if (stream.match(/^#[A-Za-z_]/)) return 'meta'
+    // 括号 / 标点 / 属性 —— 也是手写比较（正则要切片）
+    {
+      const c = stream.peek()
+      if (
+        c === '(' || c === ')' || c === '[' || c === ']' || c === '{' || c === '}'
+      ) {
+        stream.next()
+        return 'bracket'
+      }
+      if (c === '.' || c === ',' || c === ';' || c === ':') {
+        stream.next()
+        return 'punctuation'
+      }
+      if (c === '#' && isIdentStart(stream.string.charAt(stream.pos + 1))) {
+        stream.pos += 2
+        return 'meta'
+      }
+    }
 
     stream.next()
     return 'invalid'

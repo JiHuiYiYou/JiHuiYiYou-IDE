@@ -754,7 +754,7 @@ function registerIpc(): void {
     claudeSession = new ClaudeSession({
       cwd: opts.cwd,
       resumeSessionId: opts.resumeSessionId,
-      appendSystemPrompt: opts.appendSystemPrompt ?? jhyyCheatSheet(),
+      appendSystemPrompt: opts.appendSystemPrompt ?? jhyyCheatSheet(opts.source),
       onEvent: (event) => {
         // Claude 用 Edit/Write 改了文件 —— 记一笔，watcher 报上来时好区分
         // 「这是内部改动」（直接应用）还是「外部程序改的」（提示用户）。
@@ -1177,7 +1177,7 @@ let ideContext: IdeContext = {
  * （**替换**）—— 替换会把 Claude Code 内置的工具用法说明一起顶掉，
  * 它用工具的能力会明显变差。
  */
-function jhyyCheatSheet(): string {
+function jhyyCheatSheet(source?: string): string {
   const ctx = ideContext
   const lines = [
     '你在给 JHYY（机会翼游）语言写代码。JHYY 是 Rust 风格的自举系统语言。',
@@ -1197,10 +1197,24 @@ function jhyyCheatSheet(): string {
 
   // ── IDE 的当前状态 ────────────────────────────────────────
   lines.push('', '## 你现在在哪个 IDE 里（重要）', '')
-  /** 把用户正在编辑的内容贴出来（磁盘上读不到/是旧的那一份）。 */
+  /**
+   * 把用户正在编辑的内容贴出来（磁盘上读不到/是旧的那一份）。
+   *
+   * ⚠️ **`source` 是 `undefined` 时不许贴一个空代码块** ——
+   *   上面那行字还在说「下面代码块才是用户现在正在编辑的内容」，
+   *   贴个空的等于**骗 Claude**（它会以为用户的内容是空的）✗
+   *   ⇒ 改成一句话说明「内容太大没带过来，请让用户先保存」。
+   */
   const pushSource = (): void => {
+    if (source === undefined) {
+      lines.push(
+        '- ⚠️ 这个缓冲区**有还没保存的修改**，但**内容太大没有随会话带过来** ——' +
+          '请让用户**先保存**，再读磁盘上的文件。',
+      )
+      return
+    }
     lines.push('```jhyy')
-    lines.push((ctx.source ?? '').replace(/\r\n/g, '\n').replace(/\s+$/, ''))
+    lines.push(source.replace(/\r\n/g, '\n').replace(/\s+$/, ''))
     lines.push('```')
   }
   if (ctx.filePath) {

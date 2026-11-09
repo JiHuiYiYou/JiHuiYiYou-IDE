@@ -29,6 +29,17 @@ interface Props {
   readOnly?: boolean
   /** 切换只读模式 */
   onReadOnlyChange?: (readOnly: boolean) => void
+  /**
+   * 取当前缓冲区的内容（**只在开始会话的那一刻调一次**）。
+   *
+   * ⚠️ **这是个「函数」prop，不是「值」prop** ——
+   *   传值的话，每敲一个字聊天面板都要重渲染（内容是几 MB 的字符串）✗
+   *   ⇒ 传函数 ⇒ 面板不受影响，只有**开始会话**的那一刻才真的去取 ✓
+   *
+   * ⇒ 返回 `undefined` = 「有未保存的修改，但内容太大没带过来」
+   *   （主进程会改成一句话说明，而不是贴一个空代码块）。
+   */
+  getSource?: () => string | undefined
 }
 
 /** 一条历史会话。 */
@@ -141,6 +152,7 @@ const ChatPane = forwardRef<ChatPaneHandle, Props>(function ChatPane(
     onReload,
     readOnly = false,
     onReadOnlyChange,
+    getSource,
   },
   ref,
 ) {
@@ -437,6 +449,13 @@ const ChatPane = forwardRef<ChatPaneHandle, Props>(function ChatPane(
       const result = await window.jhyyIde.claude.start({
         cwd: workDir,
         ...(resumeSessionId ? { resumeSessionId } : {}),
+        /*
+          ⚠️ **源码只在「开始会话」这一刻给一次** ——
+          系统提示是**烤死**的（`jhyyCheatSheet()` 只在 `claude.start` 里调一次）⇒
+          ⇒ 每时每刻发整份源码过 IPC 是纯浪费（用户报过「IDE 特别卡」）⇒
+          ⇒ 改成这里取一次最新的内容传过去 ✓
+        */
+        ...(getSource ? { source: getSource() } : {}),
       })
       if (!result.ok) {
         startedRef.current = false
@@ -445,7 +464,7 @@ const ChatPane = forwardRef<ChatPaneHandle, Props>(function ChatPane(
       }
       return true
     },
-    [cwd, filePath],
+    [cwd, filePath, getSource],
   )
 
   const send = useCallback(async () => {

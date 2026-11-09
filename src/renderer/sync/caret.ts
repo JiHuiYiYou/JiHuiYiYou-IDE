@@ -12,6 +12,14 @@ import type { EditorView } from '@codemirror/view'
  * 一开 CRLF 的文件就崩）。
  */
 export function normalizeEol(text: string): string {
+  /*
+    ⚠️ **快路径：文件里根本没有 `\r` 就别跑正则** ——
+    `text.replace(/\r\n?/g, '\n')` 会**重新分配一整份副本**（10 MB 文件 ⇒ 10 MB），
+    而正则扫描本身也不便宜（10 MB ⇒ 几十毫秒）。
+    ⇒ `includes('\r')` 是原生的 memchr（~1 GB/s）⇒ 没 `\r` 时几乎不要钱 ✓
+    ⇒ 而且**连副本都不分配**（返回的还是原来那个字符串）✓
+  */
+  if (!text.includes('\r')) return text
   return text.replace(/\r\n?/g, '\n')
 }
 
