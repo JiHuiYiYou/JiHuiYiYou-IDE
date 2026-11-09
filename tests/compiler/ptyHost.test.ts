@@ -126,6 +126,25 @@ describe('pty 宿主的核心逻辑', () => {
     expect(fake.killed).toBe(true)
   })
 
+  /**
+   * ⚠️ **「kill 比 create 先到」⇒ 不能起一个没人管的孤儿 shell**。
+   *
+   * ⚠️ 这在主进程那边**很常见** ——
+   *   宿主进程还没 ready 时，创建请求是**先攒着**的 ⇒
+   *   用户在等的期间把终端关了 ⇒ **`kill` 先到**、`create` 后到 ⇒
+   *   以前 `sessions.get(id)` 是 undefined ⇒ **kill 是个空操作** ⇒
+   *   ⇒ 随后 shell 起来了，**没人管它** ✗✗
+   */
+  it('**kill 先到 ⇒ create 到达时立刻杀掉**（不留孤儿 shell）', async () => {
+    const fake = new FakeSession()
+    const core = new PtyHostCore(() => fake)
+    // ⚠️ **kill 先到**（会话还没起来 ⇒ 宿主不认识它）
+    core.handle({ t: 'kill', id: 42 })
+    core.handle({ t: 'create', id: 42, spec: SPEC })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(fake.killed, '孤儿 shell 必须被杀掉').toBe(true)
+  })
+
   it('真起一个 node-pty（ConPTY）⇒ 输出能回来', async () => {
     // ⚠️ **用真的 node-pty** —— 假的那套只验了协议，没验「真能起」
     const core = new PtyHostCore()
@@ -250,6 +269,31 @@ describe('pty 宿主的客户端', () => {
     expect(host.available).toBe(false)
     // ⚠️ **报过了、说不能用** ⇒ 得退回「主进程里跑 node-pty」⇒ 不能攒着
     expect(host.canCreate).toBe(false)
+  })
+
+  /**
+   * ⚠️ **在等的期间把终端关掉 ⇒ 不能起一个没人管的孤儿 shell**。
+   *
+   * ⚠️ 宿主还没 ready 时创建请求是**先攒着**的 ⇒
+   *   用户在等的期间把终端关了 ⇒ `kill` 那个 id 宿主**压根不认识**
+   *   ⇒ 以前那个 `kill` 是个空操作 ⇒ 而攒着的创建请求**后来照样发出去**
+   *   ⇒ **shell 起来了，没人管** ✗✗（用户看不见，但一直占着进程）
+   */
+  it('**还没发出去的创建请求 ⇒ 会话被关掉后要撤掉**（不留孤儿 shell）', async () => {
+    const proc = new FakeHostProcess()
+    const host = new PtyHost(() => proc)
+    host.start()
+    // ⚠️ 还没 ready ⇒ 创建请求**先攒着**
+    const session = host.create({ shell: 'bash', cwd: 'C:/tmp', cols: 80, rows: 24 })
+    expect(proc.sent).toHaveLength(0)
+
+    // ⚠️ **用户在这时候把终端关了**
+    await session.kill()
+
+    // ⇒ ready 之后 ⇒ **那个创建请求不能发出去**（不然就起了一个孤儿 shell）✓
+    proc.emitMessage({ t: 'ready', ok: true })
+    const creates = proc.sent.filter((r) => (r as { t: string }).t === 'create')
+    expect(creates, '撤掉的创建请求不能发出去').toHaveLength(0)
   })
 
   it('宿主崩了 ⇒ `ensureStarted()` 能再起一个（别让后面所有终端都退回主进程）', () => {

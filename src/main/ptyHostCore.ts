@@ -127,6 +127,18 @@ export function spawnWithNodePty(spec: PtyHostSpec): PtySession {
 export class PtyHostCore {
   /** 活着的会话（id → 会话）。 */
   private readonly sessions = new Map<number, PtySession>()
+  /**
+   * **在「起会话」到达之前就被杀掉的 id**。
+   *
+   * ⚠️⚠️ **为什么需要它** ——
+   *   `kill` 消息比 `create` 先到是很正常的（主进程那边「创建请求先攒着、
+   *   ready 之后才发」⇒ 用户在等的期间把终端关了 ⇒ kill 先到）⇒
+   *   而这时候 `sessions.get(id)` 是 **undefined** ⇒ **kill 是个空操作** ⇒
+   *   ⇒ 随后 `create` 到达 ⇒ **shell 起来了，没人管** ✗✗（孤儿 shell）
+   *
+   * ⇒ 记一笔 ⇒ `create` 到达时**直接杀掉刚起来的那个** ✓
+   */
+  private readonly killedBeforeCreate = new Set<number>()
   /** 事件订阅者。 */
   private readonly listeners = new Set<(e: PtyHostEvent) => void>()
 
@@ -154,6 +166,17 @@ export class PtyHostCore {
         this.sessions.get(req.id)?.resize(req.cols, req.rows)
         break
       case 'kill':
+        /*
+          ⚠️⚠️ **会话还没起来 ⇒ kill 是个空操作** ——
+          「创建请求先攒着、ready 之后才发」⇒ 用户在等的期间把终端关了
+          ⇒ kill 先到 ⇒ `sessions.get(id)` 是 undefined ⇒ **什么也没杀**
+          ⇒ 随后 create 到达 ⇒ **shell 起来了，没人管** ✗✗（孤儿 shell）
+          ⇒ ⇒ 记一笔 ⇒ create 到达时直接杀掉刚起来的那个 ✓
+        */
+        if (!this.sessions.has(req.id)) {
+          this.killedBeforeCreate.add(req.id)
+          return
+        }
         void this.sessions.get(req.id)?.kill()
         break
     }
@@ -170,6 +193,11 @@ export class PtyHostCore {
       })
       this.sessions.set(id, session)
       this.emit({ t: 'created', id })
+      // ⚠️⚠️ **这个会话在起来之前就被杀掉了 ⇒ 立刻杀掉** ——
+      //   不杀 ⇒ **一个没人管的孤儿 shell**（用户看不见，但一直占着进程）✗
+      if (this.killedBeforeCreate.delete(id)) {
+        void session.kill()
+      }
     } catch (err) {
       this.emit({ t: 'error', id, error: err instanceof Error ? err.message : String(err) })
     }

@@ -429,7 +429,8 @@ export function printExpr(expr: Expr): string {
     case 'slice_lit':
       return `&${printExpr(expr.array)}`
     case 'slice_range':
-      return `${printOperand(expr.base, P_PRIMARY)}[${printExpr(expr.rangeStart)}..${expr.rangeEnd ? printExpr(expr.rangeEnd) : ''}]`
+      // ⚠️ **上界一定有** —— JHYY 没有开区间（编译器拒绝 `a[1..]`）✓
+      return `${printOperand(expr.base, P_PRIMARY)}[${printExpr(expr.rangeStart)}..${printExpr(expr.rangeEnd)}]`
     case 'struct_lit': {
       const args = expr.typeArgs ? printTypeArgs(expr.typeArgs) : ''
       return `${expr.typeName}${args} { ${expr.fields.map((f) => `${f.name}: ${printExpr(f.value)}`).join(', ')} }`

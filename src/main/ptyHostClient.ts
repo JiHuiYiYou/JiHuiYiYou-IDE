@@ -96,7 +96,11 @@ class HostPtySession implements PtySession {
   async kill(): Promise<void> {
     if (this.exited) return
     this.exited = true
-    this.host.send({ t: 'kill', id: this.id })
+    // ⚠️ **走宿主那边的 `killSession`** —— 它会把「还没发出去的创建请求」
+    //    撤掉 ⇒ **不会起一个没人管的孤儿 shell** ✓
+    //    （直接 `send({t:'kill'})` 的话，那个 id 宿主还不认识 ⇒ 空操作 ⇒
+    //    攒着的创建请求后来照样发出去 ⇒ 孤儿 shell ✗）
+    this.host.killSession(this.id)
   }
 
   /** 宿主进程那边来了一个事件。 */
@@ -267,6 +271,9 @@ export class PtyHost {
       return
     }
     session.handle(ev)
+    // ⚠️ **会话退了 ⇒ 从表里拿掉** —— 不拿的话这张表只增不减
+    //   （用户开/关几百个终端 ⇒ 几百个僵尸条目）⇒ 慢慢漏内存 ✗
+    if (ev.t === 'exit') this.sessions.delete(ev.id)
   }
 
   /** 发一个请求给宿主进程。 */
@@ -327,6 +334,29 @@ export class PtyHost {
     if (this.pendingCreates.length === 0) return
     const pending = this.pendingCreates.splice(0, this.pendingCreates.length)
     for (const p of pending) this.send({ t: 'create', id: p.id, spec: p.spec })
+  }
+
+  /**
+   * **关掉一个会话**。
+   *
+   * ⚠️⚠️ **「还没发出去的「起会话」请求」要撤掉** ——
+   *   宿主还没 ready 时，创建请求是**先攒着**的（`pendingCreates`）⇒
+   *   这时候 `kill` 消息发过去，宿主**压根不认识这个 id** ⇒ 是个空操作 ⇒
+   *   而攒着的创建请求**后来照样被发出去** ⇒ **shell 起来了，没人管** ✗✗
+   *   （孤儿 shell：用户看不见，但一直占着进程）
+   *
+   * ⇒ ⇒ 两条路都堵上：
+   *   ① **撤掉**那个攒着的请求（压根不起）✓
+   *   ② 万一请求已经发出去了 ⇒ 宿主那边记着「这个 id 杀过」⇒
+   *      起完立刻杀掉 ✓（`PtyHostCore` 负责那条）
+   */
+  killSession(id: number): void {
+    const idx = this.pendingCreates.findIndex((p) => p.id === id)
+    if (idx >= 0) this.pendingCreates.splice(idx, 1)
+    // ⚠️ **别在这里把会话从表里删掉** —— 宿主那边 kill 完会报「退出」
+    //   ⇒ 那个事件要**送达**（渲染进程靠它清掉终端的 run 状态）⇒
+    //   提前删了 ⇒ 事件没人收 ⇒ 终端的状态永远挂着 ✗
+    this.send({ t: 'kill', id })
   }
 }
 

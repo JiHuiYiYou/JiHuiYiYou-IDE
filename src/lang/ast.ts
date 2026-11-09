@@ -236,8 +236,15 @@ export interface SliceRangeNode extends BaseNode {
   base: Expr
   /** 下界（`a[1..3]` 的 1） */
   rangeStart: Expr
-  /** 上界（`a[1..3]` 的 3）；开区间时为 null */
-  rangeEnd: Expr | null
+  /**
+   * 上界（`a[1..3]` 的 3）。
+   *
+   * ⚠️ **不能是 null** —— JHYY **没有开区间**：
+   *    真实编译器拒绝 `a[1..]`（`unexpected token ']' in expression`）⇒
+   *    以前这里声明成 `Expr | null`、打印器还给它留了「空上界」那条分支 ⇒
+   *    那个分支**只能吐出编译器拒绝的代码** ⇒ 删掉 ✓
+   */
+  rangeEnd: Expr
 }
 
 export interface StructLitNode extends BaseNode {
