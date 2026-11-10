@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
+  blockViewAllowed,
   clampClaudeContextMaxKb,
   clampLargeFileThreshold,
   DEFAULT_CLAUDE_CONTEXT_MAX_KB,
   DEFAULT_LARGE_FILE_THRESHOLD,
   formatBytes,
   isLargeFile,
+  MAX_BLOCK_VIEW_BYTES,
   MAX_CLAUDE_CONTEXT_MAX_KB,
   MAX_LARGE_FILE_THRESHOLD,
   MIN_CLAUDE_CONTEXT_MAX_KB,
@@ -47,6 +49,18 @@ describe('送进 Claude 的源码上限', () => {
     expect(clampClaudeContextMaxKb(999999)).toBe(MAX_CLAUDE_CONTEXT_MAX_KB)
     expect(clampClaudeContextMaxKb(Number.NaN)).toBe(DEFAULT_CLAUDE_CONTEXT_MAX_KB)
     expect(clampClaudeContextMaxKb(512)).toBe(512)
+  })
+})
+
+describe('拖块视图的硬上限', () => {
+  it('上限是 256 KB', () => {
+    expect(MAX_BLOCK_VIEW_BYTES).toBe(256 * 1024)
+  })
+
+  it('到上限还给（≤），超了就不给（>）', () => {
+    expect(blockViewAllowed(MAX_BLOCK_VIEW_BYTES)).toBe(true)
+    expect(blockViewAllowed(MAX_BLOCK_VIEW_BYTES + 1)).toBe(false)
+    expect(blockViewAllowed(0)).toBe(true)
   })
 })
 

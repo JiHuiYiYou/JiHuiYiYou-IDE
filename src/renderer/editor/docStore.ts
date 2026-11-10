@@ -96,6 +96,9 @@ export class DocStore {
    * ⚠️ **不进撤销历史** —— 用户没改过这个文件 ⇒ 「撤销」不该把它变回去 ✓
    * ⚠️ **保留扩展** —— 用 `state.update()` 而不是重建 `EditorState` ⇒
    *   ⇒ 「文档变了」那个回调还在 ✓（重建的话回调就没了 ⇒ 之后打字收不到通知）
+   * ⚠️ **版本号要 +1** —— 内容变了 ⇒ 块视图**过期了** ⇒
+   *   ⇒ 不 +1 的话 `blocksStale` 说的是「没过期」⇒
+   *   ⇒ 切到块视图时**不会重建** ⇒ 块视图显示的是**旧内容** ✗✗
    */
   replaceDoc(id: string, text: string): void {
     const e = this.entries.get(id)
@@ -104,6 +107,7 @@ export class DocStore {
       changes: { from: 0, to: e.state.doc.length, insert: text },
       annotations: Transaction.addToHistory.of(false),
     }).state
+    e.version += 1
   }
 
   /** 磁盘路径（未命名的新文件是 null）—— O(1)。 */

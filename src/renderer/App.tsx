@@ -8,9 +8,11 @@ import CodePane, { type CodePaneHandle } from './panes/CodePane'
 import { createEditorState, isHistoryJump } from './editor/codemirror'
 import { DocStore } from './editor/docStore'
 import {
+  blockViewAllowed,
   formatBytes,
   isLargeFile,
   LARGE_FILE_DISABLED_FEATURES,
+  MAX_BLOCK_VIEW_BYTES,
 } from './editor/largeFile'
 import type { OutputLine } from './sync/output'
 import { createCommands, createMenus, type CommandContext } from './commands/registry'
@@ -599,6 +601,9 @@ export default function App() {
     (id: string) => {
       // ⚠️ **大文件不建块树** —— 兜底（`showBlocks` 已经拦了一道）✓
       if (docStore.isLarge(id)) return
+      // ⚠️ **超出块视图硬上限的也不建** —— 同样是兜底 ✓
+      const file = filesRef.current.find((f) => f.id === id)
+      if (!blockViewAllowed(file?.bytes ?? 0)) return
       const source = docStore.text(id)
       const { trees, parseErrors } = sourceToBlocks(source)
       updateFile(id, { blocks: trees })
@@ -631,9 +636,17 @@ export default function App() {
   const applyDiskContent = useCallback(
     (id: string, raw: string) => {
       const content = normalizeEol(raw)
-      if (id === activeIdRef.current) {
+      /*
+        ⚠️ **问一句「视图现在显示的是不是这个文件」** ——
+          切标签是「先改 `activeId`（render 时）→ 再由 effect 换视图」⇒
+          ⇒ 中间有一个窗口，视图还显示着**上一个**文件 ⇒
+          ⇒ 这时候往视图里写内容 ⇒ **写错文件了** ✗✗
+          ⇒ ⇒ 显示着 ⇒ 走编辑器（屏幕立刻刷新，撤销历史也不乱）；
+          ⇒ 不显示着 ⇒ 直接换掉仓库里的状态（切过去的时候会带上）✓
+      */
+      if (codeRef.current?.isShowing(id)) {
         // ⚠️ **不进撤销历史** —— 这不是用户的编辑（`addToHistory: false`）✓
-        codeRef.current?.setDoc(content)
+        codeRef.current.setDoc(content)
       } else {
         docStore.replaceDoc(id, content)
       }
@@ -779,8 +792,23 @@ export default function App() {
       setStatus(undefined)
       setExternalChange(null)
       // 正在块视图里切文件 ⇒ 那个文件的块可能是旧的，得按新源码重建
-      if (centerViewRef.current === 'blocks' && docStore.blocksStale(id)) {
-        rebuildBlocks(id)
+      if (centerViewRef.current === 'blocks') {
+        const file = filesRef.current.find((f) => f.id === id)
+        const bytes = file?.bytes ?? 0
+        /*
+          ⚠️ **新文件不适合块视图 ⇒ 回文本视图** ——
+            否则块视图会显示**上一个文件**的块（配着新文件的名字）⇒ 骗人 ✗
+        */
+        if (!blockViewAllowed(bytes)) {
+          setCenterView('code')
+          setStatus({
+            text: `这个文件对拖块视图来说太大了（${formatBytes(bytes)}）—— 已切回文本视图`,
+            kind: 'bad',
+            tag: 'large-file',
+          })
+          return
+        }
+        if (docStore.blocksStale(id)) rebuildBlocks(id)
       }
     },
     [docStore, rebuildBlocks],
@@ -895,15 +923,30 @@ export default function App() {
   const showBlocks = useCallback(() => {
     const id = activeIdRef.current
     if (!id) return
+    const file = filesRef.current.find((f) => f.id === id)
+    const bytes = file?.bytes ?? 0
     /*
       ⚠️⚠️ **大文件模式 ⇒ 不给拖块视图** ——
         解析一份几 MB 的源码 + 反编译成几千个块 ⇒ Blockly 直接趴窝 ✗
         ⇒ ⇒ 明确告诉用户为什么没有（别让人以为是 IDE 坏了）✓
     */
     if (docStore.isLarge(id)) {
-      const file = filesRef.current.find((f) => f.id === id)
       setStatus({
-        text: `这个文件太大（${formatBytes(file?.bytes ?? 0)}），拖块视图不处理它 —— 已关掉：${LARGE_FILE_DISABLED_FEATURES.join('、')}`,
+        text: `这个文件太大（${formatBytes(bytes)}），拖块视图不处理它 —— 已关掉：${LARGE_FILE_DISABLED_FEATURES.join('、')}`,
+        kind: 'bad',
+        tag: 'large-file',
+      })
+      return
+    }
+    /*
+      ⚠️ **块视图有自己的硬上限** ——
+        每改一次块都要走 4 趟全文件 ⇒ 拖一个块的时候每个鼠标移动都触发一次 ⇒
+        ⇒ 185 KB 的文件一次就要 100–250 ms ⇒ **拖起来是幻灯片** ✗✗
+        ⇒ ⇒ 超过上限就不给块视图（拖块是给初学者/小程序的 ⇒ 够用了）✓
+    */
+    if (!blockViewAllowed(bytes)) {
+      setStatus({
+        text: `这个文件对拖块视图来说太大了（${formatBytes(bytes)}）—— 块视图最多处理 ${formatBytes(MAX_BLOCK_VIEW_BYTES)} 以内的文件`,
         kind: 'bad',
         tag: 'large-file',
       })

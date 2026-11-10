@@ -57,6 +57,28 @@ export const MIN_CLAUDE_CONTEXT_MAX_KB = 16
 /** Claude 上下文上限（KB）。 */
 export const MAX_CLAUDE_CONTEXT_MAX_KB = 4096
 
+/**
+ * **拖块视图的硬上限**（字节）。
+ *
+ * ⚠️ **为什么块视图要单独一个上限** ——
+ *   块视图**每改一次块**都要走一遍全文件：读整个工作区 → 反编译 →
+ *   打印 → **再解析一遍当前源码**（判「这次回写会不会改坏代码」）→
+ *   再算一次 diff ⇒ **4 趟 O(n)** ⇒
+ *   ⇒ 而拖一个块的过程中**每个鼠标移动都触发一次** ⇒
+ *   ⇒ 实测：185 KB 的文件 ⇒ 一次 ~100–250 ms ⇒ **拖起来是幻灯片** ✗✗
+ *   ⇒ ⇒ 所以块视图只给**小文件**用 ⇒ 上限 **256 KB**（≈ 6000 行）✓
+ *   ⇒ ⇒ 拖块是给初学者/小程序的 ⇒ 6000 行绰绰有余 ✓
+ *
+ * ⚠️ **这是「每功能硬上限」那一层** —— 全局阈值管「大文件模式」，
+ *   每个功能还有自己的上限 ⇒ 各管各的 ✓
+ */
+export const MAX_BLOCK_VIEW_BYTES = 256 * 1024
+
+/** 这个文件能不能用拖块视图。 */
+export function blockViewAllowed(bytes: number): boolean {
+  return bytes <= MAX_BLOCK_VIEW_BYTES
+}
+
 /** 这个文件算不算「大文件」。 */
 export function isLargeFile(bytes: number, threshold: number): boolean {
   return bytes >= threshold

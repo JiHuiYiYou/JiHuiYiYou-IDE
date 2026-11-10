@@ -218,6 +218,23 @@ describe('文档仓库 —— 整份换掉内容', () => {
     expect(store.text('a')).toBe('new\n')
     view.destroy()
   })
+
+  /*
+    ⚠️⚠️ **版本号必须 +1** ——
+      内容变了 ⇒ 块视图**过期了** ⇒
+      ⇒ 不 +1 的话 `blocksStale` 说「没过期」⇒
+      ⇒ 切到块视图时**不会重建** ⇒ **块视图显示的是旧内容** ✗✗
+      （这个洞是在自查时发现的 —— 「重新加载磁盘上的文件」那条路）
+  */
+  it('换内容 ⇒ 版本号 +1（块视图要知道「我过期了」）', () => {
+    const store = new DocStore()
+    const s0 = createEditorState('a\n', {})
+    store.open('a', s0, 'a\n', false, 'a.jhyy')
+    store.setBlocksVersion('a', store.version('a'))
+    expect(store.blocksStale('a')).toBe(false)
+    store.replaceDoc('a', 'new\n')
+    expect(store.blocksStale('a')).toBe(true)
+  })
 })
 
 describe('文档仓库 —— 块视图的版本号', () => {

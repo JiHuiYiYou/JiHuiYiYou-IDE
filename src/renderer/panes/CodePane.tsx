@@ -50,6 +50,16 @@ export interface CodePaneHandle {
   replaceDoc(text: string): void
   /** 把整个文档换成另一段，**不进撤销历史**（磁盘上被改了 ⇒ 重新加载） */
   setDoc(text: string): void
+  /**
+   * **视图现在显示的是不是这个文件**？
+   *
+   * ⚠️ **为什么需要它** ——
+   *   切标签是「先 `setActiveId`（render 时更新）→ 再由 effect 换视图」⇒
+   *   ⇒ **中间有一个窗口**：视图还显示着**上一个**文件 ⇒
+   *   ⇒ 这时候往视图里写内容 ⇒ **写错文件了** ✗✗
+   *   ⇒ ⇒ 用它问一句「你现在显示的是这个文件吗」✓
+   */
+  isShowing(fileId: string): boolean
 }
 
 /**
@@ -77,6 +87,14 @@ export default function CodePane({
   diagnosticsRef.current = diagnostics
   /** 上一次显示的是哪个文件（切走时要记它的滚动位置） */
   const prevIdRef = useRef<string | null>(null)
+  /**
+   * **视图现在显示的是哪个文件** ——
+   *
+   * ⚠️ **在 effect 里更新**（不是 render 时）⇒
+   * ⇒ 它代表的是「**视图真的换了**」的时刻 ⇒
+   * ⇒ 切标签的那个窗口里，它还是**旧文件** ⇒ 正好用来挡住写错文件 ✓
+   */
+  const shownIdRef = useRef<string | null>(null)
   /** 每个文件的滚动位置（VS Code：切回来还在原处） */
   const scrollMem = useRef(new Map<string, number>())
 
@@ -141,6 +159,9 @@ export default function CodePane({
     // ⚠️ **布局还没量完的时候设 scrollTop 会被吃掉** ⇒ 再补一次（下一帧）✓
     requestAnimationFrame(restore)
     prevIdRef.current = fileId
+    // ⚠️ **只有「真的换到那个文件了」才记** ——
+    //   仓库里没有这个文件 ⇒ 视图显示的是空的 ⇒ 不该声称「显示着它」✓
+    shownIdRef.current = next ? fileId : null
     // 切过去之后，诊断要重新画一遍（lint 状态随 state 换了）
     forceLinting(view)
   }, [fileId, store])
@@ -227,6 +248,9 @@ export default function CodePane({
           changes: { from: 0, to: view.state.doc.length, insert: text },
           annotations: Transaction.addToHistory.of(false),
         })
+      },
+      isShowing(fileId) {
+        return shownIdRef.current === fileId
       },
     }),
     [],
