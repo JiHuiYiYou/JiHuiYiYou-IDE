@@ -69,6 +69,16 @@ const EMPTY_BLOCKS: BlockTree[] = []
 const NEW_FILE_BYTES = new TextEncoder().encode(NEW_FILE_TEMPLATE).length
 
 /**
+ * **一段文本的字节数**（UTF-8）。
+ *
+ * ⚠️ **要字节数，不是字符数** —— 中文一个字符 3 个字节 ⇒ 差三倍 ⇒
+ *   拿字符数当字节数 ⇒ 「大文件」判不准 ⇒ 后台检查还在编一个很大的文件 ✗
+ */
+function byteLengthOf(text: string): number {
+  return new TextEncoder().encode(text).length
+}
+
+/**
  * 输出面板最多留多少行。
  *
  * ⚠️ 必须有上限 —— 程序疯狂打印时（`while true { printf(...) }`）
@@ -133,6 +143,13 @@ interface EditorFile {
    *   ⇒ 主进程读文件时顺手算好（`Buffer.byteLength`，不复制内容）✓
    */
   bytes: number
+  /**
+   * 上次算大小时的**字符数** —— 用来判断「要不要重算字节数」。
+   *
+   * ⚠️ **O(1)**（`doc.length`）⇒ 每次按键都能白拿 ⇒
+   *   字节数是 O(n) ⇒ 只在「字符数变了」时才重算 ✓
+   */
+  charCount: number
   /** 这个文件是不是进了「大文件模式」 */
   large: boolean
 }
@@ -364,7 +381,16 @@ export default function App() {
     if (docStore.isLarge(id)) return undefined
     const maxBytes = settingsRef.current.claudeContextMaxKb * 1024
     const s = docStore.text(id)
+    /*
+      ⚠️⚠️ **上限是「字节」，`s.length` 是「字符」** ——
+        中文一个字符 3 个字节 ⇒ 差三倍 ⇒
+        ⇒ 10 万字的中文文件（300 KB）会**冒充**成 100 KB ⇒
+        ⇒ 塞进系统提示 ⇒ **token 爆炸** ✗（这个上限就是为了防这个）
+        ⇒ ⇒ 字节数 ≥ 字符数 ⇒ 字符数超了 ⇒ 肯定超 ✓（先挡掉大部分）
+        ⇒ ⇒ 字符数没过、但可能是中文 ⇒ **精确算一次字节数** ✓
+    */
     if (s.length > maxBytes) return undefined
+    if (byteLengthOf(s) > maxBytes) return undefined
     return s
   }, [docStore])
 
@@ -475,7 +501,13 @@ export default function App() {
       //   ⇒ 切到块视图时才解析（那时候用户本来就在等）✓
       const large = isLargeFile(opened.bytes, settingsRef.current.largeFileThreshold)
       docStore.open(id, makeEditorState(id, content), content, large, opened.path)
-      setFiles([
+      /*
+        ⚠️ **要「追加」而不是「整个替换」** ——
+          `file.initial()` 是异步的 ⇒ 用户可能已经打开别的文件了 ⇒
+          ⇒ 整个替换 ⇒ **用户的标签凭空消失**（而它的仓库条目还留着）✗
+      */
+      setFiles((prev) => [
+        ...prev,
         {
           id,
           path: opened.path,
@@ -484,11 +516,12 @@ export default function App() {
           blocks: EMPTY_BLOCKS,
           eol,
           bytes: opened.bytes,
+          charCount: opened.content.length,
           large,
         },
       ])
       setActiveId(id)
-      setHistory({ stack: [id], index: 0 })
+      setHistory((h) => ({ stack: [...h.stack, id], index: h.stack.length }))
       void window.jhyyIde.file.watch(dirnameOf(opened.path))
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -568,6 +601,40 @@ export default function App() {
   const diagInFlight = useRef(false)
 
   /**
+   * **重算一个文件的大小，并更新「是不是大文件」**。
+   *
+   * ⚠️⚠️ **大小是会变的** —— 用户粘贴一大段 ⇒ 文件从 900 KB 变成 1.1 MB ⇒
+   *   ⇒ 而「是不是大文件」是**打开时**算的 ⇒ 不重算的话：
+   *   - 标签上不显示「**大**」（用户不知道功能被关了）
+   *   - **后台检查还在编整个文件** ⇒ 每 600 ms 空闲一次 ⇒
+   *     **机器被压满 ⇒ IDE 卡死**（用户报过的那种卡死）✗✗
+   *   - 拖块视图的硬上限也用这个数 ⇒ 超了还往 Blockly 里塞 ⇒ 拖起来是幻灯片 ✗
+   *
+   * ⚠️ **什么时候算** —— 「停手 600 ms 之后」算一次（O(n)）⇒
+   *   **不是每次按键都算**（那才是白折腾）✓
+   *
+   * ⚠️ **先用字符数挡一下** —— 字节数 ≥ 字符数 ⇒
+   *   ⇒ 字符数已经超了 ⇒ 肯定是大文件 ⇒ **不用算精确的** ✓
+   *   ⇒ 字符数没过、但可能是中文 ⇒ 才精确算一次 ✓
+   */
+  const refreshSize = useCallback(
+    (fileId: string) => {
+      const chars = docStore.size(fileId)
+      const threshold = settingsRef.current.largeFileThreshold
+      const file = filesRef.current.find((f) => f.id === fileId)
+      if (!file) return
+      // ⚠️ **已经算过、而且字符数没变 ⇒ 不用重算**（省掉 O(n)）✓
+      if (file.bytes > 0 && file.charCount === chars) return
+      const bytes =
+        chars > threshold ? chars * 3 : byteLengthOf(docStore.text(fileId))
+      const large = isLargeFile(bytes, threshold)
+      docStore.setLarge(fileId, large)
+      updateFile(fileId, { bytes, large, charCount: chars })
+    },
+    [docStore, updateFile],
+  )
+
+  /**
    * 排一次后台实时诊断。
    *
    * ⚠️ **不再收「源码」参数** —— 以前是 `scheduleDiagnostics(source)`，
@@ -582,16 +649,23 @@ export default function App() {
     (fileId: string) => {
       const path = docStore.path(fileId)
       if (!path) return
-      /*
-        ⚠️ **大文件模式：不做后台检查** ——
-        后台检查 = 「把整份源码写进临时文件 + 起一个 `jhyy.exe` 编全文件」⇒
-        ⇒ 大文件上跑一次要好几秒 ⇒ 而且**每 600 ms 空闲就一次** ⇒
-        ⇒ 机器被压满 ⇒ 「IDE 卡死」✗
-        ⇒ ⇒ 大文件直接不做（用户可以点「检查」手动跑）✓
-      */
-      if (docStore.isLarge(fileId)) return
       if (diagTimer.current) clearTimeout(diagTimer.current)
       diagTimer.current = setTimeout(() => {
+        /*
+          ⚠️⚠️ **大小会变**（用户粘贴了一大段）⇒ 得**重算** ——
+            「是不是大文件」是**打开时**算的 ⇒ 用户把它撑大了也不知道 ⇒
+            ⇒ 后台检查还在编一个已经很大的文件 ⇒ **机器被压满 ⇒ IDE 卡死** ✗✗
+            ⇒ ⇒ **停手 600 ms 之后重算一次**（O(n)，但只在「停下来」时算）✓
+          */
+        refreshSize(fileId)
+        /*
+          ⚠️ **大文件模式：不做后台检查** ——
+          后台检查 = 「把整份源码写进临时文件 + 起一个 `jhyy.exe` 编全文件」⇒
+          ⇒ 大文件上跑一次要好几秒 ⇒ 而且**每 600 ms 空闲就一次** ⇒
+          ⇒ 机器被压满 ⇒ 「IDE 卡死」✗
+          ⇒ ⇒ 大文件直接不做（用户可以点「检查」手动跑）✓
+        */
+        if (docStore.isLarge(fileId)) return
         // ⚠️ **别让后台检查堆积** —— 用户狂打字的时候会起一堆编译器进程，
         // CPU 被吃光（用户报过「整个 IDE 卡死」）。上一个还在跑就跳过这次。
         if (diagInFlight.current) return
@@ -628,7 +702,7 @@ export default function App() {
             diagInFlight.current = false
           })
     }, 600)
-  }, [])
+  }, [refreshSize])
 
   /**
    * **给一个文件建编辑器状态**（文本 + 扩展 + 回调）。
@@ -739,7 +813,13 @@ export default function App() {
       const size = bytes ?? content.length
       const large = isLargeFile(size, settingsRef.current.largeFileThreshold)
       docStore.setLarge(id, large)
-      updateFile(id, { eol: detectEol(raw), dirty: false, bytes: size, large })
+      updateFile(id, {
+        eol: detectEol(raw),
+        dirty: false,
+        bytes: size,
+        large,
+        charCount: content.length,
+      })
       /*
         ⚠️⚠️ **块树也得重建** ——
           内容变了 ⇒ 画布上那些块是**旧的** ⇒
@@ -748,7 +828,7 @@ export default function App() {
         ⇒ ⇒ 正在看块视图 ⇒ **立刻重建**；
         ⇒ ⇒ 不在看 ⇒ 把块树**清掉**（下次进块视图会重建）✓
       */
-      if (centerViewRef.current === 'blocks' && activeIdRef.current === id) {
+      if (centerViewRef.current === 'blocks' && codeRef.current?.isShowing(id)) {
         rebuildBlocks(id)
       } else {
         updateFile(id, { blocks: EMPTY_BLOCKS })
@@ -771,17 +851,28 @@ export default function App() {
         // 本地有未保存的改动 ⇒ 会被覆盖（用户明确说了「直接改文件就好」），
         // 但要说一声，别让人以为自己的编辑还在。
         const hadUnsaved = docStore.isDirty(file.id)
-        void window.jhyyIde.file.read(e.path).then(({ content: raw, bytes }) => {
-          applyDiskContent(file.id, raw, bytes)
-          if (hadUnsaved) {
-            // ⚠️ **这是「数据丢了」** —— 不是程序行为 ⇒ 值得说一声 ✓
+        void window.jhyyIde.file
+          .read(e.path)
+          .then(({ content: raw, bytes }) => {
+            applyDiskContent(file.id, raw, bytes)
+            if (hadUnsaved) {
+              // ⚠️ **这是「数据丢了」** —— 不是程序行为 ⇒ 值得说一声 ✓
+              setStatus({
+                text: `Claude 改了 ${nameOf(e.path)}，这个文件里未保存的修改被覆盖了`,
+                kind: 'bad',
+                tag: 'claude-overwrite',
+              })
+            }
+          })
+          .catch((err: unknown) => {
+            // ⚠️ **别让异常逃出去** —— 文件可能在这中间被删了/改名了 ⇒
+            //   ⇒ 用户什么都不知道 ⇒ 而且提示条还挂着 ✗
             setStatus({
-              text: `Claude 改了 ${nameOf(e.path)}，这个文件里未保存的修改被覆盖了`,
+              text: `读不了 ${nameOf(e.path)}：${err instanceof Error ? err.message : String(err)}`,
               kind: 'bad',
-              tag: 'claude-overwrite',
+              tag: 'file',
             })
-          }
-        })
+          })
         return
       }
       setExternalChange((prev) => (prev === e.path ? prev : e.path))
@@ -801,10 +892,24 @@ export default function App() {
   const reloadFromDisk = useCallback(async () => {
     if (!externalChange) return
     const path = externalChange
-    const { content: raw, bytes } = await window.jhyyIde.file.read(path)
-    const file = filesRef.current.find((f) => f.path === path)
-    if (file) applyDiskContent(file.id, raw, bytes)
-    setExternalChange(null)
+    try {
+      const { content: raw, bytes } = await window.jhyyIde.file.read(path)
+      const file = filesRef.current.find((f) => f.path === path)
+      if (file) applyDiskContent(file.id, raw, bytes)
+      setExternalChange(null)
+    } catch (err) {
+      /*
+        ⚠️⚠️ **必须有 catch** ——
+          文件可能在这中间被删了 / 改名了 ⇒ 读不了 ⇒
+          ⇒ 异常逃出去 ⇒ **用户什么都不知道** ⇒ 而且提示条还挂着 ✗
+      */
+      setStatus({
+        text: `读不了 ${nameOf(path)}：${err instanceof Error ? err.message : String(err)}`,
+        kind: 'bad',
+        tag: 'file',
+      })
+      setExternalChange(null)
+    }
   }, [applyDiskContent, externalChange])
 
   /** 打开（或者切到）一个文件。 */
@@ -835,6 +940,7 @@ export default function App() {
         blocks: EMPTY_BLOCKS,
         eol,
         bytes: opened.bytes,
+        charCount: opened.content.length,
         large,
       },
     ])
@@ -875,6 +981,7 @@ export default function App() {
         blocks: EMPTY_BLOCKS,
         eol: '\n',
         bytes: NEW_FILE_BYTES,
+        charCount: NEW_FILE_TEMPLATE.length,
         large: false,
       },
     ])
@@ -951,7 +1058,23 @@ export default function App() {
     */
     docStore.setPath(id, path)
     docStore.markSaved(id, text)
-    updateFile(id, { path, name: nameOf(path), dirty: false })
+    const dirtyNow = docStore.isDirty(id)
+    updateFile(id, { path, name: nameOf(path), dirty: dirtyNow })
+    /*
+      ⚠️ **另存到一个「已经开着」的文件上 ⇒ 要说一声** ——
+        两个标签指向同一个路径 ⇒ 存哪个都会覆盖另一个 ⇒
+        ⇒ 磁盘上被改了的时候，watcher 只会更新**其中一个** ⇒
+        ⇒ 另一个标签的内容就**永远是旧的** ⇒ 看着像坏了 ✗
+        ⇒ ⇒ 明确告诉用户「那个文件已经开着了」✓
+    */
+    const other = filesRef.current.find((f) => f.id !== id && f.path === path)
+    if (other) {
+      setStatus({
+        text: `${nameOf(path)} 已经在一个标签里打开了 —— 两个标签指向同一个文件，存盘会互相覆盖`,
+        kind: 'bad',
+        tag: 'file',
+      })
+    }
     void window.jhyyIde.file.watch(dirnameOf(path))
   }, [docStore, updateFile])
 
@@ -968,8 +1091,16 @@ export default function App() {
     // 不还原的话每保存一次就把用户的 CRLF 文件改成 LF。
     const text = docStore.text(id)
     await window.jhyyIde.file.write(file.path, toEol(text, file.eol))
+    /*
+      ⚠️⚠️ **写盘期间用户可能又改了** ——
+        写盘是异步的 ⇒ 这期间用户敲了几个字 ⇒
+        ⇒ 无脑清脏标记 ⇒ 标签上的小圆点没了 ⇒ **用户以为存好了，其实没存** ✗✗
+        ⇒ ⇒ `markSaved` 会**按「现在的内容」重新算一次** ✓
+        ⇒ ⇒ React 那边也按**仓库里的**脏标记来更新（不是无脑 false）✓
+    */
     docStore.markSaved(id, text)
-    if (file.dirty) updateFile(id, { dirty: false })
+    const dirtyNow = docStore.isDirty(id)
+    if (dirtyNow !== file.dirty) updateFile(id, { dirty: dirtyNow })
   }, [docStore, saveAs, updateFile])
 
   /** 块视图改了 → 重新生成源码 → 写回文本视图。 */
@@ -1405,6 +1536,14 @@ export default function App() {
         setHistory((h) => ({ ...h, index: target }))
         applyDiskContent(id, raw, bytes)
         setActiveId(id)
+        /*
+          ⚠️⚠️ **在块视图里 ⇒ 目标文件的块要重建** ——
+            `applyDiskContent` 把**别的**文件的块清掉了（它只重建「当前显示着」的）
+            ⇒ ⇒ 这里激活的就是那个被清掉的文件 ⇒
+            ⇒ 不重建的话**画布一直是空的**，而且没人会重建它
+            （`goToHistory` 绕过了 `switchFile`）✗✗
+        */
+        if (centerViewRef.current === 'blocks') rebuildBlocks(id)
         void window.jhyyIde.file.watch(dirnameOf(file.path))
       } catch (err) {
         // ⚠️ **打不开文件** —— 这是「出错」⇒ 值得说一声 ✓
@@ -1415,7 +1554,7 @@ export default function App() {
         })
       }
     },
-    [applyDiskContent, history],
+    [applyDiskContent, history, rebuildBlocks],
   )
 
   // ── 命令表 ──────────────────────────────────────────────────

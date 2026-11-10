@@ -38,22 +38,28 @@ export function toEol(text: string, eol: Eol): string {
 }
 
 /**
- * 把编辑器的文档替换成新内容，同时**尽量保住光标位置**。
+ * **算「改成 target」需要动哪一段** —— 最长公共前缀 + 最长公共后缀。
  *
- * 块视图改动会重写整份源码，如果直接 `setDoc`，光标会跳到开头 —— 打字的时候
- * 体验很差。所以这里用「最长公共前缀 + 最长公共后缀」求出真正的改动区间，
- * 只替换那一段，并把光标映射过去。
+ * ⚠️ **为什么要算「最小改动区间」而不是整段替换** ——
+ *   CodeMirror 的 `history` 扩展在处理一次改动时，会把**已有的每一条历史事件**
+ *   都**映射**到新的坐标上（`addMapping`）⇒
+ *   ⇒ 如果这次改动是「整段替换」，每一条历史事件都会被映射成**空区间** ⇒
+ *   ⇒ **整个撤销栈就此作废**（按 Ctrl+Z 什么都不会发生）✗✗
+ *   ⇒ ⇒ 所以只改**真正变了的那一段** ⇒ 映射得对 ⇒ 撤销还能用 ✓
  *
- * 映射规则：
- * - 光标在未变的前缀里 → 原样不动
- * - 光标在未变的后缀里 → 按长度差平移
- * - 光标在改动区间里   → 夹到改动区间的起点
+ * ⚠️ **同理：别用 `Transaction.addToHistory.of(false)` 配「整段替换」** ——
+ *   那条注解让 history 走 `addMapping` 分支 ⇒ 一样会作废整个撤销栈 ✗✗
+ *   ⇒ ⇒ 要「这次改动不进历史」，就**用小改动区间**，不要用「整段替换 + 注解」✓
+ *
+ * @param current 现在文档里的内容
+ * @param target 要改成的内容
+ * @returns 改动区间；内容一样时返回 null
  */
-export function applyTextChange(view: EditorView, newText: string): void {
-  // ⚠️ **两边都要是 LF** —— 见 `normalizeEol` 的说明（CRLF 会让选区越界）。
-  const target = normalizeEol(newText)
-  const current = view.state.doc.toString()
-  if (current === target) return
+export function diffRange(
+  current: string,
+  target: string,
+): { from: number; to: number; insert: string } | null {
+  if (current === target) return null
 
   // 最长公共前缀
   let prefix = 0
@@ -70,9 +76,33 @@ export function applyTextChange(view: EditorView, newText: string): void {
     suffix++
   }
 
-  const from = prefix
-  const to = current.length - suffix
-  const insert = target.slice(prefix, target.length - suffix)
+  return {
+    from: prefix,
+    to: current.length - suffix,
+    insert: target.slice(prefix, target.length - suffix),
+  }
+}
+
+/**
+ * 把编辑器的文档替换成新内容，同时**尽量保住光标位置**。
+ *
+ * 块视图改动会重写整份源码，如果直接 `setDoc`，光标会跳到开头 —— 打字的时候
+ * 体验很差。所以这里用「最长公共前缀 + 最长公共后缀」求出真正的改动区间，
+ * 只替换那一段，并把光标映射过去。
+ *
+ * 映射规则：
+ * - 光标在未变的前缀里 → 原样不动
+ * - 光标在未变的后缀里 → 按长度差平移
+ * - 光标在改动区间里   → 夹到改动区间的起点
+ */
+export function applyTextChange(view: EditorView, newText: string): void {
+  // ⚠️ **两边都要是 LF** —— 见 `normalizeEol` 的说明（CRLF 会让选区越界）。
+  const target = normalizeEol(newText)
+  const current = view.state.doc.toString()
+  const d = diffRange(current, target)
+  if (!d) return
+
+  const { from, to, insert } = d
   const delta = insert.length - (to - from)
 
   const mapOffset = (offset: number): number => {

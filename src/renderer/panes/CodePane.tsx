@@ -1,5 +1,5 @@
 import { forceLinting } from '@codemirror/lint'
-import { EditorState, Transaction } from '@codemirror/state'
+import { EditorState } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
 import { useEffect, useImperativeHandle, useRef, type Ref } from 'react'
 import type { Diagnostic } from '@shared/jhyy'
@@ -261,14 +261,14 @@ export default function CodePane({
         const view = viewRef.current
         if (!view) return
         /*
-          ⚠️ **不进撤销历史** ——
-          「磁盘上被改了 ⇒ 重新加载」不是用户的编辑 ⇒
-          ⇒ 用户按 Ctrl+Z 不该把它变回去 ⇒ `addToHistory: false` ✓
+          ⚠️⚠️ **别用「整段替换 + `addToHistory: false`」** ——
+          CodeMirror 的 `history` 扩展会把**已有的每一条历史事件**都映射到新坐标上 ⇒
+          ⇒ 整段替换 ⇒ 每条历史都被映射成空区间 ⇒ **整个撤销栈就此作废** ✗✗
+          ⇒ ⇒ 用户按 Ctrl+Z 什么都不会发生（永远！）⇒ **比不撤销还糟** ✗
+          ⇒ ⇒ 改成「只改真正变了的那一段」（`applyTextChange`）⇒ 撤销还能用 ✓
+          ⇒ ⇒ 而且光标位置也保住了 ✓
         */
-        view.dispatch({
-          changes: { from: 0, to: view.state.doc.length, insert: text },
-          annotations: Transaction.addToHistory.of(false),
-        })
+        applyTextChange(view, text)
       },
       isShowing(fileId) {
         return shownIdRef.current === fileId

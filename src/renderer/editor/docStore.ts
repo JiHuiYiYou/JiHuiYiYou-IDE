@@ -1,4 +1,5 @@
-import { EditorState, Transaction } from '@codemirror/state'
+import { EditorState } from '@codemirror/state'
+import { diffRange } from '../sync/caret'
 
 /**
  * **文档仓库** —— 每个打开的文件一份 `EditorState` + 一份元信息。
@@ -93,7 +94,12 @@ export class DocStore {
   /**
    * **整份换掉内容**（磁盘上被改了 ⇒ 重新加载）。
    *
-   * ⚠️ **不进撤销历史** —— 用户没改过这个文件 ⇒ 「撤销」不该把它变回去 ✓
+   * ⚠️ **只改「真正变了的那一段」** ——
+   *   CodeMirror 的 `history` 扩展会把**已有的每一条历史事件**都映射到新坐标上 ⇒
+   *   ⇒ 整段替换 ⇒ 每条历史都被映射成空区间 ⇒ **整个撤销栈作废** ✗✗
+   *   ⇒ ⇒ 用「最长公共前后缀」算出最小改动区间 ⇒ 撤销还能用 ✓
+   *   （`diffRange` 的说明在 `sync/caret.ts`）
+   *
    * ⚠️ **保留扩展** —— 用 `state.update()` 而不是重建 `EditorState` ⇒
    *   ⇒ 「文档变了」那个回调还在 ✓（重建的话回调就没了 ⇒ 之后打字收不到通知）
    * ⚠️ **版本号要 +1** —— 内容变了 ⇒ 块视图**过期了** ⇒
@@ -103,10 +109,9 @@ export class DocStore {
   replaceDoc(id: string, text: string): void {
     const e = this.entries.get(id)
     if (!e) return
-    e.state = e.state.update({
-      changes: { from: 0, to: e.state.doc.length, insert: text },
-      annotations: Transaction.addToHistory.of(false),
-    }).state
+    const d = diffRange(e.state.doc.toString(), text)
+    if (!d) return
+    e.state = e.state.update({ changes: d }).state
     e.version += 1
   }
 
@@ -202,12 +207,22 @@ export class DocStore {
     return this.entries.get(id)?.version ?? 0
   }
 
-  /** 记下「刚刚存盘」⇒ 脏标记清掉，存盘快照更新。 */
+  /**
+   * **记下「刚刚存盘」** ⇒ 存盘快照更新，脏标记**重新算一次**。
+   *
+   * ⚠️⚠️ **为什么不能直接 `dirty = false`** ——
+   *   写盘是**异步**的 ⇒ 这期间用户可能又改了 ⇒
+   *   ⇒ 无脑清掉 ⇒ 标签上的小圆点没了、窗口标题的「已改」也没了 ⇒
+   *   ⇒ **用户以为存好了，其实那段没存** ⇒ 关掉就没了 ✗✗（丢数据！）
+   *   ⇒ ⇒ 所以：**按「现在的内容」跟「刚写下去的那份」比一次** ✓
+   *   （一样 ⇒ 干净；不一样 ⇒ 还是脏的 ✓）
+   */
   markSaved(id: string, text?: string): void {
     const e = this.entries.get(id)
     if (!e) return
-    e.savedText = text ?? e.state.doc.toString()
-    e.dirty = false
+    const saved = text ?? e.state.doc.toString()
+    e.savedText = saved
+    e.dirty = e.state.doc.toString() !== saved
   }
 
   /** 块视图最后一次重建时的版本号 —— O(1)。 */

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { undo } from '@codemirror/commands'
-import { EditorState, Text } from '@codemirror/state'
+import { EditorState, Text, type Transaction } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
 import { describe, expect, it, vi } from 'vitest'
 import { createEditorState, isHistoryJump } from '../../src/renderer/editor/codemirror'
@@ -207,15 +207,14 @@ describe('文档仓库 —— 整份换掉内容', () => {
     view.destroy()
   })
 
-  it('换内容**不进撤销历史**（那不是用户的编辑）', () => {
+  it('换内容 ⇒ 仓库里那份 state 真的换了（切过去能看到新内容）', () => {
     const store = new DocStore()
     const { state } = makeFile(store, 'a', 'a\n')
     const view = makeView(state)
     store.replaceDoc('a', 'new\n')
     view.setState(store.get('a')!)
-    // ⚠️ 用户没改过这个文件 ⇒ Ctrl+Z 不该把它变回去 ✓
-    undo({ state: view.state, dispatch: (tr) => view.dispatch(tr) })
     expect(store.text('a')).toBe('new\n')
+    expect(view.state.doc.toString()).toBe('new\n')
     view.destroy()
   })
 
@@ -234,6 +233,75 @@ describe('文档仓库 —— 整份换掉内容', () => {
     expect(store.blocksStale('a')).toBe(false)
     store.replaceDoc('a', 'new\n')
     expect(store.blocksStale('a')).toBe(true)
+  })
+
+  /*
+    ⚠️⚠️⚠️ **「整段替换 + `addToHistory: false`」会把整个撤销栈作废** ——
+      CodeMirror 的 `history` 扩展在处理一次改动时，会把**已有的每一条历史事件**
+      都**映射**到新坐标上 ⇒
+      ⇒ 整段替换 ⇒ 每条历史都被映射成**空区间** ⇒
+      ⇒ **按 Ctrl+Z 什么都不会发生**（永远！）✗✗
+      ⇒ ⇒ 「重新加载磁盘上的文件」用**最小改动区间**替换 ⇒ 撤销还能用 ✓
+  */
+  it('换内容 ⇒ 撤销历史还在（撤销能撤掉这次替换）', () => {
+    const store = new DocStore()
+    const s0 = createEditorState('abc\n', {})
+    store.open('a', s0, 'abc\n', false, 'a.jhyy')
+    // 用户改了一下
+    const s1 = s0.update({ changes: { from: 3, insert: 'd' } }).state
+    store.noteChange('a', s1, false)
+    expect(store.text('a')).toBe('abcd\n')
+    expect(store.text('a')).toBe('abcd\n')
+
+    // 磁盘上的内容换了（重新加载）
+    store.replaceDoc('a', 'xyz\n')
+    expect(store.text('a')).toBe('xyz\n')
+
+    // ⚠️ **撤销还能用** ⇒ 撤销真的撤掉了东西 ✓
+    //   （⚠️ 不写死撤到哪一步 —— CodeMirror 的 history 会把 500 ms 内的改动
+    //    **并成一步** ⇒ 「用户改的」和「重新加载」可能被并成一步 ⇒
+    //    撤到的位置取决于合并策略 ⇒ 这里只断言「**撤销不是空操作**」✓）
+    let captured: Transaction | null = null
+    undo({
+      state: store.get('a')!,
+      dispatch: (tr) => {
+        captured = tr
+      },
+    })
+    expect(captured).toBeTruthy()
+    // ⚠️ **不是空操作** —— 整段替换 + `addToHistory: false` 会让整个撤销栈作废
+    //   ⇒ 撤完内容还是 'xyz\n'（什么也没撤掉）⇒ **比不撤销还糟** ✗✗
+    expect(captured!.newDoc.toString()).not.toBe('xyz\n')
+  })
+})
+
+describe('文档仓库 —— 存盘', () => {
+  /*
+    ⚠️⚠️⚠️ **写盘是异步的** ⇒ 这期间用户可能又改了 ⇒
+      ⇒ 无脑清掉脏标记 ⇒ 标签上的小圆点没了 ⇒
+      ⇒ **用户以为存好了，其实那段没存** ⇒ 关掉就没了 ✗✗（丢数据！）
+      ⇒ ⇒ `markSaved` 要**按「现在的内容」重新算一次** ✓
+  */
+  it('写盘期间用户又改了 ⇒ 脏标记不能被清掉', () => {
+    const store = new DocStore()
+    const s0 = createEditorState('abc\n', {})
+    store.open('a', s0, 'abc\n', false, 'a.jhyy')
+    // 写盘用的是这一刻的内容
+    const written = store.text('a')
+    // ⚠️ 写盘是异步的 ⇒ 这期间用户又敲了一个字
+    const s1 = s0.update({ changes: { from: 0, insert: 'x' } }).state
+    store.noteChange('a', s1, false)
+    store.markSaved('a', written)
+    // ⇒ **还是脏的**（用户没意识到自己没存）✓
+    expect(store.isDirty('a')).toBe(true)
+  })
+
+  it('没改过 ⇒ 存盘后干净了', () => {
+    const store = new DocStore()
+    const s0 = createEditorState('abc\n', {})
+    store.open('a', s0, 'abc\n', false, 'a.jhyy')
+    store.markSaved('a', store.text('a'))
+    expect(store.isDirty('a')).toBe(false)
   })
 })
 
