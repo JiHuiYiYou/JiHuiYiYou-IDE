@@ -111,7 +111,15 @@ export class DocStore {
     if (!e) return
     const d = diffRange(e.state.doc.toString(), text)
     if (!d) return
-    e.state = e.state.update({ changes: d }).state
+    /*
+      ⚠️ **要 `filter: false`** ——
+        `EditorState.update()` 默认会跑 state 的**事务过滤器**
+        （`indentOnInput()` 就是其中一个）⇒
+        ⇒ 万一过滤器把这个改动**拒了** ⇒ 内容**根本没换** ⇒
+        ⇒ 而这里**没有视图**能看出不对 ⇒ 静悄悄地失败 ✗✗
+        ⇒ ⇒ 明确跳过过滤器（这是程序化替换，不是用户输入）✓
+    */
+    e.state = e.state.update({ changes: d, filter: false }).state
     e.version += 1
   }
 
@@ -220,9 +228,11 @@ export class DocStore {
   markSaved(id: string, text?: string): void {
     const e = this.entries.get(id)
     if (!e) return
-    const saved = text ?? e.state.doc.toString()
+    // ⚠️ **只物化一次**（大文件上这是 O(n)）✓
+    const current = e.state.doc.toString()
+    const saved = text ?? current
     e.savedText = saved
-    e.dirty = e.state.doc.toString() !== saved
+    e.dirty = current !== saved
   }
 
   /** 块视图最后一次重建时的版本号 —— O(1)。 */
