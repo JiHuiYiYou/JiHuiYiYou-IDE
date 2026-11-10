@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
-import { EditorState } from '@codemirror/state'
+import { EditorSelection, EditorState } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
 import { applyTextChange, detectEol, normalizeEol, toEol } from '../../src/renderer/sync/caret'
 
@@ -38,11 +38,49 @@ describe('行尾归一', () => {
 })
 
 /** 造一个最小的 CodeMirror 视图（只要能 dispatch 就够）。 */
-function makeView(doc: string): EditorView {
+function makeView(doc: string, multi = false): EditorView {
   const host = document.createElement('div')
   document.body.appendChild(host)
-  return new EditorView({ state: EditorState.create({ doc }), parent: host })
+  return new EditorView({
+    state: EditorState.create({
+      doc,
+      // ⚠️ **多光标要显式开** —— 跟真编辑器一样（`codemirror.ts` 里有）
+      extensions: multi ? EditorState.allowMultipleSelections.of(true) : [],
+    }),
+    parent: host,
+  })
 }
+
+describe('applyTextChange —— 多光标不能被弄没了', () => {
+  it('三个光标 ⇒ 改完还是三个', () => {
+    const view = makeView('abcdef', true)
+    view.dispatch({
+      selection: EditorSelection.create([
+        EditorSelection.cursor(0),
+        EditorSelection.cursor(2),
+        EditorSelection.cursor(4),
+      ]),
+    })
+    expect(view.state.selection.ranges.length).toBe(3)
+
+    applyTextChange(view, 'abXdef')
+
+    // ⚠️ **多光标要交给 CodeMirror 自己映射** ——
+    //   直接给一个 `selection` ⇒ **别的光标全没了** ✗
+    //   （编辑器开了 `allowMultipleSelections` ⇒ 看着像编辑器坏了）✗
+    expect(view.state.selection.ranges.length).toBe(3)
+    expect(view.state.doc.toString()).toBe('abXdef')
+  })
+
+  it('单光标 ⇒ 位置按改动区间映射过去', () => {
+    const view = makeView('abcdef')
+    view.dispatch({ selection: { anchor: 5 } })
+    applyTextChange(view, 'abXdef')
+    expect(view.state.selection.ranges.length).toBe(1)
+    // ⚠️ 只有 `c` 被 `X` 换掉了（`def` 是公共后缀）⇒ 长度没变 ⇒ 光标不动 ✓
+    expect(view.state.selection.main.head).toBe(5)
+  })
+})
 
 describe('applyTextChange —— 不能让选区越界', () => {
   it('CRLF 的新内容：选区不能算到文档外面', () => {

@@ -1111,6 +1111,19 @@ npx vite-node scripts/claude-smoke.ts   # Claude 集成冒烟（会消耗 API �
   ⇒ ⇒ 「重新加载磁盘上的文件」用**最小改动区间**替换
   （`sync/caret.ts` 的 `diffRange`）⇒ 撤销还能用 ✓
   ⇒ ⇒ **也别用 `addToHistory: false` 配整段替换**（一样走 `addMapping`）✗
+  ⇒ ⇒ ⚠️ **「重新加载」本身是**可撤销**的**（有意为之）——
+    它会把**用户没保存的修改覆盖掉** ⇒ 不可撤销 ⇒ 用户**再也拿不回来** ✗✗
+    ⇒ ⇒ 可撤销 ⇒ Ctrl+Z 能把**自己的修改找回来** ✓
+- ⚠️⚠️ **给 `selection` 会把别的光标弄没了** ——
+  编辑器开了 `EditorState.allowMultipleSelections` ⇒ 用户可以有多个光标 ⇒
+  ⇒ `view.dispatch({changes, selection})` ⇒ **selection 被换成单个区间** ⇒
+  ⇒ 别的光标**全没了**（块视图回写一次 ⇒ 三个光标只剩一个）✗
+  ⇒ ⇒ **只有单光标时**才自己算并给 `selection`；多光标时**交给 CodeMirror 映射** ✓
+- ⚠️⚠️ **文件历史导航只「切标签」，不要从磁盘重读** ——
+  以前 `goToHistory` 会 `file.read(path)` 再把内容整个换掉 ⇒
+  ⇒ 那个文件里**用户没保存的修改**就这样**被覆盖了**（没提示！）✗✗
+  ⇒ ⇒ 磁盘上被改了由 watcher 管（外部改动会问用户）⇒ ⇒ 历史只管切 ✓
+  （VS Code 的历史导航就是这个意思）
 - ⚠️⚠️ **写盘是异步的 ⇒ 脏标记不能无脑清掉** ——
   写盘那几百毫秒里用户可能又敲了几个字 ⇒
   ⇒ 无脑 `dirty = false` ⇒ 标签上的小圆点没了 ⇒

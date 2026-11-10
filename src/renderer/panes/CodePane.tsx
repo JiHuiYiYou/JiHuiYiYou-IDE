@@ -261,12 +261,14 @@ export default function CodePane({
         const view = viewRef.current
         if (!view) return
         /*
-          ⚠️⚠️ **别用「整段替换 + `addToHistory: false`」** ——
-          CodeMirror 的 `history` 扩展会把**已有的每一条历史事件**都映射到新坐标上 ⇒
-          ⇒ 整段替换 ⇒ 每条历史都被映射成空区间 ⇒ **整个撤销栈就此作废** ✗✗
-          ⇒ ⇒ 用户按 Ctrl+Z 什么都不会发生（永远！）⇒ **比不撤销还糟** ✗
-          ⇒ ⇒ 改成「只改真正变了的那一段」（`applyTextChange`）⇒ 撤销还能用 ✓
-          ⇒ ⇒ 而且光标位置也保住了 ✓
+          ⚠️⚠️ **「重新加载磁盘上的内容」是**可撤销**的** —— 有意为之：
+            它会把**用户没保存的修改覆盖掉** ⇒
+            ⇒ 如果它不可撤销 ⇒ 用户**再也拿不回来**了 ✗✗
+            ⇒ ⇒ 可撤销 ⇒ Ctrl+Z 能把**自己的修改找回来** ✓
+          ⚠️ **但必须配「最小改动区间」** ——
+            整段替换 ⇒ CodeMirror 的 history 把每条历史都映射成空区间 ⇒
+            ⇒ **整个撤销栈作废** ⇒ 撤销永远没反应 ⇒ **比不撤销还糟** ✗✗
+          ⇒ ⇒ `applyTextChange` 用最小改动区间 ✓
         */
         applyTextChange(view, text)
       },

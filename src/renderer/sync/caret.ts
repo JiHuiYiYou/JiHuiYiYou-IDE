@@ -1,3 +1,4 @@
+import { Transaction } from '@codemirror/state'
 import type { EditorView } from '@codemirror/view'
 
 /**
@@ -94,8 +95,19 @@ export function diffRange(
  * - 光标在未变的前缀里 → 原样不动
  * - 光标在未变的后缀里 → 按长度差平移
  * - 光标在改动区间里   → 夹到改动区间的起点
+ *
+ * @param addToHistory 这次改动要不要进撤销历史
+ *   ⚠️ **默认要进** —— 「重新加载磁盘上的文件」也**要**可撤销 ⇒
+ *   ⇒ 因为它会把**用户没保存的修改覆盖掉** ⇒
+ *   ⇒ 不可撤销 ⇒ 用户**再也拿不回来**了 ✗✗（Ctrl+Z 能找回来 ✓）
+ *   ⚠️ **但必须配「最小改动区间」** —— 整段替换 + `addToHistory: false`
+ *   ⇒ 会把**整个撤销栈**作废（见 `diffRange` 的说明）⇒ ⇒ 撤销永远没反应 ✗✗
  */
-export function applyTextChange(view: EditorView, newText: string): void {
+export function applyTextChange(
+  view: EditorView,
+  newText: string,
+  addToHistory = true,
+): void {
   // ⚠️ **两边都要是 LF** —— 见 `normalizeEol` 的说明（CRLF 会让选区越界）。
   const target = normalizeEol(newText)
   const current = view.state.doc.toString()
@@ -117,7 +129,17 @@ export function applyTextChange(view: EditorView, newText: string): void {
 
   view.dispatch({
     changes: { from, to, insert },
-    selection: { anchor, head },
+    /*
+      ⚠️ **多光标要交给 CodeMirror 自己映射** ——
+        直接给一个 `selection` ⇒ **别的光标全没了** ✗
+        （编辑器开了 `allowMultipleSelections` ⇒ 用户可以有多个光标 ⇒
+          块视图回写一次 ⇒ 三个光标只剩一个 ⇒ 看着像编辑器坏了）✗
+        ⇒ ⇒ **只有单光标时**才自己算并给 selection ✓
+    */
+    ...(view.state.selection.ranges.length > 1
+      ? {}
+      : { selection: { anchor, head } }),
     scrollIntoView: false,
+    ...(addToHistory ? {} : { annotations: Transaction.addToHistory.of(false) }),
   })
 }

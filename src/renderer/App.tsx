@@ -520,7 +520,12 @@ export default function App() {
           large,
         },
       ])
-      setActiveId(id)
+      /*
+        ⚠️ **别抢焦点** —— `file.initial()` 是异步的 ⇒
+          用户可能已经从欢迎页打开别的文件了 ⇒
+          ⇒ 无条件切过去 ⇒ **用户正在看的文件被换掉** ✗
+      */
+      if (!activeIdRef.current) setActiveId(id)
       setHistory((h) => ({ stack: [...h.stack, id], index: h.stack.length }))
       void window.jhyyIde.file.watch(dirnameOf(opened.path))
     })
@@ -623,11 +628,27 @@ export default function App() {
       const threshold = settingsRef.current.largeFileThreshold
       const file = filesRef.current.find((f) => f.id === fileId)
       if (!file) return
-      // ⚠️ **已经算过、而且字符数没变 ⇒ 不用重算**（省掉 O(n)）✓
-      if (file.bytes > 0 && file.charCount === chars) return
-      const bytes =
-        chars > threshold ? chars * 3 : byteLengthOf(docStore.text(fileId))
-      const large = isLargeFile(bytes, threshold)
+      // ⚠️ **字符数没变 ⇒ 不用重算**（省掉 O(n)）✓
+      if (file.charCount === chars) return
+      /*
+        ⚠️⚠️ **判定用「便宜的上界」，显示用「精确值」** ——
+          UTF-8 里一个字符**最多 3 字节** ⇒ 字节数 ∈ [字符数, 字符数×3] ⇒
+          ⇒ 字符数 > 阈值 ⇒ **肯定是大文件**（不用算）✓
+          ⇒ 字符数×3 < 阈值 ⇒ **肯定不是**（不用算）✓
+          ⇒ 中间那一段 ⇒ **精确算一次**（≤ 3 MB ⇒ 分配得起）✓
+          ⇒ ⚠️ **别把上界写进 `bytes`** —— 那是**显示给用户看的** ⇒
+          ⇒ 1 MB 的 ASCII 文件会被说成「3 MB」⇒ 骗人 ✗
+      */
+      let bytes = file.bytes
+      let large: boolean
+      if (chars > threshold) {
+        large = true
+      } else if (chars * 3 < threshold) {
+        large = false
+      } else {
+        bytes = byteLengthOf(docStore.text(fileId))
+        large = isLargeFile(bytes, threshold)
+      }
       docStore.setLarge(fileId, large)
       updateFile(fileId, { bytes, large, charCount: chars })
     },
@@ -1100,7 +1121,11 @@ export default function App() {
     */
     docStore.markSaved(id, text)
     const dirtyNow = docStore.isDirty(id)
-    if (dirtyNow !== file.dirty) updateFile(id, { dirty: dirtyNow })
+    // ⚠️ **无条件更新** —— `file.dirty` 是**写盘之前**取的快照 ⇒
+    //   写盘期间 React 那边可能变了（用户撤销回存盘点 ⇒ 脏标记清了）⇒
+    //   ⇒ 拿旧快照比 ⇒ **该更新的时候不更新** ⇒
+    //   ⇒ React 说「干净」而仓库说「脏」⇒ **小圆点没了、编辑丢了** ✗✗
+    updateFile(id, { dirty: dirtyNow })
   }, [docStore, saveAs, updateFile])
 
   /** 块视图改了 → 重新生成源码 → 写回文本视图。 */
@@ -1518,43 +1543,37 @@ export default function App() {
 
   // ── 后退 / 前进（文件历史） ──────────────────────────────────
   const goToHistory = useCallback(
-    async (delta: number) => {
+    (delta: number) => {
       const target = history.index + delta
       if (target < 0 || target >= history.stack.length) return
       // ⚠️ **历史存的是 id**（不是路径）——
       //   路径会变（「另存为」），id 不会 ⇒ 历史才不会指错文件 ✓
       const id = history.stack[target]
       const file = filesRef.current.find((f) => f.id === id)
-      if (!file || !file.path) {
-        // ⚠️ **那个文件已经关掉了** ⇒ 没有路径可读 ⇒
-        //   只把历史指针挪过去（用户还能继续往后翻）✓
+      if (!file) {
+        // ⚠️ **那个文件已经关掉了** ⇒ 只把历史指针挪过去（用户还能继续往后翻）✓
         setHistory((h) => ({ ...h, index: target }))
         return
       }
-      try {
-        const { content: raw, bytes } = await window.jhyyIde.file.read(file.path)
-        setHistory((h) => ({ ...h, index: target }))
-        applyDiskContent(id, raw, bytes)
-        setActiveId(id)
-        /*
-          ⚠️⚠️ **在块视图里 ⇒ 目标文件的块要重建** ——
-            `applyDiskContent` 把**别的**文件的块清掉了（它只重建「当前显示着」的）
-            ⇒ ⇒ 这里激活的就是那个被清掉的文件 ⇒
-            ⇒ 不重建的话**画布一直是空的**，而且没人会重建它
-            （`goToHistory` 绕过了 `switchFile`）✗✗
-        */
-        if (centerViewRef.current === 'blocks') rebuildBlocks(id)
-        void window.jhyyIde.file.watch(dirnameOf(file.path))
-      } catch (err) {
-        // ⚠️ **打不开文件** —— 这是「出错」⇒ 值得说一声 ✓
-        setStatus({
-          text: `打不开 ${file.path}：${err instanceof Error ? err.message : String(err)}`,
-          kind: 'bad',
-          tag: 'file',
-        })
+      /*
+        ⚠️⚠️ **只「切过去」，不要从磁盘重读** ——
+          以前这里会 `file.read(path)` 再把内容整个换掉 ⇒
+          ⇒ 那个文件里**用户没保存的修改**就这样**被覆盖了**（没提示！）✗✗
+          ⇒ ⇒ 磁盘上被改了由 watcher 管（外部改动会问用户）⇒
+          ⇒ ⇒ 这里**只切标签** ✓（VS Code 的历史导航就是这个意思）✓
+      */
+      setHistory((h) => ({ ...h, index: target }))
+      setActiveId(id)
+      /*
+        ⚠️ **在块视图里 ⇒ 目标文件的块要重建** ——
+          切过去的那个文件的块可能是旧的（源码变了）⇒
+          ⇒ 不重建的话画布上是**旧内容** ✗
+      */
+      if (centerViewRef.current === 'blocks' && docStore.blocksStale(id)) {
+        rebuildBlocks(id)
       }
     },
-    [applyDiskContent, history, rebuildBlocks],
+    [docStore, history, rebuildBlocks],
   )
 
   // ── 命令表 ──────────────────────────────────────────────────
