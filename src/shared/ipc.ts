@@ -196,12 +196,19 @@ export interface JhyyIdeApi {
     setPath(exePath: string): Promise<ToolchainInfo>
   }
   file: {
-    openDialog(): Promise<{ path: string; content: string } | null>
+    openDialog(): Promise<{ path: string; content: string; bytes: number } | null>
     /** 另存为 —— 只问路径，不写文件 */
     saveDialog(defaultName?: string): Promise<string | null>
     /** 启动参数里带来的文件（没有则 null） */
-    initial(): Promise<{ path: string; content: string } | null>
-    read(path: string): Promise<string>
+    initial(): Promise<{ path: string; content: string; bytes: number } | null>
+    /**
+     * 读一个文件。
+     *
+     * ⚠️ **带字节数** —— 判「大文件」要按**字节**算，不是**字符数**
+     * （中文一个字符 3 个字节 ⇒ 差三倍）⇒
+     * ⇒ 主进程顺手算好（`Buffer.byteLength`，不复制内容）✓
+     */
+    read(path: string): Promise<{ content: string; bytes: number }>
     write(path: string, content: string): Promise<void>
     onChanged(cb: (e: FileChangedEvent) => void): () => void
     /** 让主进程开始监听某个目录（外部改动检测） */

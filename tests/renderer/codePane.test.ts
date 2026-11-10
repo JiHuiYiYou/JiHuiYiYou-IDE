@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createEditorState } from '../../src/renderer/editor/codemirror'
 import { DocStore } from '../../src/renderer/editor/docStore'
 import CodePane, { type CodePaneHandle } from '../../src/renderer/panes/CodePane'
+import { cursorStore } from '../../src/renderer/state/cursorStore'
 
 /**
  * **文本视图**（`CodePane`）—— 挂载 / 切文件 / 回写。
@@ -156,6 +157,29 @@ describe('文本视图 —— 切回去', () => {
     //   以前仓库里存的那份 state 只在「内容变了」时才更新 ⇒
     //   ⇒ 光标一动就被丢掉了 ⇒ 切回来光标回到老位置 ✗
     expect(ref.current?.getSelectionInfo()).toEqual({ line: 1, col: 3, selectedLines: 0 })
+  })
+})
+
+describe('文本视图 —— 状态栏的光标', () => {
+  it('切文件后状态栏的光标位置跟着换', () => {
+    const store = makeStore()
+    const ref = createRef<CodePaneHandle>()
+    mount({ fileId: 'a', store, ref })
+
+    // 把光标挪到第 3 列 ⇒ 状态栏跟着变
+    act(() => {
+      ref.current?.revealLine(1, 3)
+    })
+    expect(cursorStore.getSnapshot()).toEqual({ line: 1, col: 3, selectedLines: 0 })
+
+    // ⚠️ **切到别的文件 ⇒ 状态栏要跟着换** ——
+    //   `view.setState()` **不触发 `updateListener`** ⇒
+    //   ⇒ 光标位置**没人报** ⇒ 状态栏上还是上一个文件的 ✗
+    act(() => {
+      root?.render(createElement(CodePane, { fileId: 'b', store, ref }))
+    })
+    expect(cursorStore.getSnapshot().line).toBe(1)
+    expect(cursorStore.getSnapshot().col).not.toBe(3)
   })
 })
 

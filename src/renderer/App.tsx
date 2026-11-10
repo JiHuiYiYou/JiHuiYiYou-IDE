@@ -61,6 +61,14 @@ fn main_jhyy() -> i32 {
 const EMPTY_BLOCKS: BlockTree[] = []
 
 /**
+ * 新文件模板的**字节数**（判「大文件」用）。
+ *
+ * ⚠️ **要字节数，不是字符数** —— 中文一个字符 3 个字节 ⇒ 差三倍 ⇒
+ *   一个 2 MB 的中文文件只有 66 万字符 ⇒ 按字符数判会以为它不大 ✗
+ */
+const NEW_FILE_BYTES = new TextEncoder().encode(NEW_FILE_TEMPLATE).length
+
+/**
  * 输出面板最多留多少行。
  *
  * ⚠️ 必须有上限 —— 程序疯狂打印时（`while true { printf(...) }`）
@@ -111,7 +119,13 @@ interface EditorFile {
    * 但存盘时要还原用户原来的行尾 —— 不然每次保存都把 CRLF 文件改成 LF。
    */
   eol: Eol
-  /** 文件的字节数（主进程 stat 出来的）—— 判「大文件」用 */
+  /**
+   * 文件的**字节数** —— 判「大文件」用。
+   *
+   * ⚠️ **要字节数，不是字符数** —— 中文一个字符 3 个字节 ⇒ 差三倍 ⇒
+   *   一个 2 MB 的中文文件只有 66 万字符 ⇒ 按字符数判会以为它不大 ✗
+   *   ⇒ 主进程读文件时顺手算好（`Buffer.byteLength`，不复制内容）✓
+   */
   bytes: number
   /** 这个文件是不是进了「大文件模式」 */
   large: boolean
@@ -198,6 +212,25 @@ export default function App() {
   const docStore = useMemo(() => new DocStore(), [])
   /** 新建文件的计数器 */
   const untitledCounter = useRef(0)
+  /**
+   * **文件 id 的计数器** —— id **不是路径**！
+   *
+   * ⚠️⚠️ **为什么 id 不能是路径** ——
+   *   「另存为」会改**路径**（`A.jhyy` ⇒ `B.jhyy`）⇒
+   *   ⇒ 如果 id 就是路径 ⇒ 改路径就得改 id ⇒
+   *   ⇒ 而「文档变了」那个回调闭包里存的是**建 state 时的 id** ⇒
+   *   ⇒ 改 id 之后回调就找不到条目了 ⇒ **改动全丢** ✗✗
+   *   ⇒ ⇒ 而且 id 还是路径的话，「另存为」之后**可能跟别的文件的 id 撞车**
+   *   ⇒ ⇒ 撞车 ⇒ 两个标签共用一份 `EditorState` ⇒ **内容互相覆盖** ✗✗
+   *   ⇒ ⇒ 所以：**id 是不透明的编号**（`f1` / `f2` / …），
+   *   **路径单独存**（`path`），「是不是同一个文件」按**路径**认 ✓
+   */
+  const fileCounter = useRef(0)
+  /** 下一个文件 id（永远唯一、永不改变）。 */
+  const nextFileId = useCallback((): string => {
+    fileCounter.current += 1
+    return `f${fileCounter.current}`
+  }, [])
 
   // 中心区显示代码还是拖块 —— **互斥**，不同时显示
   const [centerView, setCenterView] = useState<CenterView>('code')
@@ -309,6 +342,18 @@ export default function App() {
   const getClaudeSource = useCallback((): string | undefined => {
     const id = activeIdRef.current
     if (!id) return undefined
+    /*
+      ⚠️⚠️ **顺手把上下文推一次** ——
+        主进程的系统提示是**会话开始那一刻烤死的** ⇒
+        ⇒ 它读的是 `ideContext` 的**当下**值 ⇒
+        ⇒ 而平时那份是**防抖 300 ms**推的 ⇒
+        ⇒ 用户「打完字立刻开始对话」⇒ 上下文还是旧的（`unsaved` 还没变）⇒
+        ⇒ **系统提示不贴缓冲区** ⇒ Claude 读磁盘上的旧文件 ⇒
+        ⇒ **用户的编辑被无视** ✗✗
+        ⇒ ⇒ 这里推一次新的（而且它在 `claude.start` 之前调用 ⇒ IPC 是 FIFO ⇒
+        ⇒ 主进程先收到新的上下文 ✓）
+    */
+    pushContextRef.current()
     // ⚠️ **大文件模式 ⇒ 压根不贴源码** —— 就算上限调大了也不行
     if (docStore.isLarge(id)) return undefined
     const maxBytes = settingsRef.current.claudeContextMaxKb * 1024
@@ -362,27 +407,48 @@ export default function App() {
     ⇒ 攒一攒再发。
   */
   const ctxTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /**
+   * **把 IDE 的当前状态报给主进程**（系统提示的一部分）。
+   *
+   * ⚠️⚠️ **这个函数也得能「立刻」调** ——
+   *   「开始会话」那一刻主进程要读的是**当下**的状态 ⇒
+   *   ⇒ 而平时这份状态是**防抖 300 ms**推的 ⇒
+   *   ⇒ 用户「打完字立刻开始对话」⇒ 主进程拿到的是 **300 ms 前的旧快照** ⇒
+   *   ⇒ `unsaved` 还是 false ⇒ **系统提示不贴缓冲区** ⇒
+   *   ⇒ Claude 以为磁盘上那份是新的 ⇒ 读旧文件 ⇒ **用户的编辑被无视** ✗✗
+   *   ⇒ ⇒ 所以「开始会话」之前**必须先推一次新的** ✓
+   *   （`getClaudeSource` 里就顺手推了 ⇒ 而且它在 `claude.start` **之前**调用
+   *   ⇒ IPC 是 FIFO ⇒ 主进程先收到新的上下文 ✓）
+   */
+  const pushContext = useCallback(() => {
+    const unsaved = dirty || filePath === null
+    window.jhyyIde.ide.setContext({
+      filePath,
+      fileName: active?.name ?? null,
+      unsaved,
+      cwd: filePath ? dirnameOf(filePath) : null,
+      diagnostics: diagnostics.slice(0, 20).map((d) => ({
+        file: d.file,
+        line: d.line,
+        col: d.col,
+        message: d.message,
+      })),
+      readOnly: chatReadOnly,
+      outputTail: outputLines
+        .slice(-20)
+        .map((l) => l.text)
+        .join('\n'),
+    })
+  }, [active?.name, chatReadOnly, diagnostics, dirty, filePath, outputLines])
+
+  /** 推上下文的函数（给「立刻推」用）—— 用 ref 保住引用稳定。 */
+  const pushContextRef = useRef(pushContext)
+  pushContextRef.current = pushContext
+
   useEffect(() => {
     if (ctxTimer.current) clearTimeout(ctxTimer.current)
     ctxTimer.current = setTimeout(() => {
-      const unsaved = dirty || filePath === null
-      window.jhyyIde.ide.setContext({
-        filePath,
-        fileName: active?.name ?? null,
-        unsaved,
-        cwd: filePath ? dirnameOf(filePath) : null,
-        diagnostics: diagnostics.slice(0, 20).map((d) => ({
-          file: d.file,
-          line: d.line,
-          col: d.col,
-          message: d.message,
-        })),
-        readOnly: chatReadOnly,
-        outputTail: outputLines
-          .slice(-20)
-          .map((l) => l.text)
-          .join('\n'),
-      })
+      pushContextRef.current()
     }, 300)
     return () => {
       if (ctxTimer.current) clearTimeout(ctxTimer.current)
@@ -397,11 +463,11 @@ export default function App() {
       // ⚠️ 行尾统一成 LF（编辑器里是 LF），原来的行尾记下来，存盘时还原
       const eol = detectEol(opened.content)
       const content = normalizeEol(opened.content)
-      const id = opened.path
+      const id = nextFileId()
       // ⚠️ **块树是懒建的** —— 打开文件时**不**解析源码 ⇒
       //   一个 10 MB 的文件打开是 O(1)（只建编辑器状态）⇒
       //   ⇒ 切到块视图时才解析（那时候用户本来就在等）✓
-      const large = isLargeFile(opened.content.length, settingsRef.current.largeFileThreshold)
+      const large = isLargeFile(opened.bytes, settingsRef.current.largeFileThreshold)
       docStore.open(id, makeEditorState(id, content), content, large, opened.path)
       setFiles([
         {
@@ -411,12 +477,12 @@ export default function App() {
           dirty: false,
           blocks: EMPTY_BLOCKS,
           eol,
-          bytes: opened.content.length,
+          bytes: opened.bytes,
           large,
         },
       ])
       setActiveId(id)
-      setHistory({ stack: [opened.path], index: 0 })
+      setHistory({ stack: [id], index: 0 })
       void window.jhyyIde.file.watch(dirnameOf(opened.path))
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -640,7 +706,7 @@ export default function App() {
    *   别的文件 ⇒ 直接换掉仓库里的状态（切过去的时候 `view.setState` 会带上）✓
    */
   const applyDiskContent = useCallback(
-    (id: string, raw: string) => {
+    (id: string, raw: string, bytes?: number) => {
       const content = normalizeEol(raw)
       /*
         ⚠️ **问一句「视图现在显示的是不是这个文件」** ——
@@ -658,9 +724,31 @@ export default function App() {
       }
       // 磁盘上现在就是这份内容 ⇒ 不脏了
       docStore.markSaved(id, content)
-      updateFile(id, { eol: detectEol(raw), dirty: false })
+      /*
+        ⚠️ **大小变了 ⇒ 「是不是大文件」要重新算** ——
+          文件被改大了（Claude 改的 / 重新加载的）⇒ 过了阈值 ⇒
+          ⇒ 得**当场进大文件模式**（不然后台检查还在编全文件）⇒
+          ⇒ 标签上的「**大**」也要跟上 ✓
+      */
+      const size = bytes ?? content.length
+      const large = isLargeFile(size, settingsRef.current.largeFileThreshold)
+      docStore.setLarge(id, large)
+      updateFile(id, { eol: detectEol(raw), dirty: false, bytes: size, large })
+      /*
+        ⚠️⚠️ **块树也得重建** ——
+          内容变了 ⇒ 画布上那些块是**旧的** ⇒
+          ⇒ 用户拖一块 ⇒ 回写的判据拿「**新源码**」比「**旧块树**」⇒ 不等 ⇒
+          ⇒ **回写被拒**（而且状态栏那条消息会误导人）✗✗
+        ⇒ ⇒ 正在看块视图 ⇒ **立刻重建**；
+        ⇒ ⇒ 不在看 ⇒ 把块树**清掉**（下次进块视图会重建）✓
+      */
+      if (centerViewRef.current === 'blocks' && activeIdRef.current === id) {
+        rebuildBlocks(id)
+      } else {
+        updateFile(id, { blocks: EMPTY_BLOCKS })
+      }
     },
-    [docStore, updateFile],
+    [docStore, rebuildBlocks, updateFile],
   )
 
   // 文件在磁盘上被改了。
@@ -677,8 +765,8 @@ export default function App() {
         // 本地有未保存的改动 ⇒ 会被覆盖（用户明确说了「直接改文件就好」），
         // 但要说一声，别让人以为自己的编辑还在。
         const hadUnsaved = docStore.isDirty(file.id)
-        void window.jhyyIde.file.read(e.path).then((raw) => {
-          applyDiskContent(file.id, raw)
+        void window.jhyyIde.file.read(e.path).then(({ content: raw, bytes }) => {
+          applyDiskContent(file.id, raw, bytes)
           if (hadUnsaved) {
             // ⚠️ **这是「数据丢了」** —— 不是程序行为 ⇒ 值得说一声 ✓
             setStatus({
@@ -707,9 +795,9 @@ export default function App() {
   const reloadFromDisk = useCallback(async () => {
     if (!externalChange) return
     const path = externalChange
-    const raw = await window.jhyyIde.file.read(path)
+    const { content: raw, bytes } = await window.jhyyIde.file.read(path)
     const file = filesRef.current.find((f) => f.path === path)
-    if (file) applyDiskContent(file.id, raw)
+    if (file) applyDiskContent(file.id, raw, bytes)
     setExternalChange(null)
   }, [applyDiskContent, externalChange])
 
@@ -727,9 +815,9 @@ export default function App() {
       setStatus(undefined)
       return
     }
-    const id = opened.path
+    const id = nextFileId()
     // ⚠️ **块树懒建** —— 打开时**不**解析源码 ⇒ 大文件打开是 O(1) ✓
-    const large = isLargeFile(opened.content.length, settings.largeFileThreshold)
+    const large = isLargeFile(opened.bytes, settings.largeFileThreshold)
     docStore.open(id, makeEditorState(id, content), content, large, opened.path)
     setFiles((prev) => [
       ...prev,
@@ -740,7 +828,7 @@ export default function App() {
         dirty: false,
         blocks: EMPTY_BLOCKS,
         eol,
-        bytes: opened.content.length,
+        bytes: opened.bytes,
         large,
       },
     ])
@@ -751,17 +839,19 @@ export default function App() {
     setStatus(undefined)
 
     setHistory((h) => {
-      if (h.stack[h.index] === opened.path) return h
-      const stack = [...h.stack.slice(0, h.index + 1), opened.path]
+      // ⚠️ **历史存的是 id**（不是路径）——
+      //   路径会变（「另存为」），id 不会 ⇒ 历史才不会指错文件 ✓
+      if (h.stack[h.index] === id) return h
+      const stack = [...h.stack.slice(0, h.index + 1), id]
       return { stack, index: stack.length - 1 }
     })
     void window.jhyyIde.file.watch(dirnameOf(opened.path))
-  }, [docStore, makeEditorState, settings.largeFileThreshold])
+  }, [docStore, makeEditorState, nextFileId, settings.largeFileThreshold])
 
   /** 新建文件 —— 真的建一个未保存的缓冲区。 */
   const newFile = useCallback(() => {
     untitledCounter.current += 1
-    const id = `untitled:${untitledCounter.current}`
+    const id = nextFileId()
     /*
       ⚠️ **未命名的新文件一上来就是「脏」的** ——
       它还没存到磁盘上 ⇒ 关掉就没了 ⇒ 标签上得有那个小圆点 ✓
@@ -778,7 +868,7 @@ export default function App() {
         // ⚠️ **块树懒建** —— 切到块视图时才建 ✓
         blocks: EMPTY_BLOCKS,
         eol: '\n',
-        bytes: NEW_FILE_TEMPLATE.length,
+        bytes: NEW_FILE_BYTES,
         large: false,
       },
     ])
@@ -786,7 +876,7 @@ export default function App() {
     setDiagnostics([])
     // ⚠️ **清掉上一条错误消息** —— 换文件了 ⇒ 上个文件的错误不该还挂着 ✓
     setStatus(undefined)
-  }, [docStore, makeEditorState])
+  }, [docStore, makeEditorState, nextFileId])
 
   /** 切到另一个标签页。 */
   const switchFile = useCallback(
@@ -847,11 +937,11 @@ export default function App() {
     const text = docStore.text(id)
     await window.jhyyIde.file.write(path, toEol(text, file.eol))
     /*
-      ⚠️ **id 不变** —— 以前「另存为」会把 id 换成路径 ⇒
-      ⇒ 那样的话仓库里的键也变了 ⇒ 而「文档变了」那个回调闭包里存的是**旧 id**
-      ⇒ ⇒ 之后打字就找不到条目了 ⇒ **改动全丢** ✗✗
-      ⇒ ⇒ 现在 **id 永远不变**（只是 `path` 变了）⇒
-      ⇒ 「打开同一个文件别多出一个标签」靠**按 path 认**（`openFile` 里查 path）✓
+      ⚠️ **id 不变** —— id 是**不透明的编号**（`f1` / `f2` / …），**不是路径** ⇒
+      ⇒ 「另存为」改的只是 `path` ⇒ id 永远不变 ⇒
+      ⇒ ⇒ 「文档变了」那个回调闭包里存的 id 一直有效 ⇒ **改动不会丢** ✓
+      ⇒ ⇒ 而且 id **不会跟别的文件撞车**（两个标签共用一份 state ⇒ 内容互相覆盖）✗✓
+      ⇒ ⇒ 「打开同一个文件别多出一个标签」靠**按 path 认**（`openFile` 里查 path）✓
     */
     docStore.setPath(id, path)
     docStore.markSaved(id, text)
@@ -1294,22 +1384,26 @@ export default function App() {
     async (delta: number) => {
       const target = history.index + delta
       if (target < 0 || target >= history.stack.length) return
-      const path = history.stack[target]
-      try {
-        const raw = await window.jhyyIde.file.read(path)
+      // ⚠️ **历史存的是 id**（不是路径）——
+      //   路径会变（「另存为」），id 不会 ⇒ 历史才不会指错文件 ✓
+      const id = history.stack[target]
+      const file = filesRef.current.find((f) => f.id === id)
+      if (!file || !file.path) {
+        // ⚠️ **那个文件已经关掉了** ⇒ 没有路径可读 ⇒
+        //   只把历史指针挪过去（用户还能继续往后翻）✓
         setHistory((h) => ({ ...h, index: target }))
-        // ⚠️ **按 path 找那个文件** —— 它的 id 未必是 path
-        //   （未命名的新文件另存为之后，id 还是 `untitled:N`）✓
-        const file = filesRef.current.find((f) => f.path === path)
-        if (file) {
-          applyDiskContent(file.id, raw)
-          setActiveId(file.id)
-        }
-        void window.jhyyIde.file.watch(dirnameOf(path))
+        return
+      }
+      try {
+        const { content: raw, bytes } = await window.jhyyIde.file.read(file.path)
+        setHistory((h) => ({ ...h, index: target }))
+        applyDiskContent(id, raw, bytes)
+        setActiveId(id)
+        void window.jhyyIde.file.watch(dirnameOf(file.path))
       } catch (err) {
         // ⚠️ **打不开文件** —— 这是「出错」⇒ 值得说一声 ✓
         setStatus({
-          text: `打不开 ${path}：${err instanceof Error ? err.message : String(err)}`,
+          text: `打不开 ${file.path}：${err instanceof Error ? err.message : String(err)}`,
           kind: 'bad',
           tag: 'file',
         })

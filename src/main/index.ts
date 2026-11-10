@@ -287,7 +287,7 @@ function registerIpc(): void {
     const path = result.filePaths[0]
     rememberOpenDir(dirname(path))
     const content = await readFile(path, 'utf8')
-    return { path, content }
+    return { path, content, bytes: Buffer.byteLength(content, 'utf8') }
   })
 
   ipcMain.handle(IPC.fileSaveDialog, async (_e, _defaultName?: string) => {
@@ -324,7 +324,13 @@ function registerIpc(): void {
     return result.filePath
   })
 
-  ipcMain.handle(IPC.fileRead, async (_e, path: string) => readFile(path, 'utf8'))
+  ipcMain.handle(IPC.fileRead, async (_e, path: string) => {
+    const content = await readFile(path, 'utf8')
+    // ⚠️ **字节数**（不是字符数）—— 判「大文件」要按字节算
+    //   （中文一个字符 3 个字节 ⇒ 差三倍）⇒
+    //   ⇒ `Buffer.byteLength` **不复制内容** ✓
+    return { content, bytes: Buffer.byteLength(content, 'utf8') }
+  })
 
   ipcMain.handle(IPC.fileWatch, async (_e, dir: string) => {
     projectWatcher.start(dir)
@@ -334,7 +340,7 @@ function registerIpc(): void {
   ipcMain.handle(IPC.fileInitial, async () => {
     if (!startupFilePath) return null
     const content = await readFile(startupFilePath, 'utf8')
-    return { path: startupFilePath, content }
+    return { path: startupFilePath, content, bytes: Buffer.byteLength(content, 'utf8') }
   })
 
   ipcMain.handle(IPC.fileWrite, async (_e, path: string, content: string) => {

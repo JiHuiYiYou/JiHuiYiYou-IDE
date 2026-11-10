@@ -18,6 +18,7 @@ import {
   type EditorCommand,
 } from '../editor/editorCommands'
 import { applyTextChange } from '../sync/caret'
+import { cursorStore } from '../state/cursorStore'
 import { DEFAULT_SETTINGS } from '../state/settings'
 
 interface Props {
@@ -163,6 +164,13 @@ export default function CodePane({
         ⇒ ⇒ 重新压一次全局设置 ✓
     */
     applyWordWrap(view)
+    /*
+      ⚠️⚠️ **切文件后要自己报一次光标位置** ——
+        `view.setState()` **不触发 `updateListener`**（它直接换掉 `viewState`）⇒
+        ⇒ 光标位置**没人报** ⇒ 状态栏上还是**上一个文件**的 `Ln x, Col y` ✗
+        ⇒ ⇒ 手动报一次 ✓（VS Code 的状态栏也是跟着当前文件走的）
+    */
+    cursorStore.set(cursorInfoOf(view.state))
     // ③ 恢复**这个**文件的滚动位置
     const top = fileId ? (scrollMem.current.get(fileId) ?? 0) : 0
     const restore = (): void => {
