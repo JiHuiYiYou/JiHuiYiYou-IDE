@@ -586,6 +586,12 @@ export default function App() {
           if (info.dirtyChanged) updateFile(id, { dirty: info.dirty })
           scheduleDiagnostics(id)
         },
+        /*
+          ⚠️ **光标动了也要把新 state 写回仓库** ——
+            否则切标签时 `setState(仓库里那份)` ⇒ **光标跳回上次编辑的位置** ✗
+            （VS Code 是记住每个文件的光标位置的）⇒ ⇒ 只换指针，O(1) ✓
+        */
+        onStateChange: (update) => docStore.syncState(id, update.state),
       }),
     [docStore, scheduleDiagnostics, updateFile],
   )

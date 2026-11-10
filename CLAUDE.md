@@ -224,7 +224,11 @@ npx vite-node scripts/claude-smoke.ts   # Claude 集成冒烟（会消耗 API �
   `onBlockChange` ⇒ `blocksToSource(tree)` ⇒ 直接替换编辑器里的内容 ⇒
   ⇒ **块树是「有损」的**（泛型参数、turbofish 实参、`#[inline]` 属性、
   `for x in slice`、短枚举名的绑定…… 每加一种块能力之前它就多丢一样东西）✗
-  ⇒ ⇒ **必须有一道兜底的闸**：`isLosslessForBlocks(source)`（`src/renderer/sync/doc.ts`）
+  ⇒ ⇒ **必须有一道兜底的闸**：`isLosslessRewrite(source, generated)`
+  （`src/renderer/sync/doc.ts`）——
+  判据是「**新块树打印出来 == 当前源码打印出来吗**」⇒ 不等 ⇒ **不许回写** ✓
+  （⚠️ 以前那个 `isLosslessForBlocks(source)` 要跑**两遍**全量往返，
+  现在只要**一遍**（源码→AST→打印）⇒ 便宜一半 ✓）
   判「文本视图和块视图**能不能一字不差**」⇒ 不能 ⇒ **不许回写**（状态栏说明原因）✓
   ⇒ ⇒ **回归网**：`tests/blocks/blockVsText.test.ts` ——
   拿语料逐个走「源码 → 块 → 源码」，断言**两条路打印出来的一字不差** ✓
@@ -837,7 +841,7 @@ npx vite-node scripts/claude-smoke.ts   # Claude 集成冒烟（会消耗 API �
   用户报过：「右下角的状态栏不带更新的，**一次编译失败就一直留着了**」✗
   ⇒ ⇒ **问题解决了就得撤掉** ✓
   ⇒ ⇒ 每条消息都带一个 `tag`（`compile` / `run` / `blocks` /
-    `claude-overwrite` / `file`）⇒ 撤的时候**只撤同一类** ✓
+    `claude-overwrite` / `file` / `large-file`）⇒ 撤的时候**只撤同一类** ✓
     （编译成功**不该**撤掉「块视图只重建了一部分」那条 ✓）
   ⇒ ⇒ **撤除的逻辑在 `src/renderer/state/status.ts`**（纯函数，好测）✓
     `clearStatus(prev, ...tags)` / `clearWhenDiagnosticsClean(prev)`
@@ -1028,6 +1032,14 @@ npx vite-node scripts/claude-smoke.ts   # Claude 集成冒烟（会消耗 API �
   ⇒ ⇒ 现在：**换 state** ⇒ O(1) ⇒ 撤销历史各归各的 ⇒ 那个 bug 自动没了 ✓
   ⇒ ⚠️ **但 `setState()` 会把滚动位置重置掉**（它建的是全新的 `ViewState`）⇒
   ⇒ **每个文件的滚动位置要自己记**（`CodePane` 的 `scrollMem`）✓
+  ⇒ ⚠️⚠️ **仓库里存的那份 state 必须是「最新的」** ——
+    只在「内容变了」时更新**不够** ⇒ 光标一动就把它丢了 ⇒
+    ⇒ 切回去光标跳回上次编辑的位置 ✗ ⇒
+    ⇒ ⇒ **每次事务都要把新 state 写回去**（`onStateChange` ⇒ `DocStore.syncState`）⇒
+    ⇒ 只是**换指针**，O(1) ✓（`tests/renderer/codePane.test.ts` 钉着）
+  ⇒ ⚠️ **「自动换行」是每个 state 各存一份的**（`lineWrapCompartment` 在扩展里）⇒
+    ⇒ `setState` 会把它一起换掉 ⇒ 菜单打着勾、编辑器里却没换行 ⇒
+    ⇒ ⇒ 切完要**重新压一次全局设置**（`applyWordWrap`）✓
 - ⚠️⚠️ **块树是懒建的** —— 以前**打开文件时**就 `sourceToBlocks(content)`
   ⇒ 1.4 MB 的文件光这一下就是 **1.2 秒** ✗✗（实测，见下面的基准）
   ⇒ ⇒ 现在：**切到块视图时才建** ⇒ 打开文件是 O(1) ✓

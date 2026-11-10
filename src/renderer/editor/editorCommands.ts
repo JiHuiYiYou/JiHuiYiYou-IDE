@@ -120,6 +120,19 @@ export function isWordWrapOn(): boolean {
 /** 切换自动换行（Alt+Z）。 */
 export function toggleWordWrap(view: EditorView): void {
   wordWrapOn = !wordWrapOn
+  applyWordWrap(view)
+}
+
+/**
+ * **把「自动换行」的当前全局设置压到某个视图上**。
+ *
+ * ⚠️ **为什么需要它** ——
+ *   自动换行是**每个 state 各自存着的**（`lineWrapCompartment` 在 state 的扩展里）⇒
+ *   ⇒ 切文件时 `view.setState(别的文件的 state)` ⇒ **把设置一起换掉了** ✗
+ *   ⇒ （菜单上「自动换行」还打着勾，编辑器里却没换行 ⇒ 自相矛盾 ✗）
+ *   ⇒ ⇒ 切完要重新压一次全局设置 ✓
+ */
+export function applyWordWrap(view: EditorView): void {
   view.dispatch({
     effects: lineWrapCompartment.reconfigure(
       wordWrapOn ? EditorView.lineWrapping : [],

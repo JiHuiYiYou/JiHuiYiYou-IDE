@@ -11,7 +11,12 @@ import {
   type CursorInfo,
 } from '../editor/codemirror'
 import type { DocStore } from '../editor/docStore'
-import { revealLine, runEditorCommand, type EditorCommand } from '../editor/editorCommands'
+import {
+  applyWordWrap,
+  revealLine,
+  runEditorCommand,
+  type EditorCommand,
+} from '../editor/editorCommands'
 import { applyTextChange } from '../sync/caret'
 import { DEFAULT_SETTINGS } from '../state/settings'
 
@@ -150,6 +155,14 @@ export default function CodePane({
     // ② 换 state
     const next = fileId ? store.get(fileId) : undefined
     view.setState(next ?? EditorState.create({ doc: '' }))
+    /*
+      ⚠️ **换 state 会把「自动换行」的配置一起换掉** ——
+        `lineWrapCompartment` 在 **state 的扩展**里 ⇒ 每个文件各存一份 ⇒
+        ⇒ `setState` 换过去 ⇒ 变成那个文件存的值（默认「关」）⇒
+        ⇒ 菜单上还打着勾、编辑器里却没换行 ⇒ **自相矛盾** ✗
+        ⇒ ⇒ 重新压一次全局设置 ✓
+    */
+    applyWordWrap(view)
     // ③ 恢复**这个**文件的滚动位置
     const top = fileId ? (scrollMem.current.get(fileId) ?? 0) : 0
     const restore = (): void => {

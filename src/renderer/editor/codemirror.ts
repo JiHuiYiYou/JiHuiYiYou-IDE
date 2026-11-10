@@ -306,6 +306,18 @@ export interface CreateEditorOptions {
    * ⇒ 传的是整个 `ViewUpdate`（要 `startState` 才能认出「撤销 / 重做」）✓
    */
   onDocChange?: (update: ViewUpdate) => void
+  /**
+   * **状态变了** —— 每次事务都报（**只报「变了」，不报内容**）。
+   *
+   * ⚠️ **为什么要有它** ——
+   *   文档仓库里存的那份 state 必须是**最新的** ⇒
+   *   ⇒ 否则切标签时 `view.setState(仓库里那份)` ⇒
+   *   ⇒ **光标会跳回上次编辑时的位置**（VS Code 是记住每个文件的光标位置的）✗
+   *   ⇒ ⇒ 光标一动、选区一变、折叠一变 … ⇒ 都要把新 state 写回去 ✓
+   *
+   * ⚠️ **O(1)** —— 只是**换了个指针**，不碰内容 ✓
+   */
+  onStateChange?: (update: ViewUpdate) => void
   readOnly?: boolean
   placeholder?: string
 }
@@ -443,6 +455,13 @@ export function jhyyExtensions(opts: Omit<CreateEditorOptions, 'doc'>): Extensio
         ⇒ ⇒ 现在**只报「变了」**（state 本身就在那儿，要内容自己去取）⇒ O(1) ✓
       */
       if (update.docChanged) opts.onDocChange?.(update)
+      /*
+        ⚠️ **每次事务都把新 state 报出去** ——
+          文档仓库里存的那份必须是**最新的** ⇒
+          ⇒ 否则切标签时 `setState(仓库里那份)` ⇒ **光标跳回上次编辑的位置** ✗
+          ⇒ ⇒ 光标一动也要报（只是换指针，O(1)）✓
+      */
+      opts.onStateChange?.(update)
       if (update.docChanged || update.selectionSet) {
         /*
           ⚠️ **光标直接写进自己的 store** —— 不经过 `App` 的 state ⇒

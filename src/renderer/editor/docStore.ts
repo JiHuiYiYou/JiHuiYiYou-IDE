@@ -147,6 +147,24 @@ export class DocStore {
   }
 
   /**
+   * **状态变了**（光标动了 / 选区变了 / 折叠变了 …）—— 只换指针，**O(1)**。
+   *
+   * ⚠️ **为什么要有它** ——
+   *   仓库里存的那份 state 必须是**最新的** ⇒
+   *   ⇒ 否则切标签时 `view.setState(仓库里那份)` ⇒
+   *   ⇒ **光标跳回上次编辑时的位置**（VS Code 是记住每个文件的光标位置的）✗
+   *   ⇒ ⇒ 光标一动也要把新 state 写回来 ✓
+   *
+   * ⚠️ **不动版本号** —— 版本号是给「块视图过期没有」用的，
+   *   只有**内容**变了才算过期 ⇒ 光标动不算 ✓
+   */
+  syncState(id: string, state: EditorState): void {
+    const e = this.entries.get(id)
+    if (!e) return
+    e.state = state
+  }
+
+  /**
    * **内容变了** —— 更新状态、版本号、脏标记。
    *
    * @param state 最新的 state（CodeMirror 每次事务都产生新对象）
