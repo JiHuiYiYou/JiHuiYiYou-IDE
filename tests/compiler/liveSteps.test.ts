@@ -99,7 +99,7 @@ describe('匹配串（match）', () => {
 })
 
 describe('超时', () => {
-  it('⚠️ **运行程序那一步没有超时**（CLAUDE.md 铁律：别把长时间运行的程序杀掉）', () => {
+  it('⚠️ **运行程序那一步没有超时**（docs/implementation-notes.md：别把长时间运行的程序杀掉）', () => {
     const run = steps('powershell').find((s) => s.role === 'run')
     expect(run?.timeoutMs).toBe(0)
   })
