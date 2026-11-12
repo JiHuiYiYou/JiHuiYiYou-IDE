@@ -227,9 +227,6 @@ npx vite-node scripts/claude-smoke.ts   # Claude 集成冒烟（会消耗 API �
   ⇒ ⇒ **必须有一道兜底的闸**：`isLosslessRewrite(source, generated)`
   （`src/renderer/sync/doc.ts`）——
   判据是「**新块树打印出来 == 当前源码打印出来吗**」⇒ 不等 ⇒ **不许回写** ✓
-  （⚠️ 以前那个 `isLosslessForBlocks(source)` 要跑**两遍**全量往返，
-  现在只要**一遍**（源码→AST→打印）⇒ 便宜一半 ✓）
-  判「文本视图和块视图**能不能一字不差**」⇒ 不能 ⇒ **不许回写**（状态栏说明原因）✓
   ⇒ ⇒ **回归网**：`tests/blocks/blockVsText.test.ts` ——
   拿语料逐个走「源码 → 块 → 源码」，断言**两条路打印出来的一字不差** ✓
   （这条测试一加，当场抓出 9 个 bug：`for x in slice` 被改成 `..0`、
@@ -1002,139 +999,52 @@ npx vite-node scripts/claude-smoke.ts   # Claude 集成冒烟（会消耗 API �
   否则第二个事件漏出去 ⇒ 每次保存都误报）。
   见 `src/main/index.ts` 的 `selfWrittenFiles` / `claudeWrittenFiles`。
 
-### 大文件（打开慢 / 卡 / 卡死）
+### 编辑器 / 文件管理：几处容易踩的坑
 
-- ⚠️⚠️⚠️ **文本只存在编辑器里**（`src/renderer/editor/docStore.ts`）——
-  以前 `App` 的 React state 里存着**三份全文**（`source` / `saved` / `blocksAt`），
-  加上 CodeMirror 那一份 ⇒ **一个大文件在内存里躺了四遍** ⇒
-  而且**每次按键**还要：
-  - `doc.toString()` 重新物化一份（`codemirror.ts` 的 updateListener）
-  - `normalizeEol(value)` 再跑一遍全文件正则（`CodePane` 的同步 effect）
-  - `source !== saved` / `source !== blocksAt` 各比较一遍
-  - 把整份源码**结构化克隆**一次过 IPC（发给 Claude 的上下文）
-  ⇒ ⇒ **每敲一个字 ⇒ 五趟全文件遍历** ⇒ 10 MB 的文件几十毫秒/键 ✗✗
-  ⇒ ⇒ 现在文本**只有一份**（在 `DocStore` 的 `EditorState` 里）⇒
-  ⇒ **每次按键 O(1)**、**切标签 O(1)** ⇒ 要内容时（存盘/编译前）**按需取一次** ✓
-  ⇒ 这就是 VS Code 的 **model ↔ view** 模型（`TextModel` 是真相，编辑器只是投影）✓
-- ⚠️ **脏标记是「状态」，不是每次 render 派生的值** ——
-  以前是 `source !== saved`（**每次 render 都全文比较一遍**）⇒
-  ⇒ 现在由 `DocStore.noteChange()` 算：**编辑时置脏；撤销/重做时精确比一次** ⇒
-  ⇒ 而且它**只在 true↔false 翻转的那一刻**才通知 React ⇒
-  ⇒ **打字不引发任何 React 重渲染** ✓✓
-  ⇒ ⚠️ **撤销/重做怎么认** —— CodeMirror 的 `history` 扩展给那次事务打
-  `Transaction.userEvent = 'undo' / 'redo'` ⇒ 靠它认（`isHistoryJump`）✓
-  ⇒ **别用 `undoDepth`** —— 它会饱和，而且「普通编辑」和「重做」都会让它变大 ⇒ 分不出来 ✗
-- ⚠️⚠️ **切标签 = `view.setState(别的文件的 state)`**（不是「按内容 diff」）——
-  以前切文件是拿新旧内容**逐字符**求最长公共前后缀 ⇒
-  ⇒ 一个 10 MB 的文件 ⇒ **上千万次 JS 字符比较** ⇒ 切一下卡一下 ✗✗
-  ⇒ 而且那个 dispatch **没带 `addToHistory: false`** ⇒
-  ⇒ **切文件后按 Ctrl+Z 会把上一个文件的文本恢复进当前文件**（真 bug）✗
-  ⇒ ⇒ 现在：**换 state** ⇒ O(1) ⇒ 撤销历史各归各的 ⇒ 那个 bug 自动没了 ✓
-  ⇒ ⚠️ **但 `setState()` 会把滚动位置重置掉**（它建的是全新的 `ViewState`）⇒
-  ⇒ **每个文件的滚动位置要自己记**（`CodePane` 的 `scrollMem`）✓
-  ⇒ ⚠️⚠️ **仓库里存的那份 state 必须是「最新的」** ——
-    只在「内容变了」时更新**不够** ⇒ 光标一动就把它丢了 ⇒
-    ⇒ 切回去光标跳回上次编辑的位置 ✗ ⇒
-    ⇒ ⇒ **每次事务都要把新 state 写回去**（`onStateChange` ⇒ `DocStore.syncState`）⇒
-    ⇒ 只是**换指针**，O(1) ✓（`tests/renderer/codePane.test.ts` 钉着）
-  ⇒ ⚠️ **「自动换行」是每个 state 各存一份的**（`lineWrapCompartment` 在扩展里）⇒
-    ⇒ `setState` 会把它一起换掉 ⇒ 菜单打着勾、编辑器里却没换行 ⇒
-    ⇒ ⇒ 切完要**重新压一次全局设置**（`applyWordWrap`）✓
-  ⇒ ⚠️⚠️ **`view.setState()` **不触发 `updateListener`**（它直接换掉 `viewState`）⇒
-    ⇒ 切文件时**没人报光标位置** ⇒ 状态栏上还是**上一个文件**的 `Ln x, Col y` ✗
-    ⇒ ⇒ 切完**手动报一次**（`cursorStore.set(cursorInfoOf(view.state))`）✓
-    ⇒ ⇒ **同理**：凡是靠 `updateListener` 驱动的东西，切文件后都得**手动补一次** ✓
-- ⚠️⚠️ **文件 id 不是路径**（是不透明的编号 `f1` / `f2` / …）——
-  「另存为」会改**路径** ⇒ 若 id 就是路径 ⇒
-  ⇒ ① 改 id ⇒「文档变了」那个回调闭包里存的 id 失效 ⇒ **改动全丢** ✗✗
-  ⇒ ② id 可能**跟别的文件撞车** ⇒ 两个标签共用一份 `EditorState` ⇒ **内容互相覆盖** ✗✗
-  ⇒ ⇒ 「是不是同一个文件」按**路径**认（`openFile` 里查 `path`）✓
-  ⇒ ⇒ **文件历史也存 id**（路径会变，id 不会）✓
-- ⚠️ **「大文件」按**字节**判，不是按字符数** —— 中文一个字符 3 个字节 ⇒ 差三倍 ⇒
-  ⇒ 一个 2 MB 的中文文件只有 66 万字符 ⇒ 按字符数判会以为它不大 ✗
-  ⇒ ⇒ 主进程读文件时顺手算好（`Buffer.byteLength`，**不复制内容**）✓
-  ⇒ ⇒ **重新加载后要重算**（文件可能被改大了 ⇒ 得当场进大文件模式）✓
-  ⇒ ⇒ **编辑中也要重算**（用户粘贴一大段 ⇒ 文件撑大了却没人知道 ⇒
-    ⇒ **后台检查还在编整个文件** ⇒ 机器被压满 ⇒ **IDE 卡死** ✗✗）
-    ⇒ ⇒ 算的时机：**停手 600 ms 之后**（O(n)，不是每次按键）✓
-    ⇒ ⇒ **先用字符数挡一下**（字节数 ≥ 字符数 ⇒ 字符数超了 ⇒ 肯定超 ⇒ 不用精确算）✓
-- ⚠️⚠️ **块树是懒建的** —— 以前**打开文件时**就 `sourceToBlocks(content)`
-  ⇒ 1.4 MB 的文件光这一下就是 **1.2 秒** ✗✗（实测，见下面的基准）
-  ⇒ ⇒ 现在：**切到块视图时才建** ⇒ 打开文件是 O(1) ✓
-  ⇒ ⇒ 而且**块视图是懒挂载的**（第一次切过去才 `Blockly.inject`）⇒
-  ⇒ 一直在文本视图里用的人**一分钱都不付** ✓
-- ⚠️ **大文件模式**（`src/renderer/editor/largeFile.ts`）——
-  超过阈值（默认 **1 MB**，设置里可调）就**自动关掉**三样东西：
-  **后台实时检查**（编全文件，每 600 ms 空闲一次 ⇒ 机器被压满）、
-  **拖块视图**（几千个块 ⇒ Blockly 趴窝）、
-  **把整份源码送进 Claude**（每轮对话重发一遍 ⇒ token 爆炸）。
-  ⇒ 标签上有个「**大**」的标记（用户得知道为什么少了几样功能）✓
-  ⇒ **手动「检查」/「运行」仍然可用**（那是一次性的、用户明确要的）✓
-  ⇒ 跟 VS Code 的 `editor.largeFileOptimizations` 一个路子 ✓
-  - ⚠️⚠️ **每个功能还有自己的「硬上限」**（全局阈值管不了它们）——
-    **拖块视图 256 KB**（`MAX_BLOCK_VIEW_BYTES`）：
-    块视图**每改一次块**都要走 4 趟全文件（读工作区 → 反编译 → 打印 →
-    **再解析一遍当前源码**判「回写会不会改坏代码」→ 再算一次 diff）⇒
-    ⇒ 拖一个块时**每个鼠标移动都触发一次** ⇒
-    ⇒ 实测 185 KB 的文件一次 ~100–250 ms ⇒ **拖起来是幻灯片** ✗✗
-    ⇒ ⇒ 超上限就不给块视图（拖块是给初学者/小程序的 ⇒ 6000 行够用）✓
-    ⇒ **Claude 源码 256 KB**（`claudeContextMaxKb`，设置里可调）⇒
-    超了就只报路径，让 Claude 自己 `Read` 磁盘上的文件 ✓
-    ⇒ ⚠️ **在块视图里切到一个超上限的文件 ⇒ 自动切回文本视图** ——
-      否则块视图会显示**上一个文件**的块（配着新文件的名字）⇒ 骗人 ✗
-- ⚠️ **自动换行默认关**（跟 VS Code 的 `editor.wordWrap: off` 一样）——
-  自动换行是**大文件的头号性能杀手**（一行 5 万字符 ⇒ 几十万个视觉行盒子）⇒
-  ⇒ 想开按 **Alt+Z**（命令 `view.toggleWordWrap`）✓
-  ⇒ ⚠️ `EditorView.lineWrapping` **只在建视图时生效** ⇒ 运行时切必须走
-  `lineWrapCompartment` 重配 ✓
-- ⚠️ **光标位置不在 `App` 的 state 里**（`src/renderer/state/cursorStore.ts`）——
-  以前光标一动就 `setState` ⇒ **每敲一个字、每按一次方向键，整棵 React 树重渲染**
-  ⇒ 现在它在**自己的 store** 里，状态栏用 `useSyncExternalStore` 订阅 ⇒
-  ⇒ **只有状态栏那二十来行 DOM 重渲染** ✓
-- ⚠️ **`React.memo` 的前提是「回调得稳定」** ——
-  这个项目以前**一处 `memo` 都没有** ⇒ `App` 一重渲染（后台诊断每 600 ms 一次！）
-  ⇒ **CodeMirror + Blockly + xterm + 聊天面板**全跟着重渲染 ⇒ 卡 ✗✗
-  ⇒ 现在重的组件都加了 `memo`（`TerminalPane` / `BlockPane` / `StatusBar` /
-  `TabStrip` / `ProblemsPane` / `ChatPane`）⇒
-  ⇒ ⚠️ **但 `App` 里传给它们的回调必须包 `useCallback`** ⇒
-  ⇒ 不然每次都是新函数 ⇒ `memo` 白加 ✗
-  ⇒ ⚠️ **别把「自己订阅的 store」挡掉** —— 状态栏的光标是 `useSyncExternalStore`
-  ⇒ `memo` 只比 props ⇒ 内部 store 的更新**照样**进得来 ✓（`tests/renderer/memo.test.ts` 钉着）
-- ⚠️ **别在 `App` 的 state 里镜像文本** —— V8 里字符串拼接是 `ConsString` ⇒
-  「每次编辑都拼一次新字符串」会**强迫扁平化整份文档** ⇒ 每次编辑 O(n) ✗
-  ⇒ ⇒ 文本**只在编辑器里**，谁要谁**按需取一次** ✓
+- ⚠️ **文本只存在编辑器里**（`src/renderer/editor/docStore.ts`）——
+  `App` 的 state 里**不许**再存一份全文（V8 的 `ConsString` 会让每次编辑都
+  强迫扁平化整份文档 ⇒ O(n)）⇒ 要内容时从 `docStore.text(id)` **取一次** ✓
+- ⚠️⚠️ **切标签 = `view.setState(别的文件的 state)`** —— 别拿新旧内容算 diff
+  （逐字符 ⇒ 上千万次比较）⇒ 但它有三个副作用要自己兜：
+  ① **滚动位置被重置** ⇒ 每个文件各记一份（`CodePane` 的 `scrollMem`）
+  ② **不触发 `updateListener`** ⇒ 光标位置没人报 ⇒ 状态栏显示上一个文件的
+     ⇒ 切完**手动报一次**（`cursorStore.set(cursorInfoOf(view.state))`）
+  ③ 仓库里存的那份 state **必须每次事务都写回**（`onStateChange` ⇒
+     `syncState`）⇒ 否则光标跳回上次编辑的位置 ✗
 - ⚠️⚠️⚠️ **「整段替换 + `addToHistory: false`」会把整个撤销栈作废** ——
-  CodeMirror 的 `history` 扩展在处理一次改动时，会把**已有的每一条历史事件**
-  都**映射**到新坐标上 ⇒
-  ⇒ 整段替换 ⇒ 每条历史都被映射成**空区间** ⇒
-  ⇒ **按 Ctrl+Z 什么都不会发生**（永远！）⇒ **比不撤销还糟** ✗✗
-  ⇒ ⇒ 「重新加载磁盘上的文件」用**最小改动区间**替换
-  （`sync/caret.ts` 的 `diffRange`）⇒ 撤销还能用 ✓
-  ⇒ ⇒ **也别用 `addToHistory: false` 配整段替换**（一样走 `addMapping`）✗
-  ⇒ ⇒ ⚠️ **「重新加载」本身是**可撤销**的**（有意为之）——
-    它会把**用户没保存的修改覆盖掉** ⇒ 不可撤销 ⇒ 用户**再也拿不回来** ✗✗
-    ⇒ ⇒ 可撤销 ⇒ Ctrl+Z 能把**自己的修改找回来** ✓
-- ⚠️⚠️ **给 `selection` 会把别的光标弄没了** ——
-  编辑器开了 `EditorState.allowMultipleSelections` ⇒ 用户可以有多个光标 ⇒
-  ⇒ `view.dispatch({changes, selection})` ⇒ **selection 被换成单个区间** ⇒
-  ⇒ 别的光标**全没了**（块视图回写一次 ⇒ 三个光标只剩一个）✗
-  ⇒ ⇒ **只有单光标时**才自己算并给 `selection`；多光标时**交给 CodeMirror 映射** ✓
-- ⚠️⚠️ **文件历史导航只「切标签」，不要从磁盘重读** ——
-  以前 `goToHistory` 会 `file.read(path)` 再把内容整个换掉 ⇒
-  ⇒ 那个文件里**用户没保存的修改**就这样**被覆盖了**（没提示！）✗✗
-  ⇒ ⇒ 磁盘上被改了由 watcher 管（外部改动会问用户）⇒ ⇒ 历史只管切 ✓
-  （VS Code 的历史导航就是这个意思）
-- ⚠️⚠️ **写盘是异步的 ⇒ 脏标记不能无脑清掉** ——
-  写盘那几百毫秒里用户可能又敲了几个字 ⇒
-  ⇒ 无脑 `dirty = false` ⇒ 标签上的小圆点没了 ⇒
-  ⇒ **用户以为存好了，其实那段没存** ⇒ 关掉就没了 ✗✗（丢数据！）
-  ⇒ ⇒ `DocStore.markSaved()` **按「现在的内容」跟「刚写下去的那份」比一次** ✓
-  ⇒ ⇒ **所有「异步写完 ⇒ 更新状态」的地方都得这么干** ✓
-- **基准**：`JHY_BENCH=1 npx vitest run tests/renderer/editorBench.test.ts`
-  ⇒ 造大文件用 `node scripts/dev/make-big-jhyy.mjs 30000 out.jhyy` ✓
-  （实测 1.4 MB / 12 万行：**打开 54 ms**（旧架构光建块树就 1264 ms）、
-  **首屏 49 ms**（O(1)，跟文件大小无关）、
-  **打 20 个字 100 ms**（旧架构 199 ms）⇒ 在 jsdom 里量的，**比值有意义** ✓）
+  `history` 扩展会把**已有的每一条历史**都映射到新坐标 ⇒ 整段替换 ⇒
+  全部映射成空区间 ⇒ **Ctrl+Z 永远没反应** ✗✗
+  ⇒ ⇒ 换内容一律用**最小改动区间**（`sync/caret.ts` 的 `diffRange`）✓
+- ⚠️⚠️ **给 `selection` 会把别的光标弄没了** —— 编辑器开了
+  `allowMultipleSelections` ⇒ `dispatch({changes, selection})` ⇒
+  **selection 被换成单个区间** ⇒ 别的光标全没了 ⇒
+  ⇒ **只有单光标时**才自己给 `selection`，多光标交给 CodeMirror 映射 ✓
+- ⚠️⚠️ **写盘是异步的 ⇒ 脏标记不能无脑清掉** —— 这期间用户可能又敲了几个字 ⇒
+  ⇒ 清掉 ⇒ 小圆点没了 ⇒ **用户以为存好了，其实那段没存** ✗✗
+  ⇒ ⇒ `DocStore.markSaved()` 要按「现在的内容」重新算一次 ✓
+- ⚠️⚠️ **文件 id 不是路径**（是不透明的编号）—— 「另存为」会改路径 ⇒
+  id 跟着改 ⇒ 回调里的 id 失效 ⇒ **改动全丢**；id 还可能**跟别的文件撞车**
+  ⇒ 两个标签共用一份 state ⇒ **内容互相覆盖** ✗✗
+  ⇒ ⇒ 「是不是同一个文件」按**路径**认，**文件历史也存 id** ✓
+- ⚠️⚠️ **文件历史导航只「切标签」，不要从磁盘重读** —— 重读会把那个文件里
+  **用户没保存的修改**覆盖掉（没提示！）⇒ 磁盘上被改了由 watcher 管 ✓
+- ⚠️ **撤销/重做靠 `Transaction.userEvent` 认**（`'undo'` / `'redo'`）——
+  **别用 `undoDepth`**（会饱和，「普通编辑」和「重做」都会让它变大 ⇒ 分不出来）✗
+- ⚠️ **「大文件」按字节判，不是按字符数** —— 中文一个字符 3 个字节 ⇒ 差三倍 ⇒
+  ⇒ **编辑中也要重算**（用户粘贴一大段 ⇒ 文件撑大了没人知道 ⇒
+  后台检查还在编整个文件 ⇒ 机器被压满 ⇒ **IDE 卡死** ✗✗）
+- ⚠️ **大文件模式会「少几样功能」**（阈值默认 1 MB，`src/renderer/editor/largeFile.ts`）——
+  超了 ⇒ 不做**后台实时检查**、不给**拖块视图**、不把整份源码**送进 Claude**
+  ⇒ 标签上标一个「**大**」⇒ **手动「检查」/「运行」仍然可用** ✓
+  ⇒ ⚠️ **每个功能还有自己的硬上限**（拖块 256 KB、Claude 源码 256 KB）⇒
+  ⇒ 在块视图里切到超上限的文件 ⇒ **自动切回文本视图**（否则画布会显示
+  上一个文件的块）✓
+- ⚠️ **自动换行默认关**（跟 VS Code 的 `editor.wordWrap: off` 一样）⇒
+  想开按 **Alt+Z** ⇒ ⚠️ 它是**每个 state 各存一份**的 ⇒ 切文件后要重新压一次 ✓
+- ⚠️ **`React.memo` 的前提是「回调得稳定」** —— `App` 传给它们的回调必须包
+  `useCallback` ⇒ 不然每次都是新函数 ⇒ `memo` 白加 ✗
+  ⇒ ⚠️ 但**别把「自己订阅的 store」挡掉**（状态栏的光标是 `useSyncExternalStore`
+  ⇒ `memo` 只比 props ⇒ 内部 store 的更新**照样**进得来 ✓）
 
 ## 加一个新块
 
