@@ -264,13 +264,24 @@ describe('冷终端（刚建的）⇒ 「运行」也要走好路', () => {
     const { session, restore } = await makeBash()
     try {
       // 一条跑很久的命令（不会自己结束）
+      // ⚠️ **`sleep` 来自 coreutils** —— CI 上如果 MSYS2 装得瘦（只装
+      //    `base-devel`）⇒ bash 会**立刻**「command not found」⇒ 命令瞬间完成
+      //    ⇒ 「命令完成」那条路径先收场 ⇒ `terminalClosed` 是 undefined
+      //    ⇒ **这条断言就赢了「命令完成」而不是「终端死了」** ⇒ 门红
+      //    （2026-11-12 实测：本地过、CI 红 ⇒ CI 的 CI 文件已显式装 coreutils）。
       const pending = session.runCommand('sleep 30', { match: 'sleep' })
       // 等命令真的发出去了
       await new Promise((r) => setTimeout(r, 300))
       // ⚠️ **终端死了** —— 「命令跑完」那个 OSC 633 永远不会来了
       await session.kill()
       const run = await pending
-      expect(run.terminalClosed).toBe(true)
+      // ⚠️ **失败信息带上现场** —— 光一句 "expected undefined to be true" 看不出
+      //    是「终端没死」还是「命令提前结束」⇒ 白排查一轮。
+      expect(
+        run.terminalClosed,
+        `终端死了但没报 terminalClosed（exitCode=${run.exitCode} timedOut=${run.timedOut}）` +
+          ` —— 多半是**命令提前结束了**（CI 上 \`sleep\` 不存在？）`,
+      ).toBe(true)
       expect(run.exitCode).toBe(null)
     } finally {
       restore()

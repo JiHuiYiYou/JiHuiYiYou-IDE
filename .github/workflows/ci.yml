@@ -74,6 +74,14 @@ jobs:
           install: >-
             git
             base-devel
+            # ⚠️ **coreutils 要显式装** —— `base-devel` 组**不含** coreutils
+            #    （`sleep` / `tail` / `date` 这些都在 coreutils 里）。
+            #    ⇒ CI 上 bash 跑 `sleep 30` 会**立刻**「command not found」⇒
+            #    命令瞬间完成 ⇒ `tests/compiler/terminalRun.test.ts` 的
+            #    「终端死了 ⇒ 运行立刻收场」那条**竞态**就会输给「命令完成」那条
+            #    ⇒ 门红（2026-11-12 实测：本地过、CI 红）。
+            #    ⇒ **本机有 coreutils，CI 也要有** ⇒ 环境得跟本机一致。
+            coreutils
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-binutils
 
@@ -98,7 +106,7 @@ jobs:
 
       - name: 单元测试 + 快速一致性门
         working-directory: JiHuiYiYou-IDE
-        run: npx vitest run tests/lang tests/blocks tests/compiler tests/helpers tests/conformance/examples.test.ts
+        run: npx vitest run tests/lang tests/blocks tests/compiler tests/helpers tests/eval tests/conformance/examples.test.ts
 
   conformance:
     name: 全量一致性门（编译 + 运行）
@@ -133,6 +141,14 @@ jobs:
           install: >-
             git
             base-devel
+            # ⚠️ **coreutils 要显式装** —— `base-devel` 组**不含** coreutils
+            #    （`sleep` / `tail` / `date` 这些都在 coreutils 里）。
+            #    ⇒ CI 上 bash 跑 `sleep 30` 会**立刻**「command not found」⇒
+            #    命令瞬间完成 ⇒ `tests/compiler/terminalRun.test.ts` 的
+            #    「终端死了 ⇒ 运行立刻收场」那条**竞态**就会输给「命令完成」那条
+            #    ⇒ 门红（2026-11-12 实测：本地过、CI 红）。
+            #    ⇒ **本机有 coreutils，CI 也要有** ⇒ 环境得跟本机一致。
+            coreutils
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-binutils
 
