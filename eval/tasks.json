@@ -1,0 +1,497 @@
+{
+  "version": 1,
+  "builtAt": "2026-11-13T01:39:01.553Z",
+  "note": "由 scripts/eval/build-tasks.ts 生成 —— 别手改。",
+  "tasks": [
+    {
+      "id": "entry-name/abi_test",
+      "mutationId": "entry-name",
+      "rule": "§ 1 程序结构",
+      "kind": "compile-break",
+      "title": "入口函数必须是 fn main_jhyy()，不是 fn main()",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\abi_test.jhyy",
+      "broken": "// abi_test.jhyy — v2.1.0 Stage 3 ABI signature-level tests\n// EXPECT: 80  (35 sret + 35 struct arg + 10 quad arg)\n//\n// Each function exercises one ABI shape rule from `docs/abis/jhyy-abi-v1.0.0.md`\n// § 2/3. The QBE .il signature string is what matters here (not x64 register\n// placement — that's QBE internal). Use `jhyy_get_il` to inspect.\n//\n// Run:  jhyy.exe compile abi_test.jhyy -o abi_test\n//       jhyy_get_il abi_test    # see signatures\n//\n// Exit code = sum of all test results, so any change that breaks a signature\n// is visible at run time too (not just IL inspection).\n\n// ════════════════════════════════════════════\n// test_signature_sret — struct return → hidden `l %ret` pointer + sret alloc\n// Expected .il signature: `function w $make_point(l %ret, w %x, w %y)`\n// (sret classified via abi_win_classify_arg returning ARGCLASS_SRET)\n// ════════════════════════════════════════════\ntype Point = struct {\n    x: i32,\n    y: i32\n}\n\nfn make_point(x: i32, y: i32) -> Point {\n    Point { x: x, y: y }\n}\n\n// ════════════════════════════════════════════\n// test_signature_struct_arg — struct value arg → alloc8 slot + cg_copy_struct\n// Expected .il at call site: alloc8 8 + memcpy before call, slot passed in\n// register. abi_win_emit_struct_arg_slot returns the alloc'd slot; caller\n// does cg_copy_struct (per ABI § 3 LOCKED rule + abi module boundary).\n// ════════════════════════════════════════════\nfn take_point(p: Point) -> i32 {\n    p.x + p.y\n}\n\n// ════════════════════════════════════════════\n// test_signature_multi_arg — 4 scalar args → QBE registers\n// Expected .il signature: `function w $add4(w %a, w %b, w %c, w %d)`\n// (QBE assigns rcx/rdx/r8/r9 internally per `-t amd64_win`)\n// n_args > 4 not exercised here — that's v2.x mid-sprint territory\n// ════════════════════════════════════════════\nfn add4(a: i32, b: i32, c: i32, d: i32) -> i32 {\n    a + b + c + d\n}\n\n// ════════════════════════════════════════════\n// main_jhyy — drive all 3 tests + return sum (so any single breakage\n// shows as nonzero exit)\n// ════════════════════════════════════════════\nfn main() -> i32 {\n    // test_signature_sret\n    let p = make_point(10, 25);\n    let sret_sum = p.x + p.y;  // expect 35\n\n    // test_signature_struct_arg\n    let arg_sum = take_point(p);  // expect 35\n\n    // test_signature_multi_arg\n    let quad_sum = add4(1, 2, 3, 4);  // expect 10\n\n    sret_sum + arg_sum + quad_sum  // expect 80\n}",
+      "expectExit": 80,
+      "expectStdout": "",
+      "breakError": "gcc link failed: \"C:\\msys64\\ucrt64\\bin\\gcc.exe\" \"C:/Users/liuzhen/AppData/Local/Temp/jhof7fef8cb.o\"  -g0 -Wl,--build-id=none -Wl,--stack,268435456 \"C:\\Users\\liuzhen\\AppData\\Local\\Temp\\jhab126c7e7.s\" \"C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\runtime\\runtime.c\" \"C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\src0\\jhyy_helpers.c\" -o \"C:\\Users\\liuzhen\\AppData\\Local\\Temp\\jhed2695890.exe\" -lm -lkernel32 -luser32 -lshell32 -ladvapi32 | gcc stderr: | collect2.exe: error: ld returned 1 exit status",
+      "workspace": [
+        "abi_test.jhyy"
+      ]
+    },
+    {
+      "id": "entry-name/alignof_basic",
+      "mutationId": "entry-name",
+      "rule": "§ 1 程序结构",
+      "kind": "compile-break",
+      "title": "入口函数必须是 fn main_jhyy()，不是 fn main()",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\alignof_basic.jhyy",
+      "broken": "// W-129 回归门 —— alignof(TypeName) 是编译期常量表达式。\n//\n// 修复前:sema 里**只有** NODE_SIZEOF 分支,没有 NODE_ALIGNOF 分支 ⇒\n// alignof 表达式在推断链里走不到任何类型 ⇒\n//   带类型标注 → \"type mismatch in let\"\n//   不带标注   → \"function body type does not match return type\"\n// 编译器内部的 type_align() 早就是完整的,缺的只是这一层接线。\n//\n// 注:alignof(enum) 当前硬编码返回 4(与 enum 布局算出的\n// max(4, max_payload_align) 不一致)—— 那是 ABI v4.0.0 § 12.2 已登记的\n// 内部不一致,本门不把它固化进来。\ntype Point = struct { x: i32, y: i64 }\n\nfn main() -> i32 {\n    let a: i64 = alignof(i64);      // 8\n    let b: i64 = alignof(i32);      // 4\n    let c: i64 = alignof(u8);       // 1\n    let d: i64 = alignof(f64);      // 8\n    let e: i64 = alignof(*u8);      // 8\n    let f: i64 = alignof(Point);    // 8(含 i64 成员 ⇒ align 8)\n    return (a + b + c + d + e + f) as i32;   // 37\n}\n//EXPECT:37\n",
+      "expectExit": 37,
+      "expectStdout": "",
+      "breakError": "gcc link failed: \"C:\\msys64\\ucrt64\\bin\\gcc.exe\" \"C:/Users/liuzhen/AppData/Local/Temp/jho3f9011e6.o\"  -g0 -Wl,--build-id=none -Wl,--stack,268435456 \"C:\\Users\\liuzhen\\AppData\\Local\\Temp\\jhacdc775fa.s\" \"C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\runtime\\runtime.c\" \"C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\src0\\jhyy_helpers.c\" -o \"C:\\Users\\liuzhen\\AppData\\Local\\Temp\\jhe8a1087bd.exe\" -lm -lkernel32 -luser32 -lshell32 -ladvapi32 | gcc stderr: | collect2.exe: error: ld returned 5 exit status",
+      "workspace": [
+        "alignof_basic.jhyy"
+      ]
+    },
+    {
+      "id": "entry-name/arith",
+      "mutationId": "entry-name",
+      "rule": "§ 1 程序结构",
+      "kind": "compile-break",
+      "title": "入口函数必须是 fn main_jhyy()，不是 fn main()",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\arith.jhyy",
+      "broken": "// EXPECT: 1000042\n// i32/i64 mixed arithmetic + as conversion\n// v0.9 wip commit 2.5: covers extsw path stability (small_val as i64 + total_val as i32)\n//   + const-only data (no let mut → W-005 avoidance).\nextern fn printf(fmt: *u8, val: i64) -> i32;\n\nfn main() -> i32 {\n    let small_val: i32 = 42;\n    let big_val: i64 = 1000000 as i64;\n    let total_val: i64 = (small_val as i64) + big_val;\n    printf(\"total = %d\\n\", total_val);\n    let down_val: i32 = total_val as i32;\n    down_val\n}",
+      "expectExit": 1000042,
+      "expectStdout": "total = 1000042\r\n",
+      "breakError": "gcc link failed: \"C:\\msys64\\ucrt64\\bin\\gcc.exe\" \"C:/Users/liuzhen/AppData/Local/Temp/jho9e5399e2.o\"  -g0 -Wl,--build-id=none -Wl,--stack,268435456 \"C:\\Users\\liuzhen\\AppData\\Local\\Temp\\jhacf5c7349.s\" \"C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\runtime\\runtime.c\" \"C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\src0\\jhyy_helpers.c\" -o \"C:\\Users\\liuzhen\\AppData\\Local\\Temp\\jhe888b810e.exe\" -lm -lkernel32 -luser32 -lshell32 -ladvapi32 | gcc stderr: | collect2.exe: error: ld returned 5 exit status",
+      "workspace": [
+        "arith.jhyy"
+      ]
+    },
+    {
+      "id": "entry-name/borrow_check_basic",
+      "mutationId": "entry-name",
+      "rule": "§ 1 程序结构",
+      "kind": "compile-break",
+      "title": "入口函数必须是 fn main_jhyy()，不是 fn main()",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\borrow_check_basic.jhyy",
+      "broken": "// borrow_check_basic.jhyy — v3.1.0 (V3-C 3g) ship-gate test: `&T` / `&mut T` borrow type resolution + 8-byte layout.\n// Per spec supplement v3.1.0 § 2: `&T` parses as borrow type, sizeof == 8 (single ptr).\n//\n// Note (v3.1.0 simplification): active-borrow conflict detection (NLL) is **not\n// implemented** —— locked spec `jhyy-lang-spec-borrow-check-supplement-v3.1.0.md`\n// §4.1 把 8 项限制逐条列出来(双 `&mut` 冲突 / `&mut`+`&` 互斥 / reborrow /\n// lifetime 子类型 / 跨函数 borrow / nested block 作用域 / path-based NLL /\n// escape analysis),§4.2 写明「当前 v3.1.0 实现是 STUB」,§4.3 给的理由是\n// 「ship-gate 优先类型系统 + ABI 集成,借用检查延迟到后续 sprint」。\n// 真正的活在 backlog 的 v4.3.0「full lifetime + Polonius borrow check」。\n//\n// ⚠️ 2026-10-20(W-105):之前 `check_borrow` 是个**恒 return 1** 的 stub\n// (名字承诺会检查、实际什么都不做),连同它的调用点一起删掉了 —— 留一个\n// 假装会检查的函数比不检查更坏。**本测试因此多了一段「特征化」代码**\n// (见下):它断言的是「双 `&mut` 冲突**今天不报错**」这个 spec §6.2 的行为。\n//\n//   将来 v4.0.x 之外的某个版本真把 Polonius 落地时,那一段会**编译失败**\n//   → 本测试变红 → 那时把它反过来写成 EXPECT-ERROR(期望编译报错)✓\n//   —— 那一刻这个缺口才真的关上,而不是像现在这样「没人记得它还开着」。\n//\n// Note: `&expr` in expression position still produces *T (POINTER) per existing\n// v1.x semantics. To produce a `&T` borrow, the type must be declared as `&T`\n// and the right-hand-side must coerce (out of scope v3.1.0). This test only\n// verifies that `&T` type ANNOTATION parses + sizeof == 8.\nfn main() -> i32 {\n    let s_ref: i64 = sizeof(&i32);\n    let s_mut: i64 = sizeof(&mut i32);\n\n    // ⚠️ 2026-10-20(W-105 (b)):这个文件原来带一段「双 `&mut`」的**特征化**\n    // 代码(断言「冲突今天不被检测」)。W-105 (b) 的最小独占检查落地后,\n    // 那段代码**不再能编译** ⇒ 特征化测试失效 ⇒ 它的使命完成 ✓\n    // 冲突检测的正向断言搬到了新文件 `borrow_mut_conflict.jhyy`\n    // (EXPECT-ERROR: 编译必须失败)。\n\n    if s_ref == 8 {\n        if s_mut == 8 {\n            return 42;\n        }\n    }\n    return 0 as i32;\n}\n//EXPECT:42\n",
+      "expectExit": 42,
+      "expectStdout": "",
+      "breakError": "gcc link failed: \"C:\\msys64\\ucrt64\\bin\\gcc.exe\" \"C:/Users/liuzhen/AppData/Local/Temp/jhoa0ab5bcb.o\"  -g0 -Wl,--build-id=none -Wl,--stack,268435456 \"C:\\Users\\liuzhen\\AppData\\Local\\Temp\\jha48ec0fd7.s\" \"C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\runtime\\runtime.c\" \"C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\src0\\jhyy_helpers.c\" -o \"C:\\Users\\liuzhen\\AppData\\Local\\Temp\\jhe0f3bfd90.exe\" -lm -lkernel32 -luser32 -lshell32 -ladvapi32 | gcc stderr: | collect2.exe: error: ld returned 5 exit status",
+      "workspace": [
+        "borrow_check_basic.jhyy"
+      ]
+    },
+    {
+      "id": "entry-name/bug3_void_if",
+      "mutationId": "entry-name",
+      "rule": "§ 1 程序结构",
+      "kind": "compile-break",
+      "title": "入口函数必须是 fn main_jhyy()，不是 fn main()",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\bug3_void_if.jhyy",
+      "broken": "// EXPECT-OUT: \"result = 100\"\n// EXPECT: 0\n//\n// 推导: condition = 1。\n//   Test 1: 1 > 0 → then 分支 puts(\"positive\")(\"not positive\" 不该出现)。\n//           void 形态 if/else,值不被使用 —— 只验两条支路都编得出来、\n//           且选对了 then。\n//   Test 2: if-as-expression,1 > 0 → 取 then 分支字面量 100(不是 200)。\n//           这条是 Bug 2(if/else 有返回值时 phi 对齐)的直接判据:\n//           错的话 result 会是 200 或未初始化值。\nextern fn printf(fmt: *u8, val: i32) -> i32;\nextern fn puts(s: *u8) -> i32;\n\nfn main() -> i32 {\n    let condition = 1;\n\n    /* Test 1: if/else with void branches (no explicit value) */\n    if condition > 0 {\n        puts(\"positive\");\n    } else {\n        puts(\"not positive\");\n    }\n\n    /* Test 2: if/else with explicit values (should work with Bug 2 fix) */\n    let result = if condition > 0 {\n        100\n    } else {\n        200\n    };\n    printf(\"result = %d\\n\", result);\n\n    if result == 100 {\n        return 0 as i32;\n    }\n    return 1 as i32;\n}\n",
+      "expectExit": 0,
+      "expectOut": "result = 100",
+      "expectStdout": "positive\r\nresult = 100\r\n",
+      "breakError": "gcc link failed: \"C:\\msys64\\ucrt64\\bin\\gcc.exe\" \"C:/Users/liuzhen/AppData/Local/Temp/jho9f4bfaec.o\"  -g0 -Wl,--build-id=none -Wl,--stack,268435456 \"C:\\Users\\liuzhen\\AppData\\Local\\Temp\\jhaebcc4f53.s\" \"C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\runtime\\runtime.c\" \"C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\src0\\jhyy_helpers.c\" -o \"C:\\Users\\liuzhen\\AppData\\Local\\Temp\\jhe89932004.exe\" -lm -lkernel32 -luser32 -lshell32 -ladvapi32 | gcc stderr: | collect2.exe: error: ld returned 1 exit status",
+      "workspace": [
+        "bug3_void_if.jhyy"
+      ]
+    },
+    {
+      "id": "type-semicolon/abi_test",
+      "mutationId": "type-semicolon",
+      "rule": "§ 2.3 类型别名",
+      "kind": "compile-break",
+      "title": "type X = struct { ... } 结尾不能带分号",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\abi_test.jhyy",
+      "broken": "// abi_test.jhyy — v2.1.0 Stage 3 ABI signature-level tests\n// EXPECT: 80  (35 sret + 35 struct arg + 10 quad arg)\n//\n// Each function exercises one ABI shape rule from `docs/abis/jhyy-abi-v1.0.0.md`\n// § 2/3. The QBE .il signature string is what matters here (not x64 register\n// placement — that's QBE internal). Use `jhyy_get_il` to inspect.\n//\n// Run:  jhyy.exe compile abi_test.jhyy -o abi_test\n//       jhyy_get_il abi_test    # see signatures\n//\n// Exit code = sum of all test results, so any change that breaks a signature\n// is visible at run time too (not just IL inspection).\n\n// ════════════════════════════════════════════\n// test_signature_sret — struct return → hidden `l %ret` pointer + sret alloc\n// Expected .il signature: `function w $make_point(l %ret, w %x, w %y)`\n// (sret classified via abi_win_classify_arg returning ARGCLASS_SRET)\n// ════════════════════════════════════════════\ntype Point = struct {\n    x: i32,\n    y: i32\n};\n\nfn make_point(x: i32, y: i32) -> Point {\n    Point { x: x, y: y }\n}\n\n// ════════════════════════════════════════════\n// test_signature_struct_arg — struct value arg → alloc8 slot + cg_copy_struct\n// Expected .il at call site: alloc8 8 + memcpy before call, slot passed in\n// register. abi_win_emit_struct_arg_slot returns the alloc'd slot; caller\n// does cg_copy_struct (per ABI § 3 LOCKED rule + abi module boundary).\n// ════════════════════════════════════════════\nfn take_point(p: Point) -> i32 {\n    p.x + p.y\n}\n\n// ════════════════════════════════════════════\n// test_signature_multi_arg — 4 scalar args → QBE registers\n// Expected .il signature: `function w $add4(w %a, w %b, w %c, w %d)`\n// (QBE assigns rcx/rdx/r8/r9 internally per `-t amd64_win`)\n// n_args > 4 not exercised here — that's v2.x mid-sprint territory\n// ════════════════════════════════════════════\nfn add4(a: i32, b: i32, c: i32, d: i32) -> i32 {\n    a + b + c + d\n}\n\n// ════════════════════════════════════════════\n// main_jhyy — drive all 3 tests + return sum (so any single breakage\n// shows as nonzero exit)\n// ════════════════════════════════════════════\nfn main_jhyy() -> i32 {\n    // test_signature_sret\n    let p = make_point(10, 25);\n    let sret_sum = p.x + p.y;  // expect 35\n\n    // test_signature_struct_arg\n    let arg_sum = take_point(p);  // expect 35\n\n    // test_signature_multi_arg\n    let quad_sum = add4(1, 2, 3, 4);  // expect 10\n\n    sret_sum + arg_sum + quad_sum  // expect 80\n}",
+      "expectExit": 80,
+      "expectStdout": "",
+      "breakError": "unexpected token ';' in expression",
+      "workspace": [
+        "abi_test.jhyy"
+      ]
+    },
+    {
+      "id": "type-semicolon/agg_eq_array",
+      "mutationId": "type-semicolon",
+      "rule": "§ 2.3 类型别名",
+      "kind": "compile-break",
+      "title": "type X = struct { ... } 结尾不能带分号",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\agg_eq_array.jhyy",
+      "broken": "// EXPECT: 0\n// agg_eq_array.jhyy — 数组的 == / != 必须走**按值比较**(W-133 真修)\n//\n// 修前:比的是槽地址 ⇒ 元素相同的两个数组判 false。\n// 修后:逐元素比较(arr_count 是编译期常量 ⇒ 全展开)。\nextern fn printf(fmt: *u8, v: i32) -> i32;\n\ntype P = struct { x: i32, y: i32 };\n\nfn main_jhyy() -> i32 {\n    let mut fails: i32 = 0;\n    let mut same: i32 = 0;\n\n    let a1: [i32; 3] = [1, 2, 3];\n    let a2: [i32; 3] = [1, 2, 3];\n    let a3: [i32; 3] = [1, 2, 4];\n    same = 0;\n    if a1 == a2 { same = 1; }\n    if same == 0 { fails = fails + 1; }\n    same = 0;\n    if a1 == a3 { same = 1; }\n    if same == 1 { fails = fails + 1; }\n    same = 0;\n    if a1 != a3 { same = 1; }\n    if same == 0 { fails = fails + 1; }\n\n    // (「长度不同」那条现在**编译期报错** —— 数组比较要求两个操作数同类型,\n//  arr_count 不同 ⇒ type_eq=0 ⇒ 见 agg_eq_array_len_mismatch.jhyy)\n//\n// 元素是 struct\n    let s1: [P; 2] = [P { x: 1, y: 2 }, P { x: 3, y: 4 }];\n    let s2: [P; 2] = [P { x: 1, y: 2 }, P { x: 3, y: 4 }];\n    let s3: [P; 2] = [P { x: 1, y: 2 }, P { x: 3, y: 5 }];\n    same = 0;\n    if s1 == s2 { same = 1; }\n    if same == 0 { fails = fails + 1; }\n    same = 0;\n    if s1 == s3 { same = 1; }\n    if same == 1 { fails = fails + 1; }\n\n    printf(\"fails=%d\\n\", fails);\n    return fails;\n}\n",
+      "expectExit": 0,
+      "expectStdout": "fails=0\r\n",
+      "breakError": "unexpected token ';' in expression",
+      "workspace": [
+        "agg_eq_array.jhyy"
+      ]
+    },
+    {
+      "id": "type-semicolon/agg_eq_enum",
+      "mutationId": "type-semicolon",
+      "rule": "§ 2.3 类型别名",
+      "kind": "compile-break",
+      "title": "type X = struct { ... } 结尾不能带分号",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\agg_eq_enum.jhyy",
+      "broken": "// EXPECT: 0\n// agg_eq_enum.jhyy — enum 的 == / != 必须走**按值比较**(W-133 真修)\n//\n// 修前:比的是槽地址 ⇒ 同变体的两个 enum 判 false。\n// 修后:tag 相等 + payload 按变体类型比(**不按字节比** —— 两个分别构造的\n// 同值 enum,padding 是未初始化垃圾,按字节比会误判不等)。\n//\n// 覆盖:unit 变体 / 带 payload / 混合 payload 类型 / payload 是 struct。\nextern fn printf(fmt: *u8, v: i32) -> i32;\n\ntype Unit = enum { A, B }\ntype Pay = enum { X(i32), Y(i32), Z }\ntype Mixed = enum { M0, M1(i32), M2(i64) }\ntype Payload = struct { v: i32 };\ntype WithStruct = enum { S(Payload), T }\n\nfn main_jhyy() -> i32 {\n    let mut fails: i32 = 0;\n    let mut same: i32 = 0;\n\n    // unit 变体\n    let u1 = Unit::A;\n    let u2 = Unit::A;\n    let u3 = Unit::B;\n    same = 0;\n    if u1 == u2 { same = 1; }\n    if same == 0 { fails = fails + 1; }\n    same = 0;\n    if u1 == u3 { same = 1; }\n    if same == 1 { fails = fails + 1; }\n\n    // 带 payload\n    let p1 = Pay::X(42);\n    let p2 = Pay::X(42);\n    let p3 = Pay::X(43);\n    let p4 = Pay::Y(42);\n    same = 0;\n    if p1 == p2 { same = 1; }\n    if same == 0 { fails = fails + 1; }\n    same = 0;\n    if p1 == p3 { same = 1; }\n    if same == 1 { fails = fails + 1; }\n    same = 0;\n    if p1 == p4 { same = 1; }\n    if same == 1 { fails = fails + 1; }\n\n    // 混合 payload 类型(i32 / i64)—— per-variant 掩码 dispatch\n    let m1 = Mixed::M1(7);\n    let m2 = Mixed::M1(7);\n    let m3 = Mixed::M2(7 as i64);\n    let m4 = Mixed::M0;\n    same = 0;\n    if m1 == m2 { same = 1; }\n    if same == 0 { fails = fails + 1; }\n    same = 0;\n    if m1 == m3 { same = 1; }\n    if same == 1 { fails = fails + 1; }\n    same = 0;\n    if m1 == m4 { same = 1; }\n    if same == 1 { fails = fails + 1; }\n\n    // payload 是 struct\n    let s1 = WithStruct::S(Payload { v: 5 });\n    let s2 = WithStruct::S(Payload { v: 5 });\n    let s3 = WithStruct::S(Payload { v: 6 });\n    same = 0;\n    if s1 == s2 { same = 1; }\n    if same == 0 { fails = fails + 1; }\n    same = 0;\n    if s1 == s3 { same = 1; }\n    if same == 1 { fails = fails + 1; }\n\n    printf(\"fails=%d\\n\", fails);\n    return fails;\n}\n",
+      "expectExit": 0,
+      "expectStdout": "fails=0\r\n",
+      "breakError": "unexpected token ';' in expression",
+      "workspace": [
+        "agg_eq_enum.jhyy"
+      ]
+    },
+    {
+      "id": "type-semicolon/agg_eq_struct",
+      "mutationId": "type-semicolon",
+      "rule": "§ 2.3 类型别名",
+      "kind": "compile-break",
+      "title": "type X = struct { ... } 结尾不能带分号",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\agg_eq_struct.jhyy",
+      "broken": "// EXPECT: 0\n// agg_eq_struct.jhyy — struct 的 == / != 必须走**按值比较**(W-133 真修)\n//\n// 修前:编译通过但比的是**槽地址** ⇒ 字段完全相同的两个 struct 判 false。\n// 修后:逐字段比较 ⇒ 同值 true / 异值 false。\n//\n// ⚠️ 当前语言的 struct 字段实际**只支持 i32 / i64**\n// (bool / u8 / f64 / *u8 / 数组字段、嵌套 struct 字段都被 sema 拒:\n// field type mismatch —— 见台账 W-133.3),\n// 所以本测试覆盖不到「bool / 指针 / u8 / f64 / 数组 / 嵌套 struct」六种字段形态。\n//\n// 返回值是**累加出来的 fails 计数**(不是字面量)⇒ 零信号门\n// (scripts/dev/audit_test_assertions.py --strict)通过。\nextern fn printf(fmt: *u8, v: i32) -> i32;\n\ntype P = struct { x: i32, y: i32 };\n\nfn main_jhyy() -> i32 {\n    let a = P { x: 1, y: 2 };\n    let b = P { x: 1, y: 2 };\n    let c = P { x: 1, y: 3 };\n    let mut fails: i32 = 0;\n    let mut same: i32 = 0;\n\n    same = 0;\n    if a == b { same = 1; }\n    if same == 0 { fails = fails + 1; }\n\n    same = 0;\n    if a == c { same = 1; }\n    if same == 1 { fails = fails + 1; }\n\n    same = 0;\n    if a != c { same = 1; }\n    if same == 0 { fails = fails + 1; }\n\n    printf(\"fails=%d\\n\", fails);\n    return fails;\n}\n",
+      "expectExit": 0,
+      "expectStdout": "fails=0\r\n",
+      "breakError": "unexpected token ';' in expression",
+      "workspace": [
+        "agg_eq_struct.jhyy"
+      ]
+    },
+    {
+      "id": "type-semicolon/alignof_basic",
+      "mutationId": "type-semicolon",
+      "rule": "§ 2.3 类型别名",
+      "kind": "compile-break",
+      "title": "type X = struct { ... } 结尾不能带分号",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\alignof_basic.jhyy",
+      "broken": "// W-129 回归门 —— alignof(TypeName) 是编译期常量表达式。\n//\n// 修复前:sema 里**只有** NODE_SIZEOF 分支,没有 NODE_ALIGNOF 分支 ⇒\n// alignof 表达式在推断链里走不到任何类型 ⇒\n//   带类型标注 → \"type mismatch in let\"\n//   不带标注   → \"function body type does not match return type\"\n// 编译器内部的 type_align() 早就是完整的,缺的只是这一层接线。\n//\n// 注:alignof(enum) 当前硬编码返回 4(与 enum 布局算出的\n// max(4, max_payload_align) 不一致)—— 那是 ABI v4.0.0 § 12.2 已登记的\n// 内部不一致,本门不把它固化进来。\ntype Point = struct { x: i32, y: i64 };\n\nfn main_jhyy() -> i32 {\n    let a: i64 = alignof(i64);      // 8\n    let b: i64 = alignof(i32);      // 4\n    let c: i64 = alignof(u8);       // 1\n    let d: i64 = alignof(f64);      // 8\n    let e: i64 = alignof(*u8);      // 8\n    let f: i64 = alignof(Point);    // 8(含 i64 成员 ⇒ align 8)\n    return (a + b + c + d + e + f) as i32;   // 37\n}\n//EXPECT:37\n",
+      "expectExit": 37,
+      "expectStdout": "",
+      "breakError": "unexpected token ';' in expression",
+      "workspace": [
+        "alignof_basic.jhyy"
+      ]
+    },
+    {
+      "id": "import-std-prefix/arena_test/arena_test",
+      "mutationId": "import-std-prefix",
+      "rule": "§ 13 模块与导入",
+      "kind": "compile-break",
+      "title": "import 只写模块名本身，不带 std:: 前缀",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\arena_test\\arena_test.jhyy",
+      "broken": "// arena_test.jhyy — driver that exercises arena.jhyy\n// Stage 0 self-hosting pilot: verifies arena.jhyy works as a standalone allocator.\n//\n// EXPECT 推导:main 尾表达式是字面量 42 → EXIT = 42。\n//\n// EXPECT-OUT 推导 —— 期望 `allocated 200 objects`:\n//   arena_init(&a, 1024) 之后循环 arena_alloc(&a, 16) × 200。\n//   初始 1024B 装不下 200×16B,中途必然要扩块 —— 这行打印出来就证明\n//   块增长 + 分配循环跑完了 200 轮没崩、没越界。\n//   （`p1=%d` / `calloc=%d` / `dup=%d` 打的是堆地址,每轮跑都不一样,\n//     不能拿来当期望值。）\n//\n// EXPECT: 42\n// EXPECT-OUT: \"allocated 200 objects\"\n\nimport std::arena;\n\nextern fn printf(fmt: *u8, val: i32) -> i32;\n\nfn main_jhyy() -> i32 {\n    printf(\"step 1\\n\", 0);\n    let mut a: Arena = Arena {\n        start: 0 as *u8,\n        cur: 0 as *u8,\n        end: 0 as *u8,\n        blocks: 0 as *u8,\n        def_size: 0 as i64,\n    };\n    printf(\"step 2\\n\", 0);\n    arena_init(&a, 1024);\n    printf(\"step 3\\n\", 0);\n\n    // Allocate a small object (8 bytes, 8-aligned)\n    let p1 = arena_alloc(&a, 8);\n    printf(\"p1=%d\\n\", p1 as i32);\n\n    // Force block growth with many allocations\n    let mut i: i32 = 0;\n    while i < 200 {\n        let p = arena_alloc(&a, 16);\n        i = i + 1;\n    }\n    // 打的是循环变量 i 而不是写死 \"200\" —— 写死的话,哪怕循环跑 0 轮\n    // 这行也照样打印 \"allocated 200 objects\",断言就废了。\n    printf(\"allocated %d objects\\n\", i);\n\n    // calloc: should return zeroed memory\n    let z = arena_calloc(&a, 32);\n    printf(\"calloc=%d\\n\", z as i32);\n\n    // strdup: copy a string with explicit null-terminator\n    let hello = \"hello\" as *u8;\n    let dup = arena_strdup(&a, hello, 5);\n    printf(\"dup=%d\\n\", dup as i32);\n\n    // reset: reuses blocks, resets cur\n    arena_reset(&a);\n    printf(\"after reset\\n\");\n\n    // free: returns all blocks to libc\n    arena_free(&a);\n    printf(\"after free\\n\");\n\n    42\n}",
+      "expectExit": 42,
+      "expectOut": "allocated 200 objects",
+      "breakError": "expected ;, got ::",
+      "workspace": [
+        "arena_test/arena_test.jhyy",
+        "arena_test\\arena.jhyy"
+      ]
+    },
+    {
+      "id": "import-std-prefix/import_test",
+      "mutationId": "import-std-prefix",
+      "rule": "§ 13 模块与导入",
+      "kind": "compile-break",
+      "title": "import 只写模块名本身，不带 std:: 前缀",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\import_test.jhyy",
+      "broken": "// Test import system with module namespaces\nimport std::mylib;\n\nfn main_jhyy() -> i32 {\n    let x = mylib::add(10, 20);\n    let y = mylib::get_answer();\n    x + y   // 30 + 42 = 72\n}\n// EXPECT: 72",
+      "expectExit": 72,
+      "expectStdout": "",
+      "breakError": "expected ;, got ::",
+      "workspace": [
+        "import_test.jhyy",
+        "mylib.jhyy"
+      ]
+    },
+    {
+      "id": "import-std-prefix/mixed_const_struct_import",
+      "mutationId": "import-std-prefix",
+      "rule": "§ 13 模块与导入",
+      "kind": "compile-break",
+      "title": "import 只写模块名本身，不带 std:: 前缀",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\mixed_const_struct_import.jhyy",
+      "broken": "// EXPECT: 36\n// v1.6: mixed_const_struct_import — 多文件 import + struct ABI 链路\n//\n// Validates end-to-end:\n// - type Point (in lib, ABI struct pass-by-value per spec §3.2)\n// - fn returning Point (lib → caller, ABI struct by-value)\n// - import libname → call libname::fn(...)\n//\n// Calculation (避开 W-XXX ACTIVE — struct 字段访问 bug,详见下方 NOTE):\n// - r1 = point_sum(origin()) = 0 + 0 = 0\n// - r2 = point_sum(make_point(1, 2)) = 3\n// - r3 = point_sum(add_points(make_point(10, 20), origin())) = 30\n// - r4 = max_points() = 3\n// - total = 0 + 3 + 30 + 3 = 36\n//\n// NOTE: `let p = origin(); p.x` (struct 字段访问 via local 变量) 当前 codegen\n//   emit `loadw %t0` 而 `%t0` 未定义 (QBE reject)。W-XXX ACTIVE 推迟 v1.7。\n//   本 test 把 struct 字段访问全部推到 lib 端 (point_sum helper) 规避。\n\nimport std::const_struct_lib;\n\nfn main_jhyy() -> i32 {\n    let r1: i32 = const_struct_lib::point_sum(const_struct_lib::origin());\n    let r2: i32 = const_struct_lib::point_sum(const_struct_lib::make_point(1, 2));\n    let r3: i32 = const_struct_lib::point_sum(const_struct_lib::add_points(const_struct_lib::make_point(10, 20), const_struct_lib::origin()));\n    let r4: i32 = const_struct_lib::max_points();\n    return r1 + r2 + r3 + r4;\n}",
+      "expectExit": 36,
+      "expectStdout": "",
+      "breakError": "expected ;, got ::",
+      "workspace": [
+        "const_struct_lib.jhyy",
+        "mixed_const_struct_import.jhyy"
+      ]
+    },
+    {
+      "id": "import-std-prefix/multi_file/main",
+      "mutationId": "import-std-prefix",
+      "rule": "§ 13 模块与导入",
+      "kind": "compile-break",
+      "title": "import 只写模块名本身，不带 std:: 前缀",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\multi_file\\main.jhyy",
+      "broken": "// Multi-file compilation test: transitive imports + module namespaces\n// Each module is imported explicitly (transitive imports are not re-exported).\nimport std::lib_a;\nimport lib_b;\nimport lib_c;\n\nextern fn printf(fmt: *u8, val: i32) -> i32;\n\nfn main_jhyy() -> i32 {\n    let a = lib_a::get_a();       // from lib_a (10)\n    let b = lib_b::get_b();       // from lib_b (20)\n    let c = lib_c::get_c();       // from lib_c, also transitively imported via lib_a\n    a + b + c  // 10 + 20 + 30 = 60\n}\n// EXPECT: 60",
+      "expectExit": 60,
+      "expectStdout": "",
+      "breakError": "expected ;, got ::",
+      "workspace": [
+        "multi_file/main.jhyy",
+        "multi_file\\lib_a.jhyy",
+        "multi_file\\lib_b.jhyy",
+        "multi_file\\lib_c.jhyy"
+      ]
+    },
+    {
+      "id": "import-std-prefix/namespace/main",
+      "mutationId": "import-std-prefix",
+      "rule": "§ 13 模块与导入",
+      "kind": "compile-break",
+      "title": "import 只写模块名本身，不带 std:: 前缀",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\namespace\\main.jhyy",
+      "broken": "// EXPECT: 0\n// EXPECT-OUT: \"total=320\"\n// 2026-10-15:原先 main 返回 total - 320(已经是推导值),但没有 EXPECT 指令 →\n// harness 只验「没崩」。同时 printf 声明只收 1 个参数却传 5 个(撞 ABI B8),\n// 输出的五个数全是读到的寄存器垃圾。加断言后就能抓到。\n//\n// Namespace test: two modules both define `init` and `helper`.\n// Use qualified call syntax to disambiguate.\nimport std::mod_a;\nimport mod_b;\n\nextern fn printf(fmt: *u8, a: i32, b: i32, c: i32, d: i32, e: i32) -> i32;\n\nfn main_jhyy() -> i32 {\n    let a_init = mod_a::init();   // 100\n    let b_init = mod_b::init();   // 200\n    let a_help = mod_a::helper(); // 7\n    let b_help = mod_b::helper(); // 13\n    let total = a_init + b_init + a_help + b_help;\n    printf(\"a_init=%d b_init=%d a_help=%d b_help=%d total=%d\\n\",\n           a_init, b_init, a_help, b_help, total);\n    total - 320  // 100+200+7+13 = 320; EXIT 0\n}",
+      "expectExit": 0,
+      "expectOut": "total=320",
+      "expectStdout": "a_init=100 b_init=200 a_help=7 b_help=13 total=320\r\n",
+      "breakError": "expected ;, got ::",
+      "workspace": [
+        "namespace/main.jhyy",
+        "namespace\\mod_a.jhyy",
+        "namespace\\mod_b.jhyy"
+      ]
+    },
+    {
+      "id": "implicit-float-cast/conv_test",
+      "mutationId": "implicit-float-cast",
+      "rule": "§ 4.3 类型转换",
+      "kind": "compile-break",
+      "title": "整数与浮点之间不能隐式转换，必须写 as",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\conv_test.jhyy",
+      "broken": "// conv_test.jhyy — v2.11.19 Phase 5 验证 6 个 user-reachable conversion op\n//\n// EXPECT: 63\n//\n// 触发机制:JHYY spec 不允许 `as` int↔float cast,但 fn call 时允许\n// call-site type coerce (codegen cg_coerce 走 src_qt != dst_qt 时 emit 转换 op)。\n// 每个 fn 把参数当返回值返回,让 caller 在 call site 触发 coerce。\n//\n// 覆盖:\n//   §1 dtosi  — f64 → i32 (return f64 to i32 var)         IL: dtosi\n//   §2 stosi  — f32 → i32 (return f32 to i32 var)         IL: stosi\n//   §3 truncd — f64 → f32 (return f64 to f32 var)         IL: truncd\n//   §4 exts   — f32 → f64 (pass f32 arg to f64 param)     IL: exts (S→D)\n//   §5 sltof  — i64 → f64 (return i64 to f64 var)         IL: sltof\n//   §6 swtof  — i32 → f64 (return i32 to f64 var)         IL: swtof\n//\n// 注:ultof/uwtof (u64/u32 → f32) 当前在 user-facing path 不可达\n//   (spec 5.6 禁止 int→float `as` cast; cg_coerce 仅在 dst=D 时 emit sltof/swtof;\n//   dst=S 且 src=L/W 的路径没有 user construct 触发)。仍 emit 在 dispatch table\n//   防御未来 spec 改动 + Phase 2 已验 self-backend 编译通过 (没有 regression)。\n\nfn id_f64(x: f64) -> f64 { return x; }     // §1/§3/§5 caller 走 f64 路径\nfn id_f32(x: f32) -> f32 { return x; }     // §2 caller 走 f32 路径\nfn id_i32(x: i32) -> i32 { return x; }     // §6 caller 走 i32 路径\nfn take_d(x: f64) -> f64 { return x; }     // §4 caller 用 f64 param 接 f32 arg → exts\n\nfn main_jhyy() -> i32 {\n    // §1 dtosi: f64 → i32\n    let v1: f64 = id_f64(3.7);\n    let r1: i32 = v1 as i32;            // dtosi  → 3\n\n    // §2 stosi: f32 → i32\n    let v2: f32 = id_f32(3.7);\n    let r2: i32 = v2 as i32;            // stosi  → 3\n\n    // §3 truncd: f64 → f32 (via fn return coerce)\n    let v3: f64 = id_f64(2.5);\n    let r3: f32 = v3 as f32;            // truncd → 2.5f32\n\n    // §4 exts: f32 → f64 (call-site arg coerce)\n    let v4_f32: f32 = id_f32(2.5);\n    let v4: f64 = take_d(v4_f32);       // exts   — pass f32 to f64 param\n\n    // §5 sltof: i64 → f64\n    let v5_i64: i64 = 7;\n    let r5: f64 = v5_i64;        // sltof  → 7.0f64\n\n    // §6 swtof: i32 → f64\n    let v6_i32: i32 = id_i32(9);\n    let r6: f64 = v6_i32;        // swtof  → 9.0f64\n\n    // 评分:每 op 命中 +1/2/4/8/16/32\n    let r3i: i32 = r3 as i32;           // 2\n    let r4i: i32 = v4 as i32;           // 2\n    let r5i: i32 = r5 as i32;           // 7\n    let r6i: i32 = r6 as i32;           // 9\n\n    let mut score: i32 = 0;\n    if r1 == 3 { score = score + 1; }\n    if r2 == 3 { score = score + 2; }\n    if r3i == 2 { score = score + 4; }\n    if r4i == 2 { score = score + 8; }\n    if r5i == 7 { score = score + 16; }\n    if r6i == 9 { score = score + 32; }\n\n    // 期望 EXIT = 63 (1+2+4+8+16+32)\n    //\n    // EXPECT 推导(6 个比较全在 `as i32` 之后的 i32 上,不受 W-109 浮点比较缺陷影响):\n    //   §1 dtosi   trunc(3.7)          = 3  → +1\n    //   §2 stosi   trunc(3.7f32)       = 3  → +2\n    //   §3 truncd  trunc(2.5f32)       = 2  → +4\n    //   §4 exts    2.5f32 → 2.5f64 → 2    → +8\n    //   §5 sltof   7i64 → 7.0 → 7         → +16\n    //   §6 swtof   9i32 → 9.0 → 9         → +32\n    //   EXIT = 1+2+4+8+16+32 = 63\n    return score;\n}\n",
+      "expectExit": 63,
+      "expectStdout": "",
+      "breakError": "type mismatch in let",
+      "workspace": [
+        "conv_test.jhyy"
+      ]
+    },
+    {
+      "id": "implicit-float-cast/spec_int_to_float",
+      "mutationId": "implicit-float-cast",
+      "rule": "§ 4.3 类型转换",
+      "kind": "compile-break",
+      "title": "整数与浮点之间不能隐式转换，必须写 as",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\spec_int_to_float.jhyy",
+      "broken": "// spec_int_to_float.jhyy — spec §4.3:整数 → 浮点 的**全部 8 个**组合\n//\n// 2026-10-26(W-149 真修):整数→浮点转换的矩阵门。\n//\n// 修前的症状(2026-10-26 实测,失败位掩码 = 234 = 2|8|32|64|128):\n//\n//   ① **u64 → f64 走的是有符号转换** —— 前端一律发 `sltof`(i64→f64 有符号)\n//      ⇒ 值 ≥ 2^63 变**负数**。\n//      (后端的 `ultof`(u64→f64)早就写好了,W-146 还把它的算法修对了,\n//       但前端从来没发过它 ⇒ 那条修复对 u64→f64 是**死代码**。)\n//\n//   ② **f32 目标拿到的是 f64** —— 后端四个 tof op 里只有 `swtof` 会按目标槽\n//      在 cvtsi2ss/cvtsi2sd 之间切,另外三个恒产 f64\n//      (见 compiler/src0/codegen_amd64_state.jhyy 的 ILTOK_* 注释)\n//      ⇒ 旧表给 f32 目标发 `ultof`/`uwtof` ⇒ **f64 的位模式塞进 f32 槽**\n//      ⇒ 读出来是垃圾。⇒ i32→f32 / u32→f32 / i64→f32 / u64→f32 **四个全错**。\n//\n// 修法(compiler/src0/codegen.jhyy 的 cg_convert_arg):\n//   · 按**源类型的 prim** 判符号性 ⇒ 无符号源发 `ultof`(u64→f64)/ `uwtof`(u32→f64)\n//   · f32 目标统一「先转 f64,再 truncd」(那四个 op 在本后端恒产 f64)\n//\n// ⚠ `18446744073709551615u64` 字面量本身有**已知限制**(会被解析成 i64 max,\n//   见 spec_int_suffix_i16_u64.jhyy 头部注释)⇒ ≥ 2^63 的 u64 值一律**运行时算**。\n// ⚠ f32 尾数只有 24 位 ⇒ 2^24 以上的整数在 f32 里**不精确** ⇒ u32→f32 用\n//   2^24 断言(4000000000 在 f32 里会被舍入 ⇒ 拿它断言会误判)。\n//\n// EXPECT: 0\nfn main_jhyy() -> i32 {\n    let mut fails: i32 = 0;\n\n    // ── i32 → f64 ──\n    let a1: i32 = -5;\n    let b1: f64 = a1;\n    if b1 != -5.0 { fails = fails + 1; }\n\n    // ── i32 → f32 ──\n    let a2: i32 = -5;\n    let b2: f32 = a2 as f32;\n    if b2 != -5.0 { fails = fails + 2; }\n\n    // ── u32 → f64(4000000000 在 f64 里精确)──\n    let a3: u32 = 4000000000u32;\n    let b3: f64 = a3;\n    if b3 != 4000000000.0 { fails = fails + 4; }\n\n    // ── u32 → f32(2^24 = 16777216 是 f32 里精确的整数)──\n    let a4: u32 = 16777216u32;\n    let b4: f32 = a4 as f32;\n    if b4 != 16777216.0 { fails = fails + 8; }\n\n    // ── i64 → f64 ──\n    let a5: i64 = -5i64;\n    let b5: f64 = a5;\n    if b5 != -5.0 { fails = fails + 16; }\n\n    // ── i64 → f32 ──\n    let a6: i64 = -5i64;\n    let b6: f32 = a6 as f32;\n    if b6 != -5.0 { fails = fails + 32; }\n\n    // ── u64 → f64(2^63,运行时算)──\n    let a7: u64 = 9223372036854775807u64 + 1u64;\n    let b7: f64 = a7;\n    if b7 != 9223372036854775808.0 { fails = fails + 64; }\n\n    // ── u64 → f32(2^63 是 f32 里精确的整数)──\n    let a8: u64 = 9223372036854775807u64 + 1u64;\n    let b8: f32 = a8 as f32;\n    if b8 != 9223372036854775808.0 { fails = fails + 128; }\n\n    // ── f32 → f64 回读(exts 路径;顺带覆盖 f32 槽的读回)──\n    let c1: f32 = 1.5;\n    let c2: f64 = c1;\n    if c2 != 1.5 { fails = fails + 256; }\n\n    // ── 窄宽度(u8/u16/i8/i16)→ 浮点 ──\n    //\n    // 这四条走的是 **'w' 槽** 那条路(值是 loadub/loaduh 零扩展进 4 字节槽)\n    // ⇒ 发的是 `swtof` / **`uwtof`** —— 而 `uwtof` 在 W-145 之前是**死 op**\n    // (IL lexer 没有 'u' 分支)⇒ 这几条是 W-145 的**载荷覆盖**。\n    let d1: u8 = 255u8;\n    let e1: f64 = d1;\n    if e1 != 255.0 { fails = fails + 512; }\n\n    let d2: u16 = 65535u16;\n    let e2: f64 = d2;\n    if e2 != 65535.0 { fails = fails + 1024; }\n\n    let d3: i8 = -5i8;\n    let e3: f64 = d3;\n    if e3 != -5.0 { fails = fails + 2048; }\n\n    let d4: i16 = -5i16;\n    let e4: f64 = d4;\n    if e4 != -5.0 { fails = fails + 4096; }\n\n    let d5: u8 = 255u8;\n    let e5: f32 = d5 as f32;\n    let e5d: f64 = e5;\n    if e5d != 255.0 { fails = fails + 8192; }\n\n    let d6: u16 = 65535u16;\n    let e6: f32 = d6 as f32;\n    let e6d: f64 = e6;\n    if e6d != 65535.0 { fails = fails + 16384; }\n\n    return fails;\n}\n",
+      "expectExit": 0,
+      "expectStdout": "",
+      "breakError": "type mismatch in let",
+      "workspace": [
+        "spec_int_to_float.jhyy"
+      ]
+    },
+    {
+      "id": "implicit-float-cast/spec_literals_types",
+      "mutationId": "implicit-float-cast",
+      "rule": "§ 4.3 类型转换",
+      "kind": "compile-break",
+      "title": "整数与浮点之间不能隐式转换，必须写 as",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\spec_literals_types.jhyy",
+      "broken": "// spec_literals_types.jhyy — spec §2.5 / §2.1 / §4.3:字面量后缀与类型边界\n//\n// 覆盖缺口(2026-10-26 lang-spec 覆盖审计):\n//   ① §2.5「后缀:`f32` / `f64` / `f`(= f64)」—— `f` 这个别名**零覆盖**\n//      (int_suffix.jhyy 覆盖了整数后缀,但浮点的 `f` 别名没有);\n//   ② §2.1 `bool` 占 1 字节、字面量只有 true/false —— 作为**类型**零覆盖\n//      (既有测试只在 sizeof(bool) 里出现过);\n//   ③ §4.3 的**整数 ↔ 指针**与**整数 → 浮点** —— 零覆盖。\n//   (浮点 ↔ 指针那一对与 spec 不符,已拆成 XFAIL 门 spec_ptr_float_cast.jhyy)\n//\n// EXPECT: 0\nfn main_jhyy() -> i32 {\n    let mut fails: i32 = 0;\n\n    // ── ① 浮点后缀:f32 / f64 / f(= f64)──\n    let a: f32 = 2.5f32;\n    if a as i32 != 2 { fails = fails + 1; }\n    let b: f64 = 2.5f64;\n    if b as i32 != 2 { fails = fails + 1; }\n    // `f` 是 f64 的别名\n    let c: f64 = 2.5f;\n    if c as i32 != 2 { fails = fails + 1; }\n    // `f` 后缀的值与 f64 后缀的值一致\n    let d: f64 = 7.25f;\n    let e: f64 = 7.25f64;\n    if d != e { fails = fails + 1; }\n\n    // ── ② bool 类型 ──\n    let t: bool = true;\n    let f: bool = false;\n    if t == f { fails = fails + 1; }\n    // bool 只能进条件,不能混进 i32 算术(那是设计如此,这里只验条件用法)\n    let mut r: i32 = 0;\n    if t { r = 1; }\n    if r != 1 { fails = fails + 1; }\n    let mut r2: i32 = 0;\n    if f { r2 = 1; }\n    if r2 != 0 { fails = fails + 1; }\n\n    // ── ③ 整数 ↔ 指针(地址原样保留)──\n    let addr: i64 = 0x41424344 as i64;\n    let p: *i32 = addr as *i32;\n    if (p as i64) != 0x41424344 as i64 { fails = fails + 1; }\n    if (p as i64) != addr { fails = fails + 1; }\n\n    // ── ④ 整数 → 浮点(数值转换)──\n    let one: i64 = 1;\n    let onef: f64 = one;\n    if onef != 1.0 { fails = fails + 1; }\n\n    // ⚠️ 浮点 ↔ 指针(spec §4.3 写的是「按位重解释」)的现状**与 spec 不符**,\n    //   已单独拆成 XFAIL 门 `spec_ptr_float_cast.jhyy`(台账 W-143)——\n    //   实测:浮点→指针走**数值截断**(1.5 → 1),指针→浮点给 **0**\n    //   (既不是地址也不是位模式)。本用例只覆盖已定义正确的部分。\n\n    return fails;\n}\n",
+      "expectExit": 0,
+      "expectStdout": "",
+      "breakError": "type mismatch in let",
+      "workspace": [
+        "spec_literals_types.jhyy"
+      ]
+    },
+    {
+      "id": "implicit-float-cast/spec_ptr_float_cast",
+      "mutationId": "implicit-float-cast",
+      "rule": "§ 4.3 类型转换",
+      "kind": "compile-break",
+      "title": "整数与浮点之间不能隐式转换，必须写 as",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\spec_ptr_float_cast.jhyy",
+      "broken": "// spec_ptr_float_cast.jhyy — spec §4.3:浮点 ↔ 指针的转换语义\n//\n// 2026-10-26:这是 lang-spec 覆盖审计挖出的**语义缺口**(台账 W-143)的回归门。\n// XFAIL 标记已摘(留着会让 regress 报 XPASS)。\n//\n// 语义(用户 2026-10-26 拍板):**数值转换** —— 不是位重解释、不是解引用。\n//   · `x as *T` ≡ **饱和**转成 64 位无符号整数 → 当地址\n//     (NaN → 0;x < 0 → 0;x ≥ 2^64 → u64::MAX;区间内向 0 截断)\n//   · `p as f64` ≡ 地址当 64 位**无符号**整数 → 数值转浮点\n//     (整数→浮点是 roundTiesToEven,只可能丢精度;**不涉及饱和** ⇒ 不对称化)\n//\n// 修前的症状:浮点→指针走裸 cvttsd2si(数值截断);指针→浮点**一条指令都不发**\n// ⇒ 结果 temp 的 qbe_type 仍是 'l' ⇒ 流进 f64 形参时 caller 放整数寄存器 /\n// callee 读 XMM ⇒ **ABI 寄存器类错配**。\n//\n// EXPECT: 0\nfn main_jhyy() -> i32 {\n    let mut fails: i32 = 0;\n\n    // ① 判定性往返:1.0 → 指针 → f64 ⇒ 1.0\n    let one: f64 = 1.0;\n    let p1: *i64 = one as *i64;\n    let back1: f64 = p1;\n    if back1 != 1.0 { fails = fails + 1; }\n\n    // ② 区间内:1.5 → 1(向 0 截断)\n    let half: f64 = 1.5;\n    let p2: *i64 = half as *i64;\n    if (p2 as i64) != 1 { fails = fails + 1; }\n\n    // ③ 负数 → 0(饱和到下界)\n    let neg: f64 = 0.0 - 1.5;\n    let p3: *i64 = neg as *i64;\n    if (p3 as i64) != 0 { fails = fails + 1; }\n\n    // ④ NaN → 0(饱和)\n    let zero: f64 = 0.0;\n    let nan: f64 = zero / zero;\n    let p4: *i64 = nan as *i64;\n    if (p4 as i64) != 0 { fails = fails + 1; }\n\n    // ⑤ 指针 → 浮点:地址当 u64 的数值(不是 0,也不是位重解释)\n    let x: i64 = 12345;\n    let q: *i64 = &x;\n    let as_f: f64 = q;\n    if as_f <= 0.0 { fails = fails + 1; }\n    // 同一个地址的两种读法应一致(u64 → f64)\n    let addr: u64 = q as u64;\n    let d: f64 = as_f - (addr);\n    if d > 1.0 { fails = fails + 1; }\n    if d < 0.0 - 1.0 { fails = fails + 1; }\n\n    return fails;\n}\n",
+      "expectExit": 0,
+      "expectStdout": "",
+      "breakError": "type mismatch in let",
+      "workspace": [
+        "spec_ptr_float_cast.jhyy"
+      ]
+    },
+    {
+      "id": "closure-body-statement/closures_as_arg",
+      "mutationId": "closure-body-statement",
+      "rule": "§ 5.7 闭包",
+      "kind": "compile-break",
+      "title": "闭包体是单个表达式，不能写成语句块（里面不能有 let）",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\closures_as_arg.jhyy",
+      "broken": "// v3.2.1 (V3-C 3j): closures_as_arg — closure as fn value (M0 simple fallback;\n//   fn-type-as-parameter pushed to v3.x mid per 2026-09-09 user decision)\nfn main_jhyy() -> i32 {\n    let doubler = |n: i32| { let __v: i32 = n; n * 2 };\n    let r: i32 = doubler(21);\n    return r;\n}\n//EXPECT:42\n",
+      "expectExit": 42,
+      "expectStdout": "",
+      "breakError": "unexpected token 'let' in expression",
+      "workspace": [
+        "closures_as_arg.jhyy"
+      ]
+    },
+    {
+      "id": "closure-body-statement/closures_basic",
+      "mutationId": "closure-body-statement",
+      "rule": "§ 5.7 闭包",
+      "kind": "compile-break",
+      "title": "闭包体是单个表达式，不能写成语句块（里面不能有 let）",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\closures_basic.jhyy",
+      "broken": "// v3.2.1 (V3-C 3j): closures_basic — basic closure, no capture (MVP scope).\nfn main_jhyy() -> i32 {\n    let c = |y: i32| { let __v: i32 = y; y + 1 };\n    let r: i32 = c(5);\n    return r;\n}\n//EXPECT:6",
+      "expectExit": 6,
+      "expectStdout": "",
+      "breakError": "unexpected token 'let' in expression",
+      "workspace": [
+        "closures_basic.jhyy"
+      ]
+    },
+    {
+      "id": "match-arm-block/char_pattern",
+      "mutationId": "match-arm-block",
+      "rule": "附录 B 未实装",
+      "kind": "compile-break",
+      "title": "match 分支的 body 是单个表达式，不能写成 { ... } 语句块",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\char_pattern.jhyy",
+      "broken": "// EXPECT: 0\n// v1.6: W-053 char pattern (spec §11.3) — RESOLVED in v1.6 sprint\n// v1.7.0 Stage 3: char type u8 → i32 (spec §4.4 alignment)\n//\n// Validates char 做 match arm pattern:\n// - `'\\n' => 1`  (literal char pattern, decoded via decode_char_literal)\n// - `'a'..'z' => 2`  (range pattern, lit..lit, spec §11.3)\n// - `_ => 0`  (wildcard fallthrough)\n//\n// v1.6 fix (parity src + src0):\n// - parser.c TOKEN_CHAR pattern path now calls decode_char_literal\n//   (was bare t.start[1] — would mismatch decoded values like '\\n' = 10)\n//\n// v1.7.0 Stage 3 (parity src + src0):\n// - classify parameter u8 → i32 (matches new PRIM_I32 char type)\n// - call sites drop `as u8` cast (char literal already i32)\n\nfn classify(c: i32) -> i32 {\n    match c {\n        '\\n'      => { 1 },\n        'a'..'z'  => { 2 },\n        _         => { 0 },\n    }\n}\n\nfn main_jhyy() -> i32 {\n    let mut err: i32 = 0;\n\n    if classify('\\n') != 1 { err = err + 1; }\n    if classify('a') != 2 { err = err + 1; }\n    if classify('m') != 2 { err = err + 1; }\n    if classify('z') != 2 { err = err + 1; }\n    if classify('A') != 0 { err = err + 1; }   // 'A' not in a..z\n    if classify('0') != 0 { err = err + 1; }   // '0' not in a..z\n\n    err\n}",
+      "expectExit": 0,
+      "expectStdout": "",
+      "breakError": "unexpected token '{' in expression",
+      "workspace": [
+        "char_pattern.jhyy"
+      ]
+    },
+    {
+      "id": "match-arm-block/dungeon_game",
+      "mutationId": "match-arm-block",
+      "rule": "附录 B 未实装",
+      "kind": "compile-break",
+      "title": "match 分支的 body 是单个表达式，不能写成 { ... } 语句块",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\dungeon_game.jhyy",
+      "broken": "// =====================\n// FFI\n// =====================\n// printf 没有 `...`(ABI § 7.4 / B8),每个实参都必须在声明里逐个列出。\n// 本文件最大 arity 是 3 个实参(`printf(\"你的 HP: %d/%d\\n\", *hp, maxHp)`),\n// 所以按 3 参声明 —— jhyy 不校验调用点 arity,少传的那个实参寄存器\n// printf 读不到(格式串里没有对应转换符),行为与 C 一致。\n// 原先声明只有 2 参,那处 3 参调用读的是栈上垃圾。\nextern fn puts(s: *u8) -> i32;\nextern fn printf(fmt: *u8, a: i32, b: i32) -> i32;\nextern fn scanf(fmt: *u8, ptr: *i32) -> i32;\n\n// dungeon_game.jhyy — 地牢文字 Rogue (交互式,靠 stdout 断言)\n//\n// harness 用 stdin=DEVNULL 起进程,scanf 直接 EOF 返回,\n// 于是每轮 `go` 都保持初值 0 → 第一间房(入口房)之后就 state=1 退出。\n//\n// EXPECT 推导 —— 推导全程:\n//   hp=20 maxHp=20 atk=4 potions=2 state=0 roomIndex=0 gold=0 seed=12345\n//   loop 1: roomIndex=0 → roomTag=0 → describeRoom(0) 打印入口文案,\n//           不进任何分支,state 仍 0\n//           state==0 → scanf EOF → go 保持 0 → state=1,退出循环\n//   state==1 → 打印逃出文案 → printf(\"最终金币：%d\\n\", gold=0)\n//   return 0\n//   EXIT = 0\n// EXPECT-OUT 推导 —— 期望 `最终金币：0`:\n//   gold 至今没被改过(roomTag=0 不是宝箱房),所以必须是 0。\n//   这行一次性验了「房间分发 → scanf 失败路径 → state 机 → 收尾」整条链。\n//\n// EXPECT: 0\n// EXPECT-OUT: \"最终金币：0\"\n\n// =====================\n// 随机数 (LCG)\n// =====================\nfn randRange(seed: *i32, min: i32, max: i32) -> i32 {\n    let mut s = *seed;\n    s = (s * 1103515245 + 12345) & 0x7fffffff;\n    *seed = s;\n    let range = max - min + 1;\n    min + (s % range)\n}\n\n// =====================\n// 工具\n// =====================\nfn clamp(x: i32, min: i32, max: i32) -> i32 {\n    if x < min { return min; }\n    if x > max { return max; }\n    x\n}\n\n// =====================\n// 怪物数据 (tag: 0=Slime, 1=Skeleton, 2=Dragon)\n// =====================\nfn monsterHp(tag: i32) -> i32 {\n    if tag == 0 { return 8; }\n    if tag == 1 { return 14; }\n    30\n}\nfn monsterAtk(tag: i32) -> i32 {\n    if tag == 0 { return 2; }\n    if tag == 1 { return 4; }\n    7\n}\nfn monsterGold(tag: i32) -> i32 {\n    if tag == 0 { return 5; }\n    if tag == 1 { return 10; }\n    50\n}\n\n// =====================\n// 战斗系统\n// =====================\nfn battle(hp: *i32, maxHp: i32, atk: i32, potions: *i32,\n           mHp: *i32, mAtk: i32, mGold: i32,\n           seed: *i32, state: *i32, gold: *i32) {\n    while *hp > 0 {\n        printf(\"你的 HP: %d/%d\\n\", *hp, maxHp);\n        printf(\"怪物 HP: %d\\n\", *mHp);\n        puts(\"1. 攻击\");\n        puts(\"2. 喝药 (+6 HP)\");\n        puts(\"3. 逃跑\");\n        puts(\"选择行动:\");\n\n        let mut choice = 0;\n        scanf(\"%d\", &choice);\n\n        // 攻击\n        if choice == 1 {\n            let dmg = atk + randRange(seed, -1, 1);\n            let curMhp = *mHp;\n            let newMhp = curMhp - dmg;\n            *mHp = newMhp;\n            printf(\"你造成了 %d 点伤害。\\n\", dmg);\n        }\n        // 喝药\n        if choice == 2 {\n            if *potions > 0 {\n                let curHp = *hp;\n                let newHp = curHp + 6;\n                *hp = newHp;\n                *hp = clamp(*hp, 0, maxHp);\n                let curPot = *potions;\n                let newPot = curPot - 1;\n                *potions = newPot;\n                puts(\"你喝下一瓶药。\");\n            } else {\n                puts(\"你没有药水！\");\n            }\n        }\n        // 逃跑\n        if choice == 3 {\n            let escape = randRange(seed, 0, 1);\n            if escape == 0 {\n                puts(\"逃跑失败！\");\n            } else {\n                puts(\"你逃跑了。\");\n            }\n            if escape != 0 { return; }\n        }\n\n        // 检查怪物是否被击杀\n        if *mHp <= 0 {\n            puts(\"你击败了怪物！\");\n            let newGold = *gold + mGold;\n            *gold = newGold;\n            return;\n        }\n\n        // 怪物反击\n        let dmg = mAtk + randRange(seed, -1, 1);\n        let curHp2 = *hp;\n        let newHp2 = curHp2 - dmg;\n        *hp = newHp2;\n        printf(\"怪物造成了 %d 点伤害。\\n\", dmg);\n    }\n\n    // 玩家死亡\n    *state = 2;\n}\n\n// =====================\n// 房间描述\n// =====================\nfn describeRoom(tag: i32) {\n    if tag == 0 { puts(\"你站在地牢入口。\"); }\n    if tag == 1 { puts(\"一只怪物冲了出来！\"); }\n    if tag == 2 { puts(\"你发现了治疗泉水。\"); }\n    if tag == 3 { puts(\"你找到了一个宝箱。\"); }\n    if tag == 4 { puts(\"前方是最终 BOSS 房间。\"); }\n    if tag == 5 { puts(\"你看到了出口。\"); }\n}\n\n// roomTag: 0=Start, 1=Monster, 2=Heal, 3=Treasure, 4=Boss, 5=Exit\nfn processRoom(hp: *i32, maxHp: i32, atk: i32, potions: *i32,\n               seed: *i32, state: *i32, gold: *i32, roomTag: i32) {\n    describeRoom(roomTag);\n\n    // 治疗\n    if roomTag == 2 {\n        let curHp = *hp;\n        let healHp = curHp + 8;\n        *hp = healHp;\n        *hp = clamp(*hp, 0, maxHp);\n        puts(\"你恢复了生命值。\");\n    }\n    // 宝箱\n    if roomTag == 3 {\n        let curGold = *gold;\n        let newG = curGold + 20;\n        *gold = newG;\n        let curPot = *potions;\n        let newPot2 = curPot + 1;\n        *potions = newPot2;\n        puts(\"获得金币和药水。\");\n    }\n    // 普通怪物\n    if roomTag == 1 {\n        let mTag = 0;\n        let mHp = monsterHp(mTag);\n        let mAtk = monsterAtk(mTag);\n        let mGold = monsterGold(mTag);\n        let mut mHpVar = mHp;\n        battle(hp, maxHp, atk, potions, &mHpVar, mAtk, mGold, seed, state, gold);\n    }\n    // BOSS\n    if roomTag == 4 {\n        let mTag = 2;\n        let mHp = monsterHp(mTag);\n        let mAtk = monsterAtk(mTag);\n        let mGold = monsterGold(mTag);\n        let mut mHpVar = mHp;\n        battle(hp, maxHp, atk, potions, &mHpVar, mAtk, mGold, seed, state, gold);\n    }\n    // 出口\n    if roomTag == 5 {\n        *state = 1;\n    }\n}\n\n// =====================\n// 主函数\n// =====================\nfn main_jhyy() -> i32 {\n    puts(\"=== 地下城文字 Rogue ===\");\n\n    let mut hp = 20;\n    let maxHp = 20;\n    let atk = 4;\n    let mut potions = 2;\n    let mut state = 0;\n    let mut roomIndex = 0;\n    let mut gold = 0;\n    let mut seed = 12345;\n\n    while state == 0 {\n        let roomTag = match roomIndex {\n            0 => { 0 },\n            1 => { 2 },\n            2 => { 1 },\n            3 => { 3 },\n            4 => { 4 },\n            _ => 5\n        };\n\n        processRoom(&hp, maxHp, atk, &potions, &seed, &state, &gold, roomTag);\n\n        if state == 0 {\n            puts(\"前往下一层？(1=是 0=退出):\");\n            let mut go = 0;\n            scanf(\"%d\", &go);\n            if go == 0 {\n                state = 1;\n                0\n            } else {\n                roomIndex = roomIndex + 1;\n                0\n            }\n        }\n    }\n\n    if state == 1 {\n        puts(\"你成功逃出地牢！\");\n    } else {\n        puts(\"你死在了地牢深处。\");\n    }\n\n    printf(\"最终金币：%d\\n\", gold);\n    0\n}\n",
+      "expectExit": 0,
+      "expectOut": "最终金币：0",
+      "expectStdout": "=== 地下城文字 Rogue ===\r\n你站在地牢入口。\r\n前往下一层？(1=是 0=退出):\r\n你成功逃出地牢！\r\n最终金币：0\r\n",
+      "breakError": "unexpected token '{' in expression",
+      "workspace": [
+        "dungeon_game.jhyy"
+      ]
+    },
+    {
+      "id": "match-arm-block/match",
+      "mutationId": "match-arm-block",
+      "rule": "附录 B 未实装",
+      "kind": "compile-break",
+      "title": "match 分支的 body 是单个表达式，不能写成 { ... } 语句块",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\match.jhyy",
+      "broken": "// Match expression test\n\nfn main_jhyy() -> i32 {\n    let x = 2;\n    let result = match x {\n        1 => { 10 },\n        2 => { 20 },\n        _ => 0\n    };\n    result\n}\n// EXPECT: 20\n",
+      "expectExit": 20,
+      "expectStdout": "",
+      "breakError": "unexpected token '{' in expression",
+      "workspace": [
+        "match.jhyy"
+      ]
+    },
+    {
+      "id": "match-arm-block/match_range",
+      "mutationId": "match-arm-block",
+      "rule": "附录 B 未实装",
+      "kind": "compile-break",
+      "title": "match 分支的 body 是单个表达式，不能写成 { ... } 语句块",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\match_range.jhyy",
+      "broken": "// EXPECT: 0\n// v1.6.x: literal range pattern in match arm (parity src + src0)\n// Mirrors README \"A tour of the syntax\" `classify()` example shape; covers:\n//   - INT..INT range (boundary lo/hi inclusivity, in-range, above, below)\n//   - negative literal range (-3..-1)\n//   - OR pattern combined with literal pattern (`10 | 20`)\n//   - wildcard fallthrough\n//\n// Exit code is the count of failed asserts.\n\nfn bucket_pos(n: i32) -> i32 {\n    match n {\n        0        => { 0 },\n        1..10    => { 1 },\n        10 | 20  => { 2 },\n        _        => { -1 },\n    }\n}\n\nfn bucket_neg(n: i32) -> i32 {\n    match n {\n        -3..-1   => 5,\n        _        => -1,\n    }\n}\n\nfn main_jhyy() -> i32 {\n    let mut err: i32 = 0;\n\n    // positive range (README example shape)\n    if bucket_pos(0)  != 0  { err = err + 1; }\n    if bucket_pos(5)  != 1  { err = err + 1; }\n    if bucket_pos(1)  != 1  { err = err + 1; }\n    if bucket_pos(9)  != 1  { err = err + 1; }\n    if bucket_pos(10) != 1  { err = err + 1; }\n    if bucket_pos(11) != -1 { err = err + 1; }\n    if bucket_pos(20) != 2  { err = err + 1; }\n    if bucket_pos(-1) != -1 { err = err + 1; }\n\n    // negative literal range -3..-1\n    if bucket_neg(-3) != 5  { err = err + 1; }\n    if bucket_neg(-1) != 5  { err = err + 1; }\n    if bucket_neg(-2) != 5  { err = err + 1; }\n    if bucket_neg(0)  != -1 { err = err + 1; }\n\n    err\n}\n",
+      "expectExit": 0,
+      "expectStdout": "",
+      "breakError": "unexpected token '{' in expression",
+      "workspace": [
+        "match_range.jhyy"
+      ]
+    },
+    {
+      "id": "match-arm-block/min_enum",
+      "mutationId": "match-arm-block",
+      "rule": "附录 B 未实装",
+      "kind": "compile-break",
+      "title": "match 分支的 body 是单个表达式，不能写成 { ... } 语句块",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\min_enum.jhyy",
+      "broken": "type Color = enum { Red, Green, Blue }\nfn main_jhyy() -> i32 {\n    let c: Color = Color::Green;\n    return match c { Color::Red => { 0 }, Color::Green => { 1 }, Color::Blue => 2 };\n}\n// EXPECT: 1\n",
+      "expectExit": 1,
+      "expectStdout": "",
+      "breakError": "unexpected token '{' in expression",
+      "workspace": [
+        "min_enum.jhyy"
+      ]
+    },
+    {
+      "id": "enum-two-payloads/enum_match_arm_tag_check",
+      "mutationId": "enum-two-payloads",
+      "rule": "附录 B 已实装但受限",
+      "kind": "compile-break",
+      "title": "enum 变体最多只能带一个 payload",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\enum_match_arm_tag_check.jhyy",
+      "broken": "// EXPECT: 200\n// v1.7.1 patch A3: enum match arm tag check 真修\n//\n// 之前 codegen 对 non-binding enum pattern (literal / wildcard) 统一\n// `goto enum_default` → 多 arm 顺序 match 退化成\"永远第一 arm\"。\n// fix: codegen 按 expected_tag 真做 tag compare, payload slot alias 只在\n// binding pattern 时 emit (per docs/internal/workarounds.md § Stage 3 +\n// W-057 ACTIVE 段, 2026-08-28 ship 后标 RESOLVED).\n//\n// 本 test 验证两条路径都正确:\n//   - binding pattern: `Some(v) => v` — payload 提取 + tag check\n//   - non-binding pattern: `Some(_) => 100` + `None => 200` — 真 tag dispatch\n// 输入 None 走第二 arm (200), 不是永远第一 arm (100).\n\ntype Option = enum { Some(i32, i32), None }\n\nfn main_jhyy() -> i32 {\n    // 输入 None — 必须命中 Option::None arm (= 200), 不是 Some(_) (= 100).\n    return match Option::None {\n        Option::Some(_) => 100,\n        Option::None    => 200,\n    };\n}\n",
+      "expectExit": 200,
+      "expectStdout": "",
+      "breakError": "expected ), got ,",
+      "workspace": [
+        "enum_match_arm_tag_check.jhyy"
+      ]
+    },
+    {
+      "id": "enum-two-payloads/match_exhaustive",
+      "mutationId": "enum-two-payloads",
+      "rule": "附录 B 已实装但受限",
+      "kind": "compile-break",
+      "title": "enum 变体最多只能带一个 payload",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\match_exhaustive.jhyy",
+      "broken": "// EXPECT: 2\n// v0.7 7A: enum match 穷尽性检查 + 短名 variant pattern\n//\n// Option::Some 和 Option::None 都覆盖，合法。\n// 短名 `Some(_)` / `None` 也合法（自动查 SYM_VARIANT）。\n// （payload binding `Some(v) => v` 留到后续 sprint —— 当前 codegen\n// 还没把 pattern binding 接进 cg->locals，先用 `_` 通配符占位。）\n\ntype Option = enum { Some(i32, i32), None }\n\nfn unwrap_or(opt: Option, default: i32) -> i32 {\n    match opt {\n        Option::Some(_) => 1,\n        Option::None    => default,\n    }\n}\n\nfn unwrap_or_short(opt: Option, default: i32) -> i32 {\n    match opt {\n        Some(_) => 1,\n        None    => default,\n    }\n}\n\nfn main_jhyy() -> i32 {\n    unwrap_or(Option::Some(42), 0) + unwrap_or_short(Option::Some(0), 1)\n}\n",
+      "expectExit": 2,
+      "expectStdout": "",
+      "breakError": "expected ), got ,",
+      "workspace": [
+        "match_exhaustive.jhyy"
+      ]
+    },
+    {
+      "id": "enum-two-payloads/or_exhaust",
+      "mutationId": "enum-two-payloads",
+      "rule": "附录 B 已实装但受限",
+      "kind": "compile-break",
+      "title": "enum 变体最多只能带一个 payload",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\or_exhaust.jhyy",
+      "broken": "// EXPECT: 1\n// v1.3.7: OR pattern with wildcard completes coverage (`None | Some(_)`)\n\ntype Option = enum { Some(i32, i32), None }\n\nfn main_jhyy() -> i32 {\n    match Option::Some(42) {\n        Option::None | Option::Some(_) => 1,\n    }\n}\n",
+      "expectExit": 1,
+      "expectStdout": "",
+      "breakError": "expected ), got ,",
+      "workspace": [
+        "or_exhaust.jhyy"
+      ]
+    },
+    {
+      "id": "enum-two-payloads/or_same_bind",
+      "mutationId": "enum-two-payloads",
+      "rule": "附录 B 已实装但受限",
+      "kind": "compile-break",
+      "title": "enum 变体最多只能带一个 payload",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\or_same_bind.jhyy",
+      "broken": "// EXPECT: 42\n// v1.3.7: OR pattern `Some(v) | Some(v)` should match (same name)\n\ntype Option = enum { Some(i32, i32), None }\n\nfn main_jhyy() -> i32 {\n    match Option::Some(42) {\n        Option::Some(v) | Option::Some(v) => v,\n        Option::None => 0,\n    }\n}\n",
+      "expectExit": 42,
+      "expectStdout": "",
+      "breakError": "expected ), got ,",
+      "workspace": [
+        "or_same_bind.jhyy"
+      ]
+    },
+    {
+      "id": "enum-two-payloads/payload_bind_basic",
+      "mutationId": "enum-two-payloads",
+      "rule": "附录 B 已实装但受限",
+      "kind": "compile-break",
+      "title": "enum 变体最多只能带一个 payload",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\payload_bind_basic.jhyy",
+      "broken": "// EXPECT: 42\n// v1.3.7: pattern binding `Some(v) => v` extracts payload\n\ntype Option = enum { Some(i32, i32), None }\n\nfn main_jhyy() -> i32 {\n    match Option::Some(42) {\n        Option::Some(v) => v,\n        Option::None    => 0,\n    }\n}\n",
+      "expectExit": 42,
+      "expectStdout": "",
+      "breakError": "expected ), got ,",
+      "workspace": [
+        "payload_bind_basic.jhyy"
+      ]
+    },
+    {
+      "id": "match-range-halfopen/match_range",
+      "mutationId": "match-range-halfopen",
+      "rule": "§ 5.6 match",
+      "kind": "behavior-break",
+      "title": "match 的区间是闭区间（1..10 含 10），for 的区间才是半开",
+      "sourceFile": "C:\\Users\\liuzhen\\Desktop\\coding\\JiHuiYiYou\\compiler\\tests\\examples\\match_range.jhyy",
+      "broken": "// EXPECT: 0\n// v1.6.x: literal range pattern in match arm (parity src + src0)\n// Mirrors README \"A tour of the syntax\" `classify()` example shape; covers:\n//   - INT..INT range (boundary lo/hi inclusivity, in-range, above, below)\n//   - negative literal range (-3..-1)\n//   - OR pattern combined with literal pattern (`10 | 20`)\n//   - wildcard fallthrough\n//\n// Exit code is the count of failed asserts.\n\nfn bucket_pos(n: i32) -> i32 {\n    match n {\n        0        => 0,\n        1..9    => 1,\n        10 | 20  => 2,\n        _        => -1,\n    }\n}\n\nfn bucket_neg(n: i32) -> i32 {\n    match n {\n        -3..-1   => 5,\n        _        => -1,\n    }\n}\n\nfn main_jhyy() -> i32 {\n    let mut err: i32 = 0;\n\n    // positive range (README example shape)\n    if bucket_pos(0)  != 0  { err = err + 1; }\n    if bucket_pos(5)  != 1  { err = err + 1; }\n    if bucket_pos(1)  != 1  { err = err + 1; }\n    if bucket_pos(9)  != 1  { err = err + 1; }\n    if bucket_pos(10) != 1  { err = err + 1; }\n    if bucket_pos(11) != -1 { err = err + 1; }\n    if bucket_pos(20) != 2  { err = err + 1; }\n    if bucket_pos(-1) != -1 { err = err + 1; }\n\n    // negative literal range -3..-1\n    if bucket_neg(-3) != 5  { err = err + 1; }\n    if bucket_neg(-1) != 5  { err = err + 1; }\n    if bucket_neg(-2) != 5  { err = err + 1; }\n    if bucket_neg(0)  != -1 { err = err + 1; }\n\n    err\n}\n",
+      "expectExit": 0,
+      "expectStdout": "",
+      "workspace": [
+        "match_range.jhyy"
+      ]
+    }
+  ]
+}

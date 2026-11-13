@@ -16,10 +16,18 @@
     "conformance": "vitest run tests/conformance",
     "dist": "electron-vite build && electron-builder --win nsis --publish never",
     "gen:spec": "node scripts/gen-spec-index.mjs",
+    "eval:tasks": "vite-node scripts/eval/build-tasks.ts",
+    "eval": "vite-node scripts/eval/run-eval.ts",
+    "eval:compare": "vite-node scripts/eval/compare.ts",
+    "eval:regrade": "vite-node scripts/eval/regrade.ts",
+    "eval:probe": "vite-node scripts/jhyy-knowledge-probe.ts",
     "postinstall": "node scripts/prepare-node-pty.mjs",
     "publish:wiki": "node scripts/publish-wiki.mjs",
     "smoke:claude": "vite-node scripts/claude-smoke.ts",
-    "smoke:pty": "electron-vite build && electron scripts/pty-host-smoke.cjs"
+    "smoke:pty": "electron-vite build && electron scripts/pty-host-smoke.cjs",
+    "eval:analyze": "vite-node scripts/eval/analyze-turns.ts",
+    "eval:tasks:paired": "python scripts/eval/gen-paired-tasks.py",
+    "eval:compare-langs": "vite-node scripts/eval/compare-langs.ts"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.4",
@@ -67,6 +75,12 @@
       "!**/node_modules/node-pty/build/Release/*.lib",
       "!**/node_modules/node-pty/build/Release/*.pdb",
       "!**/node_modules/node-pty/build/Release/obj/**"
+    ],
+    "extraResources": [
+      {
+        "from": "scripts/jhyy-check-hook.mjs",
+        "to": "jhyy-check-hook.mjs"
+      }
     ]
   }
 }

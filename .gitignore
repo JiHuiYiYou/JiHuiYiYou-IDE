@@ -17,5 +17,9 @@ tmp/
 # playwright-cli 的快照/日志（浏览器自动化工具的临时产物）
 .playwright-cli/
 
+# 评测运行产物（每次跑都新生成、含模型输出快照；不进仓）
+# ⚠️ `eval/tasks.json`（任务集本身）是**进仓**的 —— 它是尺子的定义。
+eval/out/
+
 # Claude Code 本地配置（指针 + 本机设置，不入仓）
 .claude

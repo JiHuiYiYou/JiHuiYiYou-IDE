@@ -87,6 +87,13 @@ export interface ClaudeStartOptions {
   /** 系统提示词追加内容 */
   appendSystemPrompt?: string
   /**
+   * 系统提示词追加内容的**文件路径**（知识包走这条 —— Windows 命令行有
+   * 32767 字符上限，知识包这种大块静态内容塞不进 argv）。
+   */
+  systemPromptFile?: string
+  /** 额外的 `settings.json`（给 `--settings`）—— 装 PostToolUse 钩子用 */
+  settingsFile?: string
+  /**
    * 当前缓冲区的内容（**只在缓冲区还没落盘、且不太大的时候给**）。
    *
    * ⚠️ **为什么放在这儿，而不是放在每时每刻都发的 `IdeContext` 里** ——

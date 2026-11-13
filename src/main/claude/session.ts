@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { StringDecoder } from 'node:string_decoder'
 import type {
   ClaudeContentBlock,
@@ -58,8 +59,43 @@ export interface SessionOptions {
   resumeSessionId?: string
   /** 追加到 Claude Code 内置 system prompt 后面的内容 */
   appendSystemPrompt?: string
+  /**
+   * 追加内容的**文件路径**（知识包这种大块静态内容走这里）。
+   *
+   * ⚠️ **为什么不用 `appendSystemPrompt` 传知识包**：
+   *   Windows 上整条命令行有 **32767 字符**上限 ⇒ 知识包（中文 ~13.5k 字符）
+   *   再加动态 IDE 状态就贴上限了 ⇒ **必须走文件**。
+   * ⚠️ `--append-system-prompt-file` 是**隐藏 flag**（`--help` 里没列）——
+   *   实测本机 claude 2.1.302 支持，且与 `--append-system-prompt` **可共存**，
+   *   两个通道的内容都进模型上下文（用标记串探针验过）。
+   */
+  systemPromptFile?: string
+  /**
+   * 额外的 `settings.json` 路径（给 `--settings`）。
+   *
+   * ⚠️ Claude Code 的 `--settings` 是**叠加**在 user/project settings 之上的
+   *   ⇒ 不会覆盖用户的配置 ✓（我们只是加一个 PostToolUse 钩子）。
+   */
+  settingsFile?: string
   /** 允许 Claude 碰的额外目录 */
   addDirs?: string[]
+  /**
+   * **额外注入的环境变量**（会覆盖 `process.env` 里的同名项）。
+   *
+   * ⚠️ **为什么必须给 MSYS2 的 login shell env**：
+   *   `jhyy.exe` 链接时要调 `windres.exe`（嵌图标）—— 它是个 gcc 驱动的**预处理器**
+   *   ⇒ 缺 MSYS2 的环境（`MSYSTEM` / `PATH` / `MSYS2_PATH_TYPE` 之类）时
+   *   **windres 的预处理会失败** ⇒ 编译器退回用占位对象
+   *   （`__jhyy_icon_obj_missing__`）去链接 ⇒
+   *   **链接必然失败，而且失败原因跟我们的代码毫无关系** ⇒
+   *   模型拿到的是一条**假错误**（实测：hook 日志里
+   *   「W-132: windres failed … icon embedding failed — 链接将失败」），
+   *   而且**真正编译正确的代码也会被判失败**。
+   *
+   * ⇒ 终端那条路早就走了 `mergeShellEnv`（见 `src/main/ptyNode.ts`），
+   *   **Claude 会话这条漏了** ⇒ 补上。
+   */
+  env?: Record<string, string>
   /** 事件回调 */
   onEvent: (event: ClaudeEvent) => void
 }
@@ -80,11 +116,17 @@ export class ClaudeSession {
     this.onEvent = options.onEvent
     this.resumeSessionId = options.resumeSessionId
     this.appendSystemPrompt = options.appendSystemPrompt
+    this.systemPromptFile = options.systemPromptFile
+    this.settingsFile = options.settingsFile
+    this.extraEnv = options.env
     this.addDirs = options.addDirs ?? []
   }
 
   private resumeSessionId: string | undefined
   private appendSystemPrompt: string | undefined
+  private systemPromptFile: string | undefined
+  private settingsFile: string | undefined
+  private extraEnv: Record<string, string> | undefined
   private addDirs: string[]
 
   get session(): ClaudeSessionState {
@@ -168,6 +210,16 @@ export class ClaudeSession {
     if (this.appendSystemPrompt) {
       args.push('--append-system-prompt', this.appendSystemPrompt)
     }
+    // 知识包走**文件通道**（避开 Windows 命令行 32k 字符上限）
+    if (this.systemPromptFile && existsSync(this.systemPromptFile)) {
+      args.push('--append-system-prompt-file', this.systemPromptFile)
+    }
+    // 钩子（模型写完 .jhyy ⇒ 自动编译 ⇒ 诊断回灌）
+    if (this.settingsFile && existsSync(this.settingsFile)) {
+      args.push('--settings', this.settingsFile)
+      // 让 IDE 也能显示「钩子跑过了」⇒ 聊天面板能看出自动校验发生过
+      args.push('--include-hook-events')
+    }
 
     const child = spawn(exePath, args, {
       cwd: this.cwd,
@@ -175,6 +227,8 @@ export class ClaudeSession {
       shell: false,
       env: {
         ...process.env,
+        // 登录 shell 的环境（MSYS2 等）—— 见 SessionOptions.env 的注释
+        ...(this.extraEnv ?? {}),
         NO_COLOR: '1',
         FORCE_COLOR: '0',
         PYTHONIOENCODING: 'utf-8',

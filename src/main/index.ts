@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import {
   app,
@@ -15,8 +16,10 @@ import { stripAnsi } from '@shared/ansi'
 import type { ClaudeStartOptions, ClaudeStatus } from '@shared/claude'
 import { IPC, type CompileRequest, type IdeContext, type RunRequest } from '@shared/ipc'
 import type { PtyBackendInfo, TerminalShell, TerminalStartRequest } from '@shared/terminal'
+import { buildHookSettings, findHookScript } from './claude/hooks'
 import { locateClaude } from './claude/locate'
 import { buildMcpConfig } from './claude/mcp'
+import { buildResidentKnowledge } from './claude/jhyy-rules'
 import { ClaudeSession } from './claude/session'
 import { locateJhyy } from './compiler/locate'
 import { parseDiagnostics } from './compiler/diagnostics'
@@ -41,7 +44,7 @@ import { ptyBackendInfo, reportPtyBackend } from './ptyFactory'
 import { PtyHost, setPtyHost } from './ptyHostClient'
 import { warmUpNodePty } from './ptyNode'
 import type { PtySession } from './pty'
-import { loadLoginShellEnv } from './shellEnv'
+import { loadLoginShellEnv, mergeShellEnv } from './shellEnv'
 import { ProjectWatcher } from './watcher'
 
 /** 用户在设置里指定的 jhyy.exe 路径（优先于自动探测）。 */
@@ -760,7 +763,17 @@ function registerIpc(): void {
     claudeSession = new ClaudeSession({
       cwd: opts.cwd,
       resumeSessionId: opts.resumeSessionId,
-      appendSystemPrompt: opts.appendSystemPrompt ?? jhyyCheatSheet(opts.source),
+      // ⚠️ 常驻提示（知识包 + IDE 状态）走**文件通道**（避开 32k 字符上限）；
+      //   渲染进程自己传的 `appendSystemPrompt` 仍走内联（两个通道可共存）。
+      appendSystemPrompt: opts.appendSystemPrompt,
+      systemPromptFile: writePromptFile(jhyyCheatSheet(opts.source)),
+      settingsFile: await buildHookSettingsIfPossible(),
+      // ⚠️ **必须带登录 shell 的 env**（MSYS2 等）—— 否则：
+      //   · `jhyy.exe` 链接时 `windres`（嵌图标）预处理失败 ⇒ 编译器用占位对象
+      //     `__jhyy_icon_obj_missing__` 去链接 ⇒ **链接必挂**，且失败原因跟代码无关
+      //   · hook 也会把这条**假错误**喂给模型 ⇒ 把模型带偏
+      //   ⇒ 终端那条路早就走了 `mergeShellEnv`（`src/main/ptyNode.ts`），会话这条漏了 ⇒ 补上。
+      env: await claudeShellEnv(),
       onEvent: (event) => {
         // Claude 用 Edit/Write 改了文件 —— 记一笔，watcher 报上来时好区分
         // 「这是内部改动」（直接应用）还是「外部程序改的」（提示用户）。
@@ -1185,21 +1198,11 @@ let ideContext: IdeContext = {
  */
 function jhyyCheatSheet(source?: string): string {
   const ctx = ideContext
-  const lines = [
-    '你在给 JHYY（机会翼游）语言写代码。JHYY 是 Rust 风格的自举系统语言。',
-    '',
-    '要点：',
-    '- 入口是 fn main_jhyy() -> i32（不是 main！），返回值就是进程退出码。',
-    '- 类型必须显式标注：let x: i32 = 5;。参数也要标：fn f(a: i32) -> i32。',
-    '- 整数与浮点之间不能隐式转换，要写 as：let f: f64 = 3 as f64;',
-    '- 没有 print 内建；输出用 extern fn printf(fmt: *u8, val: i32) -> i32; 声明后调用。',
-    '- type X = struct { ... } 结尾**不能**带分号；enum 同理。',
-    '- import 只写模块名本身：import vec;（不是 import std::vec;）',
-    '- 运算符：&& || 是短路逻辑，& | ^ << >> 是位运算；as 的优先级跟 * 一样。',
-    '- if/else 是表达式，分支体是表达式不是语句块；match 的区间是闭区间，for 的区间是半开。',
-    '- 泛型：type Pair<T> = struct { a: T }，调用写 max::<i32>(3, 5)。',
-    '- 闭包 |x: i32| { x + 1 } 不能捕获外层变量。',
-  ]
+  // ⚠️ **常驻知识**在 `src/main/claude/jhyy-rules.ts`：
+  //   优先用**知识包**（从语言仓的规范自动生成 ⇒ 含全部反直觉规则 + 章节目录
+  //   + 附录 B「未实装」清单 + 标准库签名），读不到语言仓才退回手写速查表。
+  //   评测 harness 也读同一份 ⇒ 评测的基线就是 IDE 的现状，A/B 差值才归得了因。
+  const lines = [buildResidentKnowledge().trimEnd(), '']
 
   // ── IDE 的当前状态 ────────────────────────────────────────
   lines.push('', '## 你现在在哪个 IDE 里（重要）', '')
@@ -1287,6 +1290,56 @@ function jhyyCheatSheet(source?: string): string {
   )
 
   return lines.join('\n')
+}
+
+/**
+ * 把常驻提示（知识包 + IDE 状态）写进临时文件，给 `--append-system-prompt-file` 用。
+ *
+ * ⚠️ **为什么走文件**：Windows 的整条命令行有 **32767 字符**上限，
+ * 知识包（中文 ~13.5k 字符）再加工具参数就贴上限了 ⇒ 只能走文件。
+ *
+ * ⚠️ **每次会话写一个新文件**（tmpdir 里的随机名）—— 内容里带着会话开始那一刻的
+ * IDE 状态，跨会话复用会串。
+ */
+function writePromptFile(text: string): string {
+  const dir = mkdtempSync(join(tmpdir(), 'jhyy-ide-prompt-'))
+  const file = join(dir, 'prompt.md')
+  writeFileSync(file, text, 'utf8')
+  return file
+}
+
+/**
+ * Claude 会话要用的环境变量 = `process.env` + 登录 shell 的 env。
+ *
+ * ⚠️ **为什么必须带 shell env**：见 `SessionOptions.env` 的注释 ——
+ *   MSYS2 环境缺了，`jhyy.exe` 的链接阶段会因为 `windres` 预处理失败而**必挂**，
+ *   而且失败原因跟代码无关 ⇒ 模型拿到假错误。
+ */
+async function claudeShellEnv(): Promise<Record<string, string>> {
+  try {
+    const login = await loadLoginShellEnv(defaultShell())
+    return mergeShellEnv(process.env, login?.vars ?? null) as Record<string, string>
+  } catch {
+    return { ...process.env } as Record<string, string>
+  }
+}
+
+/**
+ * 造 PostToolUse 钩子的 settings —— **模型一写完 `.jhyy` 就自动编译，
+ * 把真实诊断喂回上下文**。
+ *
+ * ⚠️ **拿不到编译器 / 钩子脚本 ⇒ 直接不装钩子**（不报错、不影响会话）。
+ */
+async function buildHookSettingsIfPossible(): Promise<string | undefined> {
+  try {
+    const script = findHookScript(app.getAppPath(), process.resourcesPath)
+    if (!script) return undefined
+    const toolchain = await locateJhyy(app.getAppPath(), toolchainOverride)
+    if (!toolchain.available || !toolchain.exePath) return undefined
+    return buildHookSettings({ compilerPath: toolchain.exePath, scriptPath: script })
+  } catch {
+    return undefined
+  }
 }
 
 void app.whenReady().then(() => {

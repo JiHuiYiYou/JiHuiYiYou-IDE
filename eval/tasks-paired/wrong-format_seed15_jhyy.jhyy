@@ -1,0 +1,32 @@
+// difftest 生成 —— jhyy 侧
+extern fn printf(fmt: *u8, val: i64) -> i32;
+
+fn f0(p0_0: u32) -> u32 {
+    let mut a0: u32 = (4236295699u32 + 236000768u32);
+    let mut v1: u32 = (1452032918u32 & a0);
+    v1 = p0_0;
+    printf("%d\n" as *u8, (3972150168u32) as i64);
+    return (1956515703u32 | ((1456541858784596882u64) as u32));
+}
+
+fn f1(p1_0: u32, p1_1: u32) -> u32 {
+    let mut a1: u32 = (p1_1 & f0(1739893064u32));
+    if (739569764u32 > (1231011249u32 + 2276271103u32)) {
+        let mut v2: u32 = f0(p1_0);
+        a1 = p1_0;
+    } else {
+        let mut i3: u32 = 2147789736u32;
+        while i3 < (5 as u32) {
+            f0(4072200062u32);
+            i3 = i3 + (1 as u32);
+        }
+        a1 = p1_0;
+    }
+    return f0(p1_1);
+}
+
+fn main_jhyy() -> i32 {
+    let r: u32 = f1(1896436369u32, f1(2037733535u32, 610528164u32));
+    printf("%d\n" as *u8, ((r) & (2147483647 as u32)) as i64);
+    return 0;
+}
