@@ -69,6 +69,27 @@ const REPRESENTATIVE = [
   'float_cmp.jhyy',
   'chinese.jhyy',
   'ffi_multi.jhyy',
+
+  // ── 负例（`EXPECT-ERROR`）─────────────────────────────────────
+  //
+  // ⚠️ **为什么要加**：语言仓库有 56 个 `EXPECT-ERROR` 用例，但 IDE 的子集里
+  //    **一个都没有** ⇒ IDE 侧从来没验过「IDE 的 parser / 打印器会不会
+  //    放行一段本来就非法的代码」。
+  //
+  // ⚠️ **只挑 8 个、每个覆盖不同规则族** —— 全塞进来的话门会肥到没法用
+  //    （每次真编译+真链接 ~6 s）。负例在**编译期**就挂（不链接）⇒ 单个比
+  //    正例快，实际增量远小于 8 × 6 s。
+  //
+  //    覆盖的规则族：类型别名分号 / 指针成员访问 / 闭包体 / import 前缀 /
+  //    隐式转换 / match guard / enum payload / 不可变赋值。
+  'spec_err_type_decl_semicolon.jhyy',
+  'spec_err_arrow_member.jhyy',
+  'spec_err_closure_body_stmt.jhyy',
+  'spec_err_import_std_prefix.jhyy',
+  'spec_err_no_implicit_decay.jhyy',
+  'spec_err_match_guard.jhyy',
+  'spec_err_enum_multi_payload.jhyy',
+  'spec_err_immutable_assign.jhyy',
 ]
 
 const files = FULL

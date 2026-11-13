@@ -66,6 +66,7 @@ JHYY IDE —— 给 **JHYY（机会翼游）** 做的桌面 IDE。
 | 架构 · 目录 · 模块职责 | [docs/architecture.md](docs/architecture.md) |
 | **实现里的坑**（编译器 / 编辑器 / 块视图 / 终端 / Claude） | [docs/implementation-notes.md](docs/implementation-notes.md) |
 | 块子集 —— 哪些语法有块，哪些是逃生舱 | [docs/blocks-subset.md](docs/blocks-subset.md) |
+| **内嵌 Claude 会话的知识供给与评测** | [docs/claude-knowledge.md](docs/claude-knowledge.md) |
 | 用户手册（对外 wiki） | [docs/wiki/Home.zh-CN.md](docs/wiki/Home.zh-CN.md) |
 
 ## 命令
@@ -77,6 +78,13 @@ npm run typecheck    # 类型检查
 npm test             # 测试
 npm run conformance  # 只跑一致性测试
 npm run dist         # 打 NSIS 安装包
+
+npm run eval:tasks   # 重建评测任务集（真编译验过每道题）
+npm run eval         # 跑评测（要花 API 额度，别在每次提交时跑）
+npm run eval:compare # A/B 对比两个臂的结果
+npm run eval:analyze # 轮数归因：轮数花在哪种活上（查工具调用轨迹）
+npm run eval:regrade # 用当前判分器离线重判一次已跑过的评测（零 API 成本）
+npm run eval:probe   # 探针：验证知识包确实进了模型上下文
 ```
 
 ## 加一个新块
