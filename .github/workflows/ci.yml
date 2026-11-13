@@ -106,7 +106,7 @@ jobs:
 
       - name: 单元测试 + 快速一致性门
         working-directory: JiHuiYiYou-IDE
-        run: npx vitest run tests/lang tests/blocks tests/compiler tests/helpers tests/eval tests/conformance/examples.test.ts
+        run: npx vitest run tests/lang tests/blocks tests/compiler tests/helpers tests/eval tests/claude tests/conformance/examples.test.ts
 
   conformance:
     name: 全量一致性门（编译 + 运行）
