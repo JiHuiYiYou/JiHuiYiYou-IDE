@@ -34,10 +34,11 @@
 import { spawn } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 
 import { locateClaude } from '../../src/main/claude/locate'
 import { buildMcpConfig } from '../../src/main/claude/mcp'
+import { buildHookSettings } from '../../src/main/claude/hooks'
 import { jhyyCheatsheet } from '../../src/main/claude/jhyy-rules'
 import { findCompiler, findLangRepo, ideRoot } from '../../tests/helpers/repo'
 import { grade } from './grader'
@@ -314,6 +315,8 @@ function runClaude(opts: {
   timeoutMs: number
   /** 覆盖 --allowedTools（实验用：看写全 MCP 工具名能不能免掉 ToolSearch） */
   allowedTools?: string
+  /** 装 PostToolUse 钩子（模型写完 .jhyy ⇒ IDE 自动编译 ⇒ 诊断回灌） */
+  hookSettings?: string
 }): Promise<{
   answer: string
   toolUses: ToolUseEvent[]
@@ -337,6 +340,10 @@ function runClaude(opts: {
     ]
     if (opts.arm.useMcp && opts.mcpConfig) {
       args.push('--mcp-config', opts.mcpConfig)
+    }
+    if (opts.hookSettings) {
+      args.push('--settings', opts.hookSettings)
+      args.push('--include-hook-events')
     }
     if (opts.arm.systemPrompt) args.push('--append-system-prompt', opts.arm.systemPrompt)
     if (opts.arm.systemPromptFile && existsSync(opts.arm.systemPromptFile)) {
@@ -462,6 +469,18 @@ async function main() {
   console.log(`编译器：${exePath}\n`)
 
   const mcpConfig = arm.useMcp ? await buildMcpConfig() : null
+  // --with-hook ⇒ 装 PostToolUse 钩子（模型写完 .jhyy ⇒ 自动编译 ⇒ 诊断回灌）
+  // ⚠️ **这正是 IDE 里已经在做的事** —— 评测装上它 ⇒ 量的是「hook 值多少轮」
+  let hookSettings: string | undefined
+  if (arg('with-hook')) {
+    const hookScript = resolve(ideRoot, 'scripts', 'jhyy-check-hook.mjs')
+    if (existsSync(hookScript)) {
+      hookSettings = buildHookSettings({ compilerPath: exePath, scriptPath: hookScript })
+      console.log(`Hook：${hookSettings}`)
+    } else {
+      console.log('⚠ 找不到钩子脚本，跳过')
+    }
+  }
   console.log(mcpConfig ? `MCP：${mcpConfig}` : 'MCP：（未挂）')
   console.log('')
 
@@ -485,6 +504,7 @@ async function main() {
           mcpConfig,
           timeoutMs: timeoutSec * 1000,
           allowedTools,
+          hookSettings,
         })
 
         const versions = reconstructVersions(res.toolUses, targetAbs, task.broken)
