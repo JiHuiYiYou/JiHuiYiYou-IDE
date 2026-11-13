@@ -71,16 +71,20 @@ jobs:
         with:
           msystem: UCRT64
           update: true
+          # ⚠️ **coreutils 要显式装** —— `base-devel` 组**不含** coreutils
+          #    （`sleep` / `tail` / `date` 都在 coreutils 里）。
+          #    ⇒ CI 上 bash 跑 `sleep 30` 会**立刻**「command not found」⇒
+          #    命令瞬间完成 ⇒ `tests/compiler/terminalRun.test.ts` 的
+          #    「终端死了 ⇒ 运行立刻收场」那条**竞态**就会输给「命令完成」那条
+          #    ⇒ 门红（2026-11-12 实测：本地过、CI 红）。
+          #    ⇒ **本机有 coreutils，CI 也要有** ⇒ 环境得跟本机一致。
+          #
+          # ⚠️ **说明必须写在 `install:` 之外** —— YAML 折叠块标量（`>-`）里
+          #    **整行都是内容**，`#` 开头**不是注释** ⇒ pacman 会把说明当包名
+          #    ⇒ `error: target not found: #`（2026-11-13 实测踩过）。
           install: >-
             git
             base-devel
-            # ⚠️ **coreutils 要显式装** —— `base-devel` 组**不含** coreutils
-            #    （`sleep` / `tail` / `date` 这些都在 coreutils 里）。
-            #    ⇒ CI 上 bash 跑 `sleep 30` 会**立刻**「command not found」⇒
-            #    命令瞬间完成 ⇒ `tests/compiler/terminalRun.test.ts` 的
-            #    「终端死了 ⇒ 运行立刻收场」那条**竞态**就会输给「命令完成」那条
-            #    ⇒ 门红（2026-11-12 实测：本地过、CI 红）。
-            #    ⇒ **本机有 coreutils，CI 也要有** ⇒ 环境得跟本机一致。
             coreutils
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-binutils
@@ -138,16 +142,20 @@ jobs:
         with:
           msystem: UCRT64
           update: true
+          # ⚠️ **coreutils 要显式装** —— `base-devel` 组**不含** coreutils
+          #    （`sleep` / `tail` / `date` 都在 coreutils 里）。
+          #    ⇒ CI 上 bash 跑 `sleep 30` 会**立刻**「command not found」⇒
+          #    命令瞬间完成 ⇒ `tests/compiler/terminalRun.test.ts` 的
+          #    「终端死了 ⇒ 运行立刻收场」那条**竞态**就会输给「命令完成」那条
+          #    ⇒ 门红（2026-11-12 实测：本地过、CI 红）。
+          #    ⇒ **本机有 coreutils，CI 也要有** ⇒ 环境得跟本机一致。
+          #
+          # ⚠️ **说明必须写在 `install:` 之外** —— YAML 折叠块标量（`>-`）里
+          #    **整行都是内容**，`#` 开头**不是注释** ⇒ pacman 会把说明当包名
+          #    ⇒ `error: target not found: #`（2026-11-13 实测踩过）。
           install: >-
             git
             base-devel
-            # ⚠️ **coreutils 要显式装** —— `base-devel` 组**不含** coreutils
-            #    （`sleep` / `tail` / `date` 这些都在 coreutils 里）。
-            #    ⇒ CI 上 bash 跑 `sleep 30` 会**立刻**「command not found」⇒
-            #    命令瞬间完成 ⇒ `tests/compiler/terminalRun.test.ts` 的
-            #    「终端死了 ⇒ 运行立刻收场」那条**竞态**就会输给「命令完成」那条
-            #    ⇒ 门红（2026-11-12 实测：本地过、CI 红）。
-            #    ⇒ **本机有 coreutils，CI 也要有** ⇒ 环境得跟本机一致。
             coreutils
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-binutils
