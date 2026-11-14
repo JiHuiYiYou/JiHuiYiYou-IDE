@@ -34,7 +34,8 @@
  */
 
 import { spawnSync } from 'node:child_process'
-import { appendFileSync, readFileSync } from 'node:fs'
+import { appendFileSync, existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 const COMPILER = process.argv[2] ?? ''
 /**
@@ -116,6 +117,92 @@ function renderDiagnostic(d) {
   return `${head}\n  → ${bits.join('；')}`
 }
 
+/**
+ * PATH 里的所有目录（**Windows 风格 + MSYS 风格都算**）。
+ *
+ * ⚠️ Windows 的环境变量名大小写不敏感，但 JS 对象的键**区分**大小写
+ *    ⇒ 继承来的键常常是 `Path` ⇒ 得把所有变体都收进来。
+ */
+function pathDirs() {
+  const env = process.env
+  const keys = Object.keys(env).filter((k) => k.toUpperCase() === 'PATH')
+  const out = []
+  for (const k of keys) {
+    for (const raw of String(env[k] ?? '').split(';')) {
+      const p = raw.trim()
+      if (!p) continue
+      out.push(p)
+      // MSYS 风格（`/c/msys64/ucrt64/bin`）⇒ 也给出 Windows 风格
+      const m = /^\/([a-zA-Z])\/(.*)$/.exec(p)
+      if (m) out.push(`${m[1].toUpperCase()}:\\${m[2].replace(/\//g, '\\')}`)
+    }
+  }
+  return out
+}
+
+/**
+ * 找一个能用的 bash。
+ *
+ * ⚠️ **CI 上 `CLAUDE_CODE_GIT_BASH_PATH` 不存在**（那是 Claude Code 自己设的）
+ *    ⇒ 而且 setup-msys2 把 MSYS2 装在 **`$RUNNER_TEMP\msys64`** ⇒ 也不是
+ *    `C:\msys64` ⇒ ⇒ **只能扫 PATH**。
+ */
+function findBash() {
+  const cands = []
+  if (process.env.CLAUDE_CODE_GIT_BASH_PATH) cands.push(process.env.CLAUDE_CODE_GIT_BASH_PATH)
+  for (const dir of pathDirs()) cands.push(join(dir, 'bash.exe'))
+  cands.push(
+    'C:\\msys64\\usr\\bin\\bash.exe',
+    'C:\\msys\\usr\\bin\\bash.exe',
+    'C:\\Program Files\\Git\\bin\\bash.exe',
+    'C:\\Program Files\\Git\\usr\\bin\\bash.exe',
+  )
+  for (const c of cands) {
+    try {
+      if (c && existsSync(c)) return c
+    } catch {
+      /* 路径怪就跳过 */
+    }
+  }
+  return ''
+}
+
+/**
+ * 子进程 env —— 照抄 IDE 编译器的配方（`src/main/compiler/env.ts`）。
+ *
+ * ⚠️ **PATH 只「追加」，绝不「替换」**（语言仓 W-156 的教训）：
+ *    整个替换掉 ⇒ CI 上 windres 找不到 ⇒ **链接必挂且与代码无关**。
+ * ⚠️ **MSYS 风格的 PATH 得转成 Windows 风格** —— cmd.exe / gcc 子进程
+ *    **不认** `/c/...` 虚拟路径 ⇒ 一个目录都找不到。
+ */
+function buildChildEnv() {
+  const env = { ...process.env }
+  const fallbackTmp = process.env.TMPDIR || process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp'
+  if (!env.TMP) env.TMP = fallbackTmp
+  if (!env.TEMP) env.TEMP = fallbackTmp
+  if (!env.SystemRoot) env.SystemRoot = 'C:\\Windows'
+  if (!env.SystemDrive) env.SystemDrive = 'C:'
+
+  const pathKeys = Object.keys(env).filter((k) => k.toUpperCase() === 'PATH')
+  const pathKey = pathKeys[0] ?? 'PATH'
+  const raw = env[pathKey] ?? ''
+  for (const k of pathKeys) if (k !== pathKey) delete env[k]
+
+  const parts = raw.split(';').map((p) => p.trim()).filter(Boolean)
+  for (const dir of pathDirs()) {
+    if (!parts.some((p) => p.toLowerCase() === dir.toLowerCase())) parts.push(dir)
+  }
+  // 兜底：常见的 MSYS2 位置（CI 上装在 $RUNNER_TEMP ⇒ 只能靠 PATH 里那份）
+  for (const root of ['C:\\msys64', 'C:\\msys']) {
+    for (const sub of ['ucrt64\\bin', 'usr\\bin']) {
+      const dir = `${root}\\${sub}`
+      if (!parts.some((p) => p.toLowerCase() === dir.toLowerCase())) parts.push(dir)
+    }
+  }
+  env[pathKey] = parts.join(';')
+  return env
+}
+
 /** 从编译器 stderr 里抠出诊断行。 */
 function parseDiagnostics(stderr) {
   const out = []
@@ -188,7 +275,7 @@ function main() {
   //
   //   走 bash（`-lc`）⇒ bash 加载 MSYS2 的 profile ⇒ PATH 正确 ⇒ windres 正常。
   //   CLI 自己的 env 里就有 `CLAUDE_CODE_GIT_BASH_PATH` ⇒ 不用猜路径。
-  const bash = process.env.CLAUDE_CODE_GIT_BASH_PATH || 'C:\\msys64\\usr\\bin\\bash.exe'
+  const bash = findBash()
   let stderr = ''
   // ⚠️ **成功判据 = 退出码** —— ⚠️ **不要用「有没有结构化诊断」**！
   //   链接期失败（`fn main` 该是 `fn main_jhyy`）**没有** `file:line:col:` 形态
@@ -196,16 +283,37 @@ function main() {
   //   ⇒ 模型以为做完了 ⇒ 交了一份链接不过的代码（实测踩过）。
   let exitCode = null
   try {
-    const res = spawnSync(bash, ['-lc', `"${COMPILER}" compile "${file}"`], {
-      encoding: 'utf8',
-      timeout: 120_000,
-      windowsHide: true,
-    })
+    // ⚠️ **有 bash 就走 bash（`-lc`）** —— 登录 shell 加载 MSYS2 的 profile
+    //   ⇒ PATH 正确 ⇒ windres 正常 ⇒ 图标能嵌进去 ⇒ 链接不会莫名其妙地挂。
+    //
+    // ⚠️ **没有 bash 就直接 spawn** —— CI 上**根本没有** bash
+    //   （`CLAUDE_CODE_GIT_BASH_PATH` 是 Claude Code 自己设的；setup-msys2 又把
+    //   MSYS2 装在 `$RUNNER_TEMP\msys64`）⇒ 老版在 CI 上**一次编译都没跑过**
+    //   ⇒ 而且因为它用「有没有诊断」判成功 ⇒ **还报成「编译通过了」**
+    //   ⇒ **测试看着是绿的，其实什么都没验**。
+    //   ⇒ 直接 spawn 时**自己把 env 修好**（照抄 IDE 编译器的配方）。
+    // ⚠️ `JHY_HOOK_FORCE_DIRECT=1` ⇒ 强制走「直接 spawn」那条 ——
+    //   **CI 上跑的就是那条**（没有 `CLAUDE_CODE_GIT_BASH_PATH`）
+    //   ⇒ 不给它一个开关 ⇒ 本机平时只覆盖 bash 那条 ⇒ CI 那条**没人验**。
+    const useBash = bash && !process.env.JHY_HOOK_FORCE_DIRECT
+    const res = useBash
+      ? spawnSync(bash, ['-lc', `"${COMPILER}" compile "${file}"`], {
+          encoding: 'utf8',
+          timeout: 120_000,
+          windowsHide: true,
+        })
+      : spawnSync(COMPILER, ['compile', file], {
+          encoding: 'utf8',
+          timeout: 120_000,
+          windowsHide: true,
+          env: buildChildEnv(),
+        })
     stderr = String(res.stderr ?? '')
     exitCode = res.status
     logHook(
-      `COMPILE status=${res.status} signal=${res.signal ?? '-'} ` +
-        `err=${res.error ? res.error.message : 'none'} stderrLen=${stderr.length}`,
+      `COMPILE via=${useBash ? 'bash' : 'direct'} status=${res.status} ` +
+        `signal=${res.signal ?? '-'} err=${res.error ? res.error.message : 'none'} ` +
+        `stderrLen=${stderr.length}`,
     )
   } catch (e) {
     logHook(`COMPILE THREW ${e}`)

@@ -35,8 +35,18 @@ const HOOK = resolve(ideRoot, 'scripts', 'jhyy-check-hook.mjs')
 const COMPILER = findCompiler()
 const FIX_TABLE = errorFixPath()
 
-/** 跑一次钩子，喂一个 payload，返回 { stdout, status }。 */
-function runHook(payload: unknown): { stdout: string; status: number | null } {
+/**
+ * 跑一次钩子，喂一个 payload，返回 { stdout, status }。
+ *
+ * ⚠️ **两条路都要跑** ——
+ *  ① **bash**（`-lc`）：本机 Claude Code 会话走这条（`CLAUDE_CODE_GIT_BASH_PATH`）
+ *  ② **直接 spawn**：**CI 走这条**（CI 上那个 env 变量不存在）
+ *  ⇒ 只测一条 ⇒ 另一条上出问题**谁也抓不到**。
+ */
+function runHook(
+  payload: unknown,
+  extraEnv: Record<string, string> = {},
+): { stdout: string; status: number | null } {
   const args = [HOOK, COMPILER ?? '']
   if (FIX_TABLE) args.push(FIX_TABLE)
   const res = spawnSync(process.execPath, args, {
@@ -44,10 +54,20 @@ function runHook(payload: unknown): { stdout: string; status: number | null } {
     encoding: 'utf8',
     timeout: 60_000,
     windowsHide: true,
-    env: { ...process.env, CLAUDE_CODE_GIT_BASH_PATH: 'C:/msys64/usr/bin/bash.exe' },
+    env: {
+      ...process.env,
+      CLAUDE_CODE_GIT_BASH_PATH: 'C:/msys64/usr/bin/bash.exe',
+      ...extraEnv,
+    },
   })
   return { stdout: res.stdout ?? '', status: res.status }
 }
+
+/** 两种运行方式（bash / 直接 spawn）。 */
+const MODES: { name: string; env: Record<string, string> }[] = [
+  { name: 'bash', env: {} },
+  { name: '直接 spawn', env: { JHY_HOOK_FORCE_DIRECT: '1' } },
+]
 
 /** 入口名写错 ⇒ **链接期**失败（没有结构化诊断）。 */
 const BROKEN = 'fn main() -> i32 {\n    return 0;\n}\n'
@@ -84,53 +104,58 @@ describe('PostToolUse 钩子', () => {
   })
 
   // ⚠️ **这条守的是 2026-11-13 挖到的真 bug**
-  it.skipIf(!COMPILER)('链接期失败 ⇒ **绝不能**说「编译通过」', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'jhyy-hook-'))
-    const file = join(dir, 'link-broken.jhyy')
-    writeFileSync(file, BROKEN, 'utf8')
+  for (const mode of MODES) {
+    it.skipIf(!COMPILER)(`链接期失败 ⇒ **绝不能**说「编译通过」（${mode.name}）`, () => {
+      const dir = mkdtempSync(join(tmpdir(), 'jhyy-hook-'))
+      const file = join(dir, 'link-broken.jhyy')
+      writeFileSync(file, BROKEN, 'utf8')
 
-    const { stdout } = runHook({
-      tool_name: 'Write',
-      tool_input: { file_path: file },
+      const { stdout } = runHook(
+        { tool_name: 'Write', tool_input: { file_path: file } },
+        mode.env,
+      )
+
+      const out = JSON.parse(stdout)
+      const ctx = out.hookSpecificOutput?.additionalContext ?? ''
+      // ⚠️ 老版 hook 走的是「没有结构化诊断 ⇒ 编译通过了」⇒ 这条断言当时**抓不住**
+      expect(ctx).not.toContain('编译通过')
+      expect(ctx).toContain('链接不过')
+      // 链接失败 ⇒ 得给出**针对性提示**（入口函数名）
+      expect(ctx).toContain('main_jhyy')
     })
+  }
 
-    const out = JSON.parse(stdout)
-    const ctx = out.hookSpecificOutput?.additionalContext ?? ''
-    // ⚠️ 老版 hook 走的是「没有结构化诊断 ⇒ 编译通过了」⇒ 这条断言当时**抓不住**
-    expect(ctx).not.toContain('编译通过')
-    expect(ctx).toContain('链接不过')
-    // 链接失败 ⇒ 得给出**针对性提示**（入口函数名）
-    expect(ctx).toContain('main_jhyy')
-  })
+  for (const mode of MODES) {
+    it.skipIf(!COMPILER)(`诊断里**顺带带上「怎么改」**（${mode.name}）`, () => {
+      const dir = mkdtempSync(join(tmpdir(), 'jhyy-hook-'))
+      const file = join(dir, 'sema-broken.jhyy')
+      writeFileSync(file, BROKEN_SEMA, 'utf8')
 
-  it.skipIf(!COMPILER)('诊断里**顺带带上「怎么改」**（模型不用多调一次工具）', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'jhyy-hook-'))
-    const file = join(dir, 'sema-broken.jhyy')
-    writeFileSync(file, BROKEN_SEMA, 'utf8')
+      const { stdout } = runHook(
+        { tool_name: 'Write', tool_input: { file_path: file } },
+        mode.env,
+      )
 
-    const { stdout } = runHook({
-      tool_name: 'Write',
-      tool_input: { file_path: file },
+      const out = JSON.parse(stdout)
+      const ctx = out.hookSpecificOutput?.additionalContext ?? ''
+      expect(ctx).toContain('undefined variable')
+      if (FIX_TABLE) {
+        // ⚠️ 有速查表 ⇒ 必须带上修法
+        expect(ctx).toMatch(/怎么改|什么意思|见 /)
+      }
     })
+  }
 
-    const out = JSON.parse(stdout)
-    const ctx = out.hookSpecificOutput?.additionalContext ?? ''
-    expect(ctx).toContain('undefined variable')
-    if (FIX_TABLE) {
-      // ⚠️ 有速查表 ⇒ 必须带上修法
-      expect(ctx).toMatch(/怎么改|什么意思|见 /)
-    }
-  })
+  for (const mode of MODES) {
+    it.skipIf(!COMPILER)(`改了能编译的 .jhyy ⇒ 说一句「编译通过了」（${mode.name}）`, () => {
+      const dir = mkdtempSync(join(tmpdir(), 'jhyy-hook-'))
+      const file = join(dir, 'ok.jhyy')
+      writeFileSync(file, OK, 'utf8')
 
-  it.skipIf(!COMPILER)('改了能编译的 .jhyy ⇒ 说一句「编译通过了」', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'jhyy-hook-'))
-    const file = join(dir, 'ok.jhyy')
-    writeFileSync(file, OK, 'utf8')
-
-    const { stdout, status } = runHook({
-      tool_name: 'Write',
-      tool_input: { file_path: file },
-    })
+      const { stdout, status } = runHook(
+        { tool_name: 'Write', tool_input: { file_path: file } },
+        mode.env,
+      )
 
     expect(status).toBe(0)
     // ⚠️ **成功时也注入** —— 两个理由：
@@ -139,13 +164,14 @@ describe('PostToolUse 钩子', () => {
     //   ② **省一轮** —— 模型改完就知道编译过了 ⇒ 不用自己再编译一次确认
     const out = JSON.parse(stdout)
     expect(out.hookSpecificOutput?.hookEventName).toBe('PostToolUse')
-    expect(out.hookSpecificOutput?.additionalContext).toContain('编译通过')
-    expect(out.tool_response?.success).toBe(true)
-    // ⚠️ **「编译过了」不等于「做对了」** —— 评测实测：`mask-change`
-    //   （**能编译、但输出不对**）那类题上，老版的「✓ 编译通过了」
-    //   让模型以为做完了 ⇒ 加一句免责。
-    expect(out.hookSpecificOutput?.additionalContext).toContain('不代表输出对')
-  })
+      expect(out.hookSpecificOutput?.additionalContext).toContain('编译通过')
+      expect(out.tool_response?.success).toBe(true)
+      // ⚠️ **「编译过了」不等于「做对了」** —— 评测实测：`mask-change`
+      //   （**能编译、但输出不对**）那类题上，老版的「✓ 编译通过了」
+      //   让模型以为做完了 ⇒ 加一句免责。
+      expect(out.hookSpecificOutput?.additionalContext).toContain('不代表输出对')
+    })
+  }
 
   it('改了非 .jhyy 文件 ⇒ 不出声', () => {
     const { stdout, status } = runHook({
