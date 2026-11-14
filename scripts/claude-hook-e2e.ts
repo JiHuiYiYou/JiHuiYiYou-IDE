@@ -48,7 +48,9 @@ interface Case {
 
 const CASES: Case[] = [
   {
-    name: '入口名写错（模型一次就改对 ⇒ 预期注入一句「编译通过」）',
+    // ⚠️ **入口名写错 = 链接期失败** ⇒ 老版 hook 会注入「✓ 编译通过了」
+    //    （真 bug：它其实链接不过）⇒ 现在注入的是「**链接不过**」+ 针对性提示。
+    name: '入口名写错（链接期失败 ⇒ 预期注入「链接不过」+ 入口名提示）',
     broken: 'fn main() -> i32 {\n    return 0;\n}\n',
     expectInject: true,
   },
