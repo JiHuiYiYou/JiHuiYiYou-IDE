@@ -570,8 +570,11 @@ async function main() {
   //   ⇒ **知识包本身能当实验变量**（「加一节『常用用法』值多少轮」就是这么测的）。
   const packOverride = arg('pack')
   if (packOverride && arm.systemPromptFile) {
-    arm.systemPromptFile = packOverride
-    console.log(`知识包（覆盖）：${packOverride}`)
+    // ⚠️ **必须转成绝对路径** —— claude CLI 是在**临时工作目录**里起的
+    //   （`cwd: dir`）⇒ 相对路径在那里**根本不存在** ⇒ CLI 立刻失败
+    //   ⇒ 每次都「usage 缺失」⇒ 一次都没真跑（实测踩过：8/8 秒挂、0 成本）。
+    arm.systemPromptFile = resolve(packOverride)
+    console.log(`知识包（覆盖）：${arm.systemPromptFile}`)
   }
   const mcpConfig = arm.useMcp ? await buildMcpConfig() : null
   // --with-hook ⇒ 装 PostToolUse 钩子（模型写完 .jhyy ⇒ 自动编译 ⇒ 诊断回灌）
