@@ -192,7 +192,29 @@ function buildChildEnv() {
   for (const dir of pathDirs()) {
     if (!parts.some((p) => p.toLowerCase() === dir.toLowerCase())) parts.push(dir)
   }
-  // 兜底：常见的 MSYS2 位置（CI 上装在 $RUNNER_TEMP ⇒ 只能靠 PATH 里那份）
+  // ⚠️ **ucrt64 的 gcc 排最前** —— PATH 里别处的 gcc 版本不对 ⇒ 挑错会
+  //   PE 链接失败（语言仓 W-027 的根因之一）。
+  //   ⚠️ **只「插」不「替换」** —— 继承来的 PATH 一个字都不能丢（W-156 的教训）。
+  const ucrt = parts.find((p) => p.toLowerCase().endsWith('\\ucrt64\\bin'))
+  if (!ucrt) {
+    // 继承来的 PATH 里没有 ⇒ 用常见位置兜底（CI 上装在 $RUNNER_TEMP
+    // ⇒ 那份在 PATH 里 ⇒ 上面的 find 已经捞到了）
+    for (const root of ['C:\\msys64', 'C:\\msys']) {
+      const dir = `${root}\\ucrt64\\bin`
+      if (!parts.some((p) => p.toLowerCase() === dir.toLowerCase())) {
+        parts.unshift(dir)
+        break
+      }
+    }
+  } else {
+    // 已经在 PATH 里，但可能排在**错的** gcc 后面 ⇒ 提到最前
+    const i = parts.indexOf(ucrt)
+    if (i > 0) {
+      parts.splice(i, 1)
+      parts.unshift(ucrt)
+    }
+  }
+  // 兜底目录追加在末尾（不替换任何继承来的条目）
   for (const root of ['C:\\msys64', 'C:\\msys']) {
     for (const sub of ['ucrt64\\bin', 'usr\\bin']) {
       const dir = `${root}\\${sub}`
@@ -292,26 +314,45 @@ function main() {
     //   ⇒ 而且因为它用「有没有诊断」判成功 ⇒ **还报成「编译通过了」**
     //   ⇒ **测试看着是绿的，其实什么都没验**。
     //   ⇒ 直接 spawn 时**自己把 env 修好**（照抄 IDE 编译器的配方）。
-    // ⚠️ `JHY_HOOK_FORCE_DIRECT=1` ⇒ 强制走「直接 spawn」那条 ——
-    //   **CI 上跑的就是那条**（没有 `CLAUDE_CODE_GIT_BASH_PATH`）
-    //   ⇒ 不给它一个开关 ⇒ 本机平时只覆盖 bash 那条 ⇒ CI 那条**没人验**。
-    const useBash = bash && !process.env.JHY_HOOK_FORCE_DIRECT
-    const res = useBash
-      ? spawnSync(bash, ['-lc', `"${COMPILER}" compile "${file}"`], {
-          encoding: 'utf8',
-          timeout: 120_000,
-          windowsHide: true,
-        })
-      : spawnSync(COMPILER, ['compile', file], {
-          encoding: 'utf8',
-          timeout: 120_000,
-          windowsHide: true,
-          env: buildChildEnv(),
-        })
+    // ⚠️ **默认直接 spawn** —— 「bash 优先」这个设计在**两个环境里各坏一次**：
+    //   - 没有 bash 的环境 ⇒ 编译压根没跑（CI 早期踩过）
+    //   - 有 bash 但 `-lc` 的 PATH 不对的环境 ⇒ 编译跑但找不到 gcc（CI 又踩过）
+    //   ⇒ 直接 spawn + **自己修好 env**（照抄 IDE 编译器的配方）才稳。
+    // ⚠️ **bash 只做兜底** —— 直接 spawn「看起来坏了」（退出码非 0 **且**
+    //   stderr 什么都没有）⇒ 才用 bash 重试一次。
+    // ⚠️ `JHY_HOOK_FORCE_BASH=1` ⇒ 强制走 bash（单测用）。
+    const direct = () =>
+      spawnSync(COMPILER, ['compile', file], {
+        encoding: 'utf8',
+        timeout: 120_000,
+        windowsHide: true,
+        env: buildChildEnv(),
+      })
+    const viaBash = () =>
+      spawnSync(bash, ['-lc', `"${COMPILER}" compile "${file}"`], {
+        encoding: 'utf8',
+        timeout: 120_000,
+        windowsHide: true,
+      })
+
+    let res
+    let via = 'direct'
+    if (process.env.JHY_HOOK_FORCE_BASH && bash) {
+      res = viaBash()
+      via = 'bash'
+    } else {
+      res = direct()
+      const looksBroken = res.status !== 0 && !String(res.stderr ?? '').trim()
+      if (looksBroken && bash) {
+        logHook('COMPILE direct 看起来坏了 ⇒ 用 bash 重试')
+        res = viaBash()
+        via = 'bash'
+      }
+    }
     stderr = String(res.stderr ?? '')
     exitCode = res.status
     logHook(
-      `COMPILE via=${useBash ? 'bash' : 'direct'} status=${res.status} ` +
+      `COMPILE via=${via} status=${res.status} ` +
         `signal=${res.signal ?? '-'} err=${res.error ? res.error.message : 'none'} ` +
         `stderrLen=${stderr.length}`,
     )
