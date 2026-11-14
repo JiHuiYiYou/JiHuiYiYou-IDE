@@ -157,6 +157,19 @@ function setupWorkspace(
     : paired
       ? 'main.jhyy'
       : task.id.split('/').slice(1).join('/') + '.jhyy'
+
+  // ⚠️ **「翻译」题的工作区跟别的不一样** ——
+  //   给模型的是 **C 源**（规格书），目标 `main.jhyy` **留空**让他写。
+  //   ⇒ **不能**走下面的「源文件 → 目标文件」那条路（那是给「修代码」用的）。
+  if (task.kind === 'translate') {
+    if (task.specFile && existsSync(join(cTaskDir, task.specFile))) {
+      copyFileSync(join(cTaskDir, task.specFile), join(dir, 'main.c'))
+    }
+    const target = join(dir, rel)
+    mkdirSync(dirname(target), { recursive: true })
+    writeFileSync(target, '', 'utf8')
+    return { dir, rel }
+  }
   // 配对任务 / C 对照组：源文件在 `eval/tasks-paired/`（或 `eval/tasks-c/`）下
   if (task.sourceFile && existsSync(join(cTaskDir, task.sourceFile))) {
     copyFileSync(join(cTaskDir, task.sourceFile), join(dir, rel))
@@ -199,6 +212,53 @@ function setupWorkspace(
  *   它衡量的是「把边界说清楚能省多少轮」。
  */
 function buildPrompt(task: EvalTask, rel: string, style: string, compilerPath?: string): string {
+  // ── **「翻译」题：措辞完全不同** ───────────────────────────────
+  //
+  // ⚠️ **绝对不能把期望输出给模型** ⇒ 否则它把答案直接打印出来就过
+  //   ⇒ 这类题**只判分**（编译 + 退出码 + stdout 逐字）。
+  if (task.kind === 'translate') {
+    const spec = task.specFile ? 'main.c' : 'main.c'
+    if (style === 'tight') {
+      return [
+        `工作目录里有 \`${spec}\` —— 那是**同一个程序的 C 实现**。`,
+        '',
+        `用 **JHYY** 写一个 \`${rel}\`，**行为跟它完全一致**：`,
+        '- **输出逐字相同**（同样的行、同样的顺序、同样的数值）。',
+        '- 退出码相同（0）。',
+        '',
+        `把完整代码写回 \`${rel}\`。`,
+        '',
+        '**怎么做（照这个来，别绕）**：',
+        '1. 先读 `main.c` 搞清它算什么。',
+        '2. **注意** JHYY 跟 C 的差别：没有内建 `print`（要先 `extern fn printf` 声明）、',
+        '   整数宽度要显式写、整数↔浮点不能隐式转。',
+        '3. 用 `jhyy_check` 编译检查 —— 它**一次返回全部诊断**（行:列 + 错误原文）。',
+        '4. 用 `jhyy_run` 跑一遍，跟 `main.c` 的输出**逐字比**。',
+        '5. 一致 ⇒ 收工。',
+        '',
+        '**范围（重要）**：',
+        '- **不要**改 `main.c`。',
+        '- **不要**做额外验证（不用探测别的边界）。',
+      ].join('\n')
+    }
+    return [
+      `工作目录里有 \`${spec}\` —— 那是**同一个程序的 C 实现**。`,
+      '',
+      '下面是它的内容：',
+      '',
+      '```c',
+      task.specContent ?? '',
+      '```',
+      '',
+      `用 **JHYY** 写一个 \`${rel}\`，**行为跟它完全一致**：`,
+      '- **输出逐字相同**（同样的行、同样的顺序、同样的数值）。',
+      '- 退出码相同（0）。',
+      '',
+      `把完整代码写回 \`${rel}\`。`,
+      '你可以用编译器验证，改到它跟 C 版输出一致为止。',
+    ].join('\n')
+  }
+
   // ── **两种破坏方式要两种措辞** ─────────────────────────────────
   //
   // ⚠️ **实测踩过**：behavior-break（能编译、但输出不对）的题，prompt 写「编译不过」
@@ -506,6 +566,13 @@ async function main() {
   console.log(`claude：${claude.path}${claude.version ? ` (${claude.version})` : ''}`)
   console.log(`编译器：${exePath}\n`)
 
+  // ⚠️ **`--pack <path>`** —— 指定用哪份知识包（默认 = 语言仓生成的那份）
+  //   ⇒ **知识包本身能当实验变量**（「加一节『常用用法』值多少轮」就是这么测的）。
+  const packOverride = arg('pack')
+  if (packOverride && arm.systemPromptFile) {
+    arm.systemPromptFile = packOverride
+    console.log(`知识包（覆盖）：${packOverride}`)
+  }
   const mcpConfig = arm.useMcp ? await buildMcpConfig() : null
   // --with-hook ⇒ 装 PostToolUse 钩子（模型写完 .jhyy ⇒ 自动编译 ⇒ 诊断回灌）
   // ⚠️ **这正是 IDE 里已经在做的事** —— 评测装上它 ⇒ 量的是「hook 值多少轮」

@@ -53,12 +53,28 @@ export interface EvalTask {
   mutationId: string
   /** 变异对应的规则引用（规范章节号） */
   rule: string
-  /** 破坏方式 */
-  kind: BreakKind
+  /**
+   * 破坏方式。
+   *
+   * ⚠️ `'translate'` **不是「破坏」** —— 那是**第三类题**：
+   *   给 C 程序，让模型**从零写**一个行为一致的 JHYY 程序
+   *   （规则类题目已饱和 ⇒ 需要一类不饱和的题来测「有没有变好」）。
+   */
+  kind: BreakKind | 'translate'
   /** 规则的人读描述 */
   title: string
   /** 语料源文件的绝对路径 */
   sourceFile: string
+  /**
+   * **「翻译」题的规格书** —— 工作区里给模型的 **C 源**（`main.c`）。
+   *
+   * ⚠️ **只有 `kind === 'translate'` 的题用它** —— 其余题给的是「坏版本源文件」。
+   */
+  specFile?: string
+  /**
+   * **「翻译」题的规格书内容** —— C 源原文（内嵌，省得 prompt 构造器再去读文件）。
+   */
+  specContent?: string
   /** 变异后的代码 —— 交给模型修的就是它 */
   broken: string
   /** 修好后期望的退出码（来自原文件的 EXPECT 指令） */

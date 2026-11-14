@@ -289,6 +289,47 @@ def main():
                 })
             per_mut[mut_name] = per_mut.get(mut_name, 0) + 1
 
+        # ── **「翻译」题**：给 C 程序，写出行为一致的 JHYY 程序 ──────
+        #
+        # ⚠️ **为什么要有这一类** —— 规则类题目已经**饱和**了
+        #   （entry-name / missing-decl / wrong-format 都 ~100%）
+        #   ⇒ 那把尺子只能测「有没有变差」，测不出「有没有变好」。
+        #
+        # ⇒ **「翻译」不饱和**（要摸清 stdlib API 语义 + 整数宽度）
+        #   且**正是 IDE 的真实用法**（写新代码，不是修代码）
+        #   ⇒ 地面真相**免费**：配对语料的 JHYY 侧就是标准答案。
+        #
+        # ⚠️ **良定义性**：C 侧与 JHYY 侧的参考 stdout **必须逐字相同**
+        #   （否则「翻译成行为一致的程序」不成立）⇒ 不相同就跳过这一对。
+        if per_mut.get("translate", 0) < args.per_mutation:
+            c_src = orig["c"][0]
+            j_src, j_out = orig["jhyy"]
+            c_out = orig["c"][1]
+            if c_out == j_out:
+                fname = f"translate_seed{seed}_c.c"
+                (out_dir / fname).write_text(c_src, encoding="utf-8", newline="")
+                tasks.append({
+                    "id": f"translate/seed{seed}/jhyy",
+                    "lang": "jhyy",
+                    "pairId": f"translate/seed{seed}",
+                    "mutationId": "translate",
+                    "kind": "translate",
+                    "title": "把 C 程序翻译成 JHYY",
+                    "rule": "C → JHYY 翻译",
+                    "sourceFile": "",
+                    "specFile": fname,
+                    "specContent": c_src,
+                    "broken": "",
+                    "expectStdout": j_out,
+                    "actualStdout": None,
+                    "breakError": "",
+                    "expectExit": 0,
+                })
+                per_mut["translate"] = per_mut.get("translate", 0) + 1
+            else:
+                skipped.append({"seed": seed, "mutation": "translate",
+                                "reason": "C 侧与 JHYY 侧 stdout 不同 ⇒ 翻译不成立"})
+
     out_json = IDE_ROOT / "eval" / "tasks-paired.json"
     out_json.write_text(
         json.dumps({
