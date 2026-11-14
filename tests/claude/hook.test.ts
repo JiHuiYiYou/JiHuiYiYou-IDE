@@ -38,12 +38,13 @@ const FIX_TABLE = errorFixPath()
 /**
  * 跑一次钩子，喂一个 payload，返回 { stdout, status }。
  *
- * ⚠️ **两条路都要跑** ——
- *  ① **bash**（`-lc`）：本机 Claude Code 会话走这条（`CLAUDE_CODE_GIT_BASH_PATH`）
- *  ② **直接 spawn**：**CI 走这条**（CI 上那个 env 变量不存在）
- *  ⇒ 只测一条 ⇒ 另一条上出问题**谁也抓不到**。
+ * ⚠️ **只有一条路**（「直接 spawn」）—— bash 那条在 CI 上**两个环境里各坏一次**
+ *   ⇒ 已经从 hook 里删掉了 ⇒ ⇒ 这里也只测这一条。
  */
-function runHook(payload: unknown): { stdout: string; status: number | null } {
+function runHook(
+  payload: unknown,
+  extraEnv: Record<string, string> = {},
+): { stdout: string; status: number | null } {
   const args = [HOOK, COMPILER ?? '']
   if (FIX_TABLE) args.push(FIX_TABLE)
   const res = spawnSync(process.execPath, args, {
@@ -51,7 +52,7 @@ function runHook(payload: unknown): { stdout: string; status: number | null } {
     encoding: 'utf8',
     timeout: 60_000,
     windowsHide: true,
-    env: { ...process.env },
+    env: { ...process.env, ...extraEnv },
   })
   return { stdout: res.stdout ?? '', status: res.status }
 }
@@ -131,7 +132,7 @@ describe('PostToolUse 钩子', () => {
       }
     })
 
-  it.skipIf(!COMPILER)('改了能编译的 .jhyy ⇒ 说一句「编译通过了」', () => {
+  it.skipIf(!COMPILER)('改了能编译的 .jhyy ⇒ **不注入**（production）', () => {
       const dir = mkdtempSync(join(tmpdir(), 'jhyy-hook-'))
       const file = join(dir, 'ok.jhyy')
       writeFileSync(file, OK, 'utf8')
@@ -139,18 +140,38 @@ describe('PostToolUse 钩子', () => {
       const { stdout, status } = runHook({ tool_name: 'Write', tool_input: { file_path: file } })
 
     expect(status).toBe(0)
-    // ⚠️ **成功时也注入** —— 两个理由：
-    //   ① 「注入真的进了模型上下文」这件事**每次**都可观测（否则模型一次就改对时
-    //      注入路径根本测不到 ⇒ e2e 判不出来）
-    //   ② **省一轮** —— 模型改完就知道编译过了 ⇒ 不用自己再编译一次确认
     const out = JSON.parse(stdout)
+    // ⚠️⚠️ **成功时不注入**（2026-11-14 改）——
+    //
+    //   实测：hook 在**每次 Write/Edit 后**都注入 ⇒ **包括成功时那句
+    //   「✓ 编译通过了」** ⇒ ⇒ **「又过了一遍」这个信号会诱发模型多迭代一版**
+    //   ⇒ 翻译题上**探索 +12 次**、修复题上**多改几版** ⇒ 轮数不减反增。
+    //   ⇒ ⇒ **成功时不说话** ⇒ 那个机制就断了。
+    expect(out.hookSpecificOutput).toBeUndefined()
+    // ⚠️ **但 `tool_response` 必须在** ⇒ 否则 CLI 把这次 hook 当成「出错」。
+    expect(out.tool_response?.success).toBe(true)
+    })
+
+  it.skipIf(!COMPILER)('测试模式（marker）⇒ 成功时**仍然注入**', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'jhyy-hook-'))
+      const file = join(dir, 'ok.jhyy')
+      writeFileSync(file, OK, 'utf8')
+
+      const { stdout, status } = runHook(
+        { tool_name: 'Write', tool_input: { file_path: file } },
+        { JHY_HOOK_MARKER: 'HOOKPROOF-TEST' },
+      )
+
+    expect(status).toBe(0)
+    const out = JSON.parse(stdout)
+    // ⚠️ **测试模式仍注入** ⇒ e2e 的「注入真的进了模型上下文」铁证不受影响
     expect(out.hookSpecificOutput?.hookEventName).toBe('PostToolUse')
-      expect(out.hookSpecificOutput?.additionalContext).toContain('编译通过')
-      expect(out.tool_response?.success).toBe(true)
-      // ⚠️ **「编译过了」不等于「做对了」** —— 评测实测：`mask-change`
-      //   （**能编译、但输出不对**）那类题上，老版的「✓ 编译通过了」
-      //   让模型以为做完了 ⇒ 加一句免责。
-      expect(out.hookSpecificOutput?.additionalContext).toContain('不代表输出对')
+    expect(out.hookSpecificOutput?.additionalContext).toContain('HOOKPROOF-TEST')
+    // ⚠️ **「编译过了」不等于「做对了」** —— `mask-change`（**能编译、但输出不对**）
+    //   那类题上，「✓ 编译通过了」会让模型以为做完了 ⇒ 生产模式已经不说这句了，
+    //   这里（测试模式）保留一句免责。
+    expect(out.hookSpecificOutput?.additionalContext).toContain('不代表输出对')
+    expect(out.tool_response?.success).toBe(true)
     })
 
   it('改了非 .jhyy 文件 ⇒ 不出声', () => {

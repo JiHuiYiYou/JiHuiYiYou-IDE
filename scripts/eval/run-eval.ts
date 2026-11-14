@@ -39,6 +39,7 @@ import { dirname, join, resolve } from 'node:path'
 import { locateClaude } from '../../src/main/claude/locate'
 import { buildMcpConfig } from '../../src/main/claude/mcp'
 import { buildHookSettings } from '../../src/main/claude/hooks'
+import { loadLoginShellEnv, mergeShellEnv } from '../../src/main/shellEnv'
 import { jhyyCheatsheet } from '../../src/main/claude/jhyy-rules'
 import { findCompiler, findLangRepo, ideRoot } from '../../tests/helpers/repo'
 import { grade } from './grader'
@@ -393,6 +394,8 @@ function runClaude(opts: {
   allowedTools?: string
   /** 装 PostToolUse 钩子（模型写完 .jhyy ⇒ IDE 自动编译 ⇒ 诊断回灌） */
   hookSettings?: string
+  /** 起 claude 用的 env（**要带登录 shell 的 MSYS2** —— 见 spawn 那里的注释） */
+  env?: Record<string, string>
 }): Promise<{
   answer: string
   toolUses: ToolUseEvent[]
@@ -430,7 +433,17 @@ function runClaude(opts: {
 
     const child = spawn(opts.exe, args, {
       cwd: opts.cwd,
-      env: process.env,
+      // ⚠️⚠️ **必须带登录 shell 的 env** —— 否则 **hook 继承的是「错的」MSYS2**
+      //   （`C:\msys\usr\bin` 而不是 `C:\msys64`）⇒ 链接阶段 `windres`
+      //   预处理失败 ⇒ **编译器必然链接不过** ⇒ ⇒ **每一次编译都失败，
+      //   而且失败原因跟模型写的代码毫无关系** ⇒ ⇒ **模型拿到「假错误」**
+      //   ⇒ ⇒ **它开始跟假错误搏斗**（实测：反复重写入口名 19 次）。
+      //
+      //   ⇒ ⇒ **「hook 省了 73 轮」在评测里是假的**（那轮数是白费的）。
+      //
+      //   IDE 的会话早就带上了（`src/main/index.ts` 的 `claudeShellEnv()`）
+      //   ⇒ ⇒ **评测环境必须跟 IDE 一致**，否则量的是另一个东西。
+      env: opts.env ?? (process.env as Record<string, string>),
       windowsHide: true,
     })
 
@@ -576,6 +589,18 @@ async function main() {
     arm.systemPromptFile = resolve(packOverride)
     console.log(`知识包（覆盖）：${arm.systemPromptFile}`)
   }
+  // ⚠️ **导一次登录 shell 的 env** —— 跟 IDE 的会话一个配方
+  //   （`src/main/index.ts` 的 `claudeShellEnv()`）⇒ ⇒ hook 继承到正确的 MSYS2
+  //   ⇒ ⇒ **链接错误变回真错误** ⇒ ⇒ **测量才诚实**。
+  let claudeEnv: Record<string, string> = { ...process.env } as Record<string, string>
+  try {
+    const login = await loadLoginShellEnv('bash')
+    claudeEnv = mergeShellEnv(process.env, login?.vars ?? null) as Record<string, string>
+    console.log(`登录 shell env：${login ? login.source : '导不到（用继承来的）'}`)
+  } catch {
+    console.log('⚠ 导登录 shell env 失败 ⇒ 用继承来的（hook 可能会撞上假链接错误）')
+  }
+
   const mcpConfig = arm.useMcp ? await buildMcpConfig() : null
   // --with-hook ⇒ 装 PostToolUse 钩子（模型写完 .jhyy ⇒ 自动编译 ⇒ 诊断回灌）
   // ⚠️ **这正是 IDE 里已经在做的事** —— 评测装上它 ⇒ 量的是「hook 值多少轮」
@@ -625,6 +650,7 @@ async function main() {
             timeoutMs: timeoutSec * 1000,
             allowedTools,
             hookSettings,
+            env: claudeEnv,
           })
           const dead = res.timedOut || res.apiError || !res.usage
           if (!dead || attempts > retries) break
