@@ -34,8 +34,7 @@
  */
 
 import { spawnSync } from 'node:child_process'
-import { appendFileSync, existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { appendFileSync, readFileSync } from 'node:fs'
 
 const COMPILER = process.argv[2] ?? ''
 /**
@@ -138,33 +137,6 @@ function pathDirs() {
     }
   }
   return out
-}
-
-/**
- * 找一个能用的 bash。
- *
- * ⚠️ **CI 上 `CLAUDE_CODE_GIT_BASH_PATH` 不存在**（那是 Claude Code 自己设的）
- *    ⇒ 而且 setup-msys2 把 MSYS2 装在 **`$RUNNER_TEMP\msys64`** ⇒ 也不是
- *    `C:\msys64` ⇒ ⇒ **只能扫 PATH**。
- */
-function findBash() {
-  const cands = []
-  if (process.env.CLAUDE_CODE_GIT_BASH_PATH) cands.push(process.env.CLAUDE_CODE_GIT_BASH_PATH)
-  for (const dir of pathDirs()) cands.push(join(dir, 'bash.exe'))
-  cands.push(
-    'C:\\msys64\\usr\\bin\\bash.exe',
-    'C:\\msys\\usr\\bin\\bash.exe',
-    'C:\\Program Files\\Git\\bin\\bash.exe',
-    'C:\\Program Files\\Git\\usr\\bin\\bash.exe',
-  )
-  for (const c of cands) {
-    try {
-      if (c && existsSync(c)) return c
-    } catch {
-      /* 路径怪就跳过 */
-    }
-  }
-  return ''
 }
 
 /**
@@ -286,7 +258,7 @@ function main() {
   //   入口写成 `fn main`（该是 `fn main_jhyy`）在**链接期**才报
   //   （`undefined reference to 'main'`）⇒ 只查语法/语义会**完全漏掉它**。
   //
-  // ⚠️ **要用 bash 跑（`-lc`）** —— 这是**踩过的坑**：
+  // ⚠️ **env 要自己修**（`buildChildEnv()`）—— 这是**踩过的坑**：
   //   直接 spawn 编译器时，hook 继承的是 CLI 的 env ⇒ 里面的 PATH 带着
   //   **错的 `C:\msys\usr\bin`**（不是 `C:\msys64`）⇒
   //   链接阶段 `windres`（嵌 exe 图标）**预处理失败** ⇒ 编译器判定
@@ -295,9 +267,11 @@ function main() {
   //   ⇒ 模型拿到的是**假错误**，连编译正确的代码也会被判失败
   //   （实测日志：「W-132: windres failed … icon embedding failed — 链接将失败」）。
   //
-  //   走 bash（`-lc`）⇒ bash 加载 MSYS2 的 profile ⇒ PATH 正确 ⇒ windres 正常。
-  //   CLI 自己的 env 里就有 `CLAUDE_CODE_GIT_BASH_PATH` ⇒ 不用猜路径。
-  const bash = findBash()
+  //   ⇒ 修法：**ucrt64 的 bin 排最前** + MSYS 风格 PATH 转 Windows 风格
+  //   + **只追加不替换**继承来的 PATH（语言仓 W-156 的教训）。
+  //
+  // ⚠️ **不要用 bash 跑** —— 试过，在**两个环境里各坏一次**
+  //   （没有 bash ⇒ 编译没跑；有 bash 但 `-lc` 的 PATH 不对 ⇒ 找不到 gcc）。
   let stderr = ''
   // ⚠️ **成功判据 = 退出码** —— ⚠️ **不要用「有没有结构化诊断」**！
   //   链接期失败（`fn main` 该是 `fn main_jhyy`）**没有** `file:line:col:` 形态
@@ -314,45 +288,32 @@ function main() {
     //   ⇒ 而且因为它用「有没有诊断」判成功 ⇒ **还报成「编译通过了」**
     //   ⇒ **测试看着是绿的，其实什么都没验**。
     //   ⇒ 直接 spawn 时**自己把 env 修好**（照抄 IDE 编译器的配方）。
-    // ⚠️ **默认直接 spawn** —— 「bash 优先」这个设计在**两个环境里各坏一次**：
-    //   - 没有 bash 的环境 ⇒ 编译压根没跑（CI 早期踩过）
-    //   - 有 bash 但 `-lc` 的 PATH 不对的环境 ⇒ 编译跑但找不到 gcc（CI 又踩过）
-    //   ⇒ 直接 spawn + **自己修好 env**（照抄 IDE 编译器的配方）才稳。
-    // ⚠️ **bash 只做兜底** —— 直接 spawn「看起来坏了」（退出码非 0 **且**
-    //   stderr 什么都没有）⇒ 才用 bash 重试一次。
-    // ⚠️ `JHY_HOOK_FORCE_BASH=1` ⇒ 强制走 bash（单测用）。
-    const direct = () =>
-      spawnSync(COMPILER, ['compile', file], {
-        encoding: 'utf8',
-        timeout: 120_000,
-        windowsHide: true,
-        env: buildChildEnv(),
-      })
-    const viaBash = () =>
-      spawnSync(bash, ['-lc', `"${COMPILER}" compile "${file}"`], {
-        encoding: 'utf8',
-        timeout: 120_000,
-        windowsHide: true,
-      })
-
-    let res
-    let via = 'direct'
-    if (process.env.JHY_HOOK_FORCE_BASH && bash) {
-      res = viaBash()
-      via = 'bash'
-    } else {
-      res = direct()
-      const looksBroken = res.status !== 0 && !String(res.stderr ?? '').trim()
-      if (looksBroken && bash) {
-        logHook('COMPILE direct 看起来坏了 ⇒ 用 bash 重试')
-        res = viaBash()
-        via = 'bash'
-      }
-    }
+    // ⚠️ **只走「直接 spawn」这一条路** —— CI 连续三轮把两条路都验过：
+    //
+    //   | 轮次            | 结果                                          |
+    //   |-----------------|-----------------------------------------------|
+    //   | ① 只有 bash     | 红 —— 没有 bash ⇒ **一次编译都没跑过**        |
+    //   | ② bash 优先     | 红 —— 红的是 bash 那条（CI 上 setup-msys2 的   |
+    //   |                 | bash `-lc` 的 PATH 是坏的 ⇒ 找不到 gcc）      |
+    //   | ③ 直接优先      | 红 —— 还是 bash 那条（链接期那个用例在 bash   |
+    //   |                 | 下**静默失败**）⇒ **直接 spawn 全过**        |
+    //
+    // ⇒ ⇒ **bash 兜底没有任何可证明的用处** —— 它在**两个环境里各坏一次**。
+    //
+    // ⚠️ **原来为什么用 bash**：直接 spawn 时 CLI 的 env 里 PATH 带着**错的**
+    //   `C:\msys\usr\bin` ⇒ 链接期 `windres` 找不到 ⇒ 链接必挂。
+    //   ⇒ **这个理由现在由 `buildChildEnv()` 接管**（ucrt64 的 bin 排最前
+    //   + MSYS 风格转 Windows 风格 + 只追加不替换）⇒ **不需要 bash 了**。
+    const res = spawnSync(COMPILER, ['compile', file], {
+      encoding: 'utf8',
+      timeout: 120_000,
+      windowsHide: true,
+      env: buildChildEnv(),
+    })
     stderr = String(res.stderr ?? '')
     exitCode = res.status
     logHook(
-      `COMPILE via=${via} status=${res.status} ` +
+      `COMPILE status=${res.status} ` +
         `signal=${res.signal ?? '-'} err=${res.error ? res.error.message : 'none'} ` +
         `stderrLen=${stderr.length}`,
     )

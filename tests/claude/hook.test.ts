@@ -22,7 +22,7 @@
  */
 
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -43,10 +43,7 @@ const FIX_TABLE = errorFixPath()
  *  ② **直接 spawn**：**CI 走这条**（CI 上那个 env 变量不存在）
  *  ⇒ 只测一条 ⇒ 另一条上出问题**谁也抓不到**。
  */
-function runHook(
-  payload: unknown,
-  extraEnv: Record<string, string> = {},
-): { stdout: string; status: number | null } {
+function runHook(payload: unknown): { stdout: string; status: number | null } {
   const args = [HOOK, COMPILER ?? '']
   if (FIX_TABLE) args.push(FIX_TABLE)
   const res = spawnSync(process.execPath, args, {
@@ -54,52 +51,18 @@ function runHook(
     encoding: 'utf8',
     timeout: 60_000,
     windowsHide: true,
-    env: {
-      ...process.env,
-      CLAUDE_CODE_GIT_BASH_PATH: 'C:/msys64/usr/bin/bash.exe',
-      ...extraEnv,
-    },
+    env: { ...process.env },
   })
   return { stdout: res.stdout ?? '', status: res.status }
 }
 
 /**
- * 这个环境的 bash **能不能找到 gcc**？
+ * ⚠️ **只有一条路** —— 「直接 spawn」。
  *
- * ⚠️ **CI 上 setup-msys2 的 bash 用 `-lc` 给的 PATH 是坏的**（找不到 gcc）
- *   ⇒ 而 bash 现在只是**兜底**（默认是直接 spawn）⇒
- *   ⇒ **兜底路径不该在它根本不可用的环境里当门** ⇒ 探一下，不能用就 skip。
- *
- * ⚠️ 探法跟 hook 的 `findBash()` 一个口径：env 变量 → 常见位置。
+ * CI 连续三轮验过：只有 bash ⇒ 编译压根没跑；bash 优先 ⇒ 红的是 bash 那条；
+ * 直接优先 ⇒ 还是红 bash 那条（**直接 spawn 全过**）。
+ * ⇒ ⇒ **bash 没有任何可证明的用处** ⇒ 砍掉 ⇒ hook 行为可预测、门好写。
  */
-function bashCanFindGcc(): boolean {
-  const cands = [
-    process.env.CLAUDE_CODE_GIT_BASH_PATH,
-    'C:\\msys64\\usr\\bin\\bash.exe',
-    'C:\\msys\\usr\\bin\\bash.exe',
-    'C:\\Program Files\\Git\\bin\\bash.exe',
-  ].filter(Boolean) as string[]
-  for (const bash of cands) {
-    if (!existsSync(bash)) continue
-    const r = spawnSync(bash, ['-lc', 'command -v gcc'], {
-      encoding: 'utf8',
-      timeout: 30_000,
-      windowsHide: true,
-    })
-    if (r.status === 0 && String(r.stdout ?? '').trim()) return true
-  }
-  return false
-}
-
-const BASH_USABLE = bashCanFindGcc()
-
-/** 两种运行方式（直接 spawn = 默认；bash = 兜底）。 */
-const MODES: { name: string; env: Record<string, string>; skip: boolean }[] = [
-  // ⚠️ **默认就是「直接 spawn」** —— 「bash 优先」在两个环境里各坏过一次：
-  //   没有 bash 的环境 ⇒ 编译压根没跑；有 bash 但 PATH 不对 ⇒ 找不到 gcc。
-  { name: '直接 spawn', env: {}, skip: false },
-  { name: 'bash', env: { JHY_HOOK_FORCE_BASH: '1' }, skip: !BASH_USABLE },
-]
 
 /** 入口名写错 ⇒ **链接期**失败（没有结构化诊断）。 */
 const BROKEN = 'fn main() -> i32 {\n    return 0;\n}\n'
@@ -136,16 +99,12 @@ describe('PostToolUse 钩子', () => {
   })
 
   // ⚠️ **这条守的是 2026-11-13 挖到的真 bug**
-  for (const mode of MODES) {
-    it.skipIf(!COMPILER || mode.skip)(`链接期失败 ⇒ **绝不能**说「编译通过」（${mode.name}）`, () => {
+  it.skipIf(!COMPILER)('链接期失败 ⇒ **绝不能**说「编译通过」', () => {
       const dir = mkdtempSync(join(tmpdir(), 'jhyy-hook-'))
       const file = join(dir, 'link-broken.jhyy')
       writeFileSync(file, BROKEN, 'utf8')
 
-      const { stdout } = runHook(
-        { tool_name: 'Write', tool_input: { file_path: file } },
-        mode.env,
-      )
+      const { stdout } = runHook({ tool_name: 'Write', tool_input: { file_path: file } })
 
       const out = JSON.parse(stdout)
       const ctx = out.hookSpecificOutput?.additionalContext ?? ''
@@ -155,18 +114,13 @@ describe('PostToolUse 钩子', () => {
       // 链接失败 ⇒ 得给出**针对性提示**（入口函数名）
       expect(ctx).toContain('main_jhyy')
     })
-  }
 
-  for (const mode of MODES) {
-    it.skipIf(!COMPILER || mode.skip)(`诊断里**顺带带上「怎么改」**（${mode.name}）`, () => {
+  it.skipIf(!COMPILER)('诊断里**顺带带上「怎么改」**（模型不用多调一次工具）', () => {
       const dir = mkdtempSync(join(tmpdir(), 'jhyy-hook-'))
       const file = join(dir, 'sema-broken.jhyy')
       writeFileSync(file, BROKEN_SEMA, 'utf8')
 
-      const { stdout } = runHook(
-        { tool_name: 'Write', tool_input: { file_path: file } },
-        mode.env,
-      )
+      const { stdout } = runHook({ tool_name: 'Write', tool_input: { file_path: file } })
 
       const out = JSON.parse(stdout)
       const ctx = out.hookSpecificOutput?.additionalContext ?? ''
@@ -176,18 +130,13 @@ describe('PostToolUse 钩子', () => {
         expect(ctx).toMatch(/怎么改|什么意思|见 /)
       }
     })
-  }
 
-  for (const mode of MODES) {
-    it.skipIf(!COMPILER || mode.skip)(`改了能编译的 .jhyy ⇒ 说一句「编译通过了」（${mode.name}）`, () => {
+  it.skipIf(!COMPILER)('改了能编译的 .jhyy ⇒ 说一句「编译通过了」', () => {
       const dir = mkdtempSync(join(tmpdir(), 'jhyy-hook-'))
       const file = join(dir, 'ok.jhyy')
       writeFileSync(file, OK, 'utf8')
 
-      const { stdout, status } = runHook(
-        { tool_name: 'Write', tool_input: { file_path: file } },
-        mode.env,
-      )
+      const { stdout, status } = runHook({ tool_name: 'Write', tool_input: { file_path: file } })
 
     expect(status).toBe(0)
     // ⚠️ **成功时也注入** —— 两个理由：
@@ -203,7 +152,6 @@ describe('PostToolUse 钩子', () => {
       //   让模型以为做完了 ⇒ 加一句免责。
       expect(out.hookSpecificOutput?.additionalContext).toContain('不代表输出对')
     })
-  }
 
   it('改了非 .jhyy 文件 ⇒ 不出声', () => {
     const { stdout, status } = runHook({
