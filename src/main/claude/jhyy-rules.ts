@@ -75,6 +75,29 @@ export function knowledgePackPath(): string | null {
   return null
 }
 
+/**
+ * 「报错 → 修法」表在语言仓里的位置 —— 找不到返回 `null`。
+ *
+ * ⚠️ **跟知识包同一个套路**：真相在语言仓（`scripts/gen-knowledge.py` 导出），
+ *   IDE 侧只读、不生成。
+ *
+ * ⇒ **给谁用**：IDE 的 PostToolUse hook —— 诊断**顺带带上「怎么改」**，
+ *   模型**不用多调一次工具**就知道该改哪儿（评测实测：hook 只说「哪里错」
+ *   会让模型「照诊断改」而不是「去查规范」⇒ 反而掉正确率）。
+ */
+export function errorFixPath(): string | null {
+  const roots = [
+    resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..', 'JiHuiYiYou'),
+    resolve(process.cwd(), '..', 'JiHuiYiYou'),
+    resolve(homedir(), 'Desktop', 'coding', 'JiHuiYiYou'),
+  ]
+  for (const root of roots) {
+    const candidate = join(root, 'docs', 'generated', 'jhyy-error-fix.json')
+    if (existsSync(candidate)) return candidate
+  }
+  return null
+}
+
 let packCache: string | null | undefined
 
 /** 读知识包（带缓存）。找不到返回 `null`。 */

@@ -37,6 +37,84 @@ import { spawnSync } from 'node:child_process'
 import { appendFileSync, readFileSync } from 'node:fs'
 
 const COMPILER = process.argv[2] ?? ''
+/**
+ * 「报错 → 修法」表的路径（可选）。
+ *
+ * ⚠️ **跨仓产物** —— 真相在语言仓（`docs/generated/jhyy-error-fix.json`，
+ *   从 `mcp-jhyy/jhyy_errors.py` 导出）⇒ IDE 只读、不生成。
+ *   找不到就**不注入修法**（hook 仍然正常工作）。
+ */
+const ERROR_FIX = process.argv[3] ?? ''
+
+/** 「报错 → 修法」表（懒加载 + 缓存）。 */
+let errorFixCache = null
+function loadErrorFix() {
+  if (errorFixCache !== null) return errorFixCache
+  errorFixCache = []
+  if (!ERROR_FIX) return errorFixCache
+  try {
+    const raw = JSON.parse(readFileSync(ERROR_FIX, 'utf8'))
+    errorFixCache = Array.isArray(raw?.entries) ? raw.entries : []
+  } catch {
+    errorFixCache = []
+  }
+  return errorFixCache
+}
+
+/** 归一化（跟语言仓 `jhyy_errors.normalize()` 一个口径）。 */
+function normalize(text) {
+  return String(text ?? '')
+    .replace(/^.*?:\d+:\d+:\s*/, '')
+    .replace(/^(error|warning)\s*:\s*/i, '')
+    .replace(/[`*]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+}
+
+/**
+ * 给一条诊断找「什么意思 / 怎么改 / 该查哪一节」。
+ *
+ * ⚠️ **只认高置信匹配**（完全相等 / 一方是另一方的子串且够长）
+ *   ⇒ 宁可不给，也别给错的 —— **瞎猜比不给更糟**。
+ */
+function lookupFix(message) {
+  const q = normalize(message)
+  if (!q) return null
+  const entries = loadErrorFix()
+  let best = null
+  let bestLen = 0
+  for (const e of entries) {
+    const t = normalize(e.text)
+    if (!t) continue
+    if (t === q) return e
+    if (t.length >= 12 && q.includes(t)) {
+      if (t.length > bestLen) {
+        best = e
+        bestLen = t.length
+      }
+    } else if (q.length >= 12 && t.includes(q) && !best) {
+      best = e
+    }
+  }
+  return best
+}
+
+/** 把一条诊断渲染成「位置 + 原文 + 怎么改」。 */
+function renderDiagnostic(d) {
+  const head = `- ${d.line}:${d.col} ${d.message}`
+  const hit = lookupFix(d.message)
+  if (!hit) return head
+  const bits = []
+  if (hit.meaning) bits.push(`什么意思：${hit.meaning}`)
+  if (hit.fix) bits.push(`怎么改：${hit.fix}`)
+  const refs = []
+  if (hit.spec_ref) refs.push(`规范 ${hit.spec_ref}`)
+  if (hit.w_ref) refs.push(`台账 ${hit.w_ref}`)
+  if (refs.length) bits.push(`见 ${refs.join(' / ')}`)
+  if (!bits.length) return head
+  return `${head}\n  → ${bits.join('；')}`
+}
 
 /** 从编译器 stderr 里抠出诊断行。 */
 function parseDiagnostics(stderr) {
@@ -112,6 +190,11 @@ function main() {
   //   CLI 自己的 env 里就有 `CLAUDE_CODE_GIT_BASH_PATH` ⇒ 不用猜路径。
   const bash = process.env.CLAUDE_CODE_GIT_BASH_PATH || 'C:\\msys64\\usr\\bin\\bash.exe'
   let stderr = ''
+  // ⚠️ **成功判据 = 退出码** —— ⚠️ **不要用「有没有结构化诊断」**！
+  //   链接期失败（`fn main` 该是 `fn main_jhyy`）**没有** `file:line:col:` 形态
+  //   ⇒ 用诊断条数判断 ⇒ 会把**链接不过的程序说成「编译通过了」**
+  //   ⇒ 模型以为做完了 ⇒ 交了一份链接不过的代码（实测踩过）。
+  let exitCode = null
   try {
     const res = spawnSync(bash, ['-lc', `"${COMPILER}" compile "${file}"`], {
       encoding: 'utf8',
@@ -119,6 +202,7 @@ function main() {
       windowsHide: true,
     })
     stderr = String(res.stderr ?? '')
+    exitCode = res.status
     logHook(
       `COMPILE status=${res.status} signal=${res.signal ?? '-'} ` +
         `err=${res.error ? res.error.message : 'none'} stderrLen=${stderr.length}`,
@@ -142,7 +226,8 @@ function main() {
   let lines = []
   let headline = ''
 
-  if (errors.length === 0) {
+  // ⚠️ **按退出码判断成功** —— 链接期失败没有结构化诊断（见上）。
+  if (exitCode === 0) {
     // ⚠️ **编译成功也要说一句** —— 两个理由：
     //
     //   ① **可观测**：成功时也注入 ⇒ 「注入真的进了模型上下文」这件事
@@ -163,7 +248,9 @@ function main() {
       JSON.stringify({
         hookSpecificOutput: {
           hookEventName: 'PostToolUse',
-          additionalContext: `✓ \`${file}\` 现在编译通过了。` + (marker ? ` [marker ${marker}]` : ''),
+          additionalContext:
+            `✓ \`${file}\` 现在编译通过了（**只说明语法/语义没问题，不代表输出对**）。` +
+            (marker ? ` [marker ${marker}]` : ''),
         },
         tool_response: { success: true },
       }),
@@ -173,7 +260,7 @@ function main() {
 
   if (errors.length > 0) {
     headline = `⚠️ 你刚写的 \`${file}\` **编译不过**（${errors.length} 个错误）：`
-    lines = errors.slice(0, 20).map((d) => `- ${d.line}:${d.col} ${d.message}`)
+    lines = errors.slice(0, 20).map((d) => renderDiagnostic(d))
     if (errors.length > 20) lines.push(`- …还有 ${errors.length - 20} 个`)
   } else {
     // ⚠️ **链接期错误没有 `file:line:col` 形态** —— 入口写成 `fn main`
@@ -184,7 +271,10 @@ function main() {
       .filter((l) => l && /undefined reference|ld returned|collect2|error:/i.test(l))
     if (raw.length === 0) {
       // 编译退出码非 0、但既没结构化诊断也没链接错误 ⇒ 没东西可说 ⇒ 不出声
+      // ⚠️ **但还是要写 `tool_response`** —— stdout 一个字节都不写的话，
+      //   CLI 会把这次 hook 当成「出错」（实测踩过：漏掉它 ⇒ 诊断压根不注入）。
       logHook(`SILENT ${file}`)
+      process.stdout.write(JSON.stringify({ tool_response: { success: true } }))
       return
     }
     headline = `⚠️ 你刚写的 \`${file}\` **编译/链接不过**：`
@@ -202,7 +292,15 @@ function main() {
   }
 
   // 4) 把诊断注入回上下文
-  const context = [headline, ...lines, '按这些诊断改，别靠猜。'].join('\n')
+  // ⚠️ **结尾这句话是有讲究的** —— 实测踩过：
+  //   原来写「按这些诊断改，别靠猜。」⇒ **把模型从「去查规范」拽到「照诊断改」**
+  //   ⇒ 评测里 `mask-change`（能编译、但输出不对）那类题**正确率掉了**。
+  // ⇒ 现在改成：**先按诊断改，不确定就查错误索引拿修法** —— 指回**正确的工具**。
+  const context = [
+    headline,
+    ...lines,
+    '按这些诊断改；**不确定某个错是什么意思时**，用 MCP 工具 `jhyy_error_lookup` 查它的修法（别硬猜）。',
+  ].join('\n')
 
   logHook(`INJECT ${file} :: ${errors.length} 个错误`)
   process.stdout.write(

@@ -2,6 +2,8 @@ import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { errorFixPath } from './jhyy-rules'
+
 /**
  * Claude Code 的 **PostToolUse hook** —— 模型一写完 `.jhyy`，**IDE 立刻编译，
  * 把真实诊断喂回上下文**。
@@ -35,6 +37,13 @@ export interface HookSettingsOptions {
   scriptPath: string
   /** 跑钩子的 node 可执行文件（默认 `node`） */
   nodePath?: string
+  /**
+   * 「报错 → 修法」表的路径（可选）。
+   *
+   * ⚠️ **不传就自己找**（语言仓的 `docs/generated/jhyy-error-fix.json`）
+   *   ⇒ IDE 和评测 harness **不用各写一份找路径的逻辑**。
+   */
+  errorFixPath?: string
 }
 
 /**
@@ -60,7 +69,12 @@ function quote(arg: string): string {
  */
 export function buildHookSettings(opts: HookSettingsOptions): string {
   const node = opts.nodePath ?? 'node'
-  const command = [quote(node), quote(opts.scriptPath), quote(opts.compilerPath)].join(' ')
+  // ⚠️ **「报错速查表」是可选的** —— 找不到就不传 ⇒ hook 照常工作
+  //   （只是诊断里不带「怎么改」而已）。
+  const fixTable = opts.errorFixPath ?? errorFixPath() ?? ''
+  const command = [quote(node), quote(opts.scriptPath), quote(opts.compilerPath)]
+  if (fixTable) command.push(quote(fixTable))
+  const cmdLine = command.join(' ')
 
   const settings = {
     hooks: {
@@ -68,7 +82,7 @@ export function buildHookSettings(opts: HookSettingsOptions): string {
         {
           // 只在「改了文件」之后触发
           matcher: 'Write|Edit|MultiEdit',
-          hooks: [{ type: 'command', command }],
+          hooks: [{ type: 'command', command: cmdLine }],
         },
       ],
     },
