@@ -110,6 +110,22 @@ interface RunRecord {
   usedCompiler: boolean
   /** 失败原因 */
   reason?: string
+  /**
+   * **这次运行被掐断了**（超时）—— ⚠️ **不是模型没写对**。
+   *
+   * ⚠️ **实测踩过**：默认超时只有 300 秒 ⇒ 每个臂都有 6~8/29 题被掐断
+   *   ⇒ 混进「正确率」里 ⇒ **把基础设施故障算成模型的锅**。
+   */
+  timedOut?: boolean
+  /**
+   * **这次运行撞上了 API 错误**（500 / 限流 …）—— ⚠️ **不是模型没写对**。
+   *
+   * ⚠️ **实测踩过**：`API Error: Internal server error. Please retry (500)`
+   *   ⇒ 模型根本没机会做完 ⇒ 却记成「没写对」。
+   */
+  apiError?: boolean
+  /** 这道题**实际跑了几次**（>1 说明重试过） */
+  attempts?: number
   usage?: { inputTokens?: number; outputTokens?: number; costUsd?: number; turns?: number }
   /** 模型的最终回答（截断） */
   answer?: string
@@ -322,6 +338,8 @@ function runClaude(opts: {
   toolUses: ToolUseEvent[]
   usage?: { inputTokens?: number; outputTokens?: number; costUsd?: number; turns?: number }
   timedOut: boolean
+  /** 撞上了 API 错误（500 / 限流 …）—— ⚠️ **不是模型的错** */
+  apiError: boolean
 }> {
   return new Promise((resolve) => {
     const args = [
@@ -362,6 +380,7 @@ function runClaude(opts: {
     let buf = ''
     let usage: RunRecord['usage']
     let timedOut = false
+    let apiError = false
 
     const timer = setTimeout(() => {
       timedOut = true
@@ -399,7 +418,22 @@ function runClaude(opts: {
     child.on('close', () => {
       clearTimeout(timer)
       const traj = parseStream(lines)
-      resolve({ answer: traj.answer, toolUses: traj.toolUses, usage, timedOut })
+      // ⚠️ **API 错误检测** —— 两种形态都要抓：
+      //   ① 助手消息里出现「API Error: … (500)」
+      //   ② `result` 事件带 `is_error: true`
+      // ⇒ 这两种都**不是模型没写对** ⇒ 归类为「这次运行废了」⇒ 该重试。
+      if (/API Error/i.test(traj.answer)) apiError = true
+      for (const line of lines) {
+        if (!line.trim().startsWith('{')) continue
+        try {
+          const ev = JSON.parse(line.trim())
+          if (ev.type === 'result' && ev.is_error === true) apiError = true
+          if (ev.type === 'assistant' && ev.is_error === true) apiError = true
+        } catch {
+          /* 半行 JSON */
+        }
+      }
+      resolve({ answer: traj.answer, toolUses: traj.toolUses, usage, timedOut, apiError })
     })
   })
 }
@@ -420,7 +454,11 @@ async function main() {
   }
   const limit = Number(arg('tasks', '0'))
   const repeat = Number(arg('repeat', '1'))
-  const timeoutSec = Number(arg('timeout', '300'))
+  // ⚠️ **默认 900 秒** —— 300 太短（实测每个臂都有 6~8/29 题被掐断
+  //   ⇒ 基础设施故障混进正确率 ⇒ 结论全歪）。
+  const timeoutSec = Number(arg('timeout', '900'))
+  // ⚠️ **重试次数** —— 超时 / API 错误 ⇒ 重跑（默认 2 次，即最多跑 3 遍）
+  const retries = Number(arg('retries', '2'))
   // --prompt-style current|tight ⇒ 题目的措辞风格（归因实验用，见 buildPrompt 的注释）
   const promptStyle = arg('prompt-style', 'current') ?? 'current'
   // --allowed-tools：覆盖工具白名单（实验用）
@@ -487,25 +525,53 @@ async function main() {
   mkdirSync(outDir, { recursive: true })
   const runId = new Date().toISOString().replace(/[:.]/g, '-')
   const jsonl = join(outDir, `${runId}-${arm.name}.jsonl`)
+  // ⚠️ **产物名标签** —— `compileFile()` 把产物写进**共享的** work 目录
+  //   （`%TMP%/jhyy-ide-work`）⇒ 两个并发跑同一个臂的评测**会撞名**
+  //   ⇒ 互相覆盖 ⇒ **判分拿到的是对方的产物**（实测踩过：两个臂都跑
+  //   `--arm knowledge` ⇒ 并发 ⇒ 撞了）⇒ 产物名必须带**本次运行的唯一标签**。
+  const outTag = runId.replace(/[^0-9A-Za-z]/g, '').slice(-10)
   writeFileSync(jsonl, '', 'utf8')
 
   const records: RunRecord[] = []
 
   for (const task of tasks) {
     for (let r = 0; r < repeat; r++) {
-      const { dir, rel } = setupWorkspace(task, corpusRoot, cTaskDir)
-      const targetAbs = join(dir, rel)
+      let { dir, rel } = setupWorkspace(task, corpusRoot, cTaskDir)
+      let targetAbs = join(dir, rel)
       try {
-        const res = await runClaude({
-          exe: claude.path,
-          prompt: buildPrompt(task, rel, promptStyle, promptStyle === 'tight' ? exePath : undefined),
-          cwd: dir,
-          arm,
-          mcpConfig,
-          timeoutMs: timeoutSec * 1000,
-          allowedTools,
-          hookSettings,
-        })
+        // ⚠️ **重试** —— 超时 / API 错误 / usage 缺失 ⇒ 这次运行**废了**，
+        //   **不是模型没写对** ⇒ 重跑一遍。
+        //   （实测：不重试的话，每个臂都有 6~8/29 题被误判成「模型失败」。）
+        let res: Awaited<ReturnType<typeof runClaude>>
+        let attempts = 0
+        for (;;) {
+          attempts++
+          res = await runClaude({
+            exe: claude.path,
+            prompt: buildPrompt(task, rel, promptStyle, promptStyle === 'tight' ? exePath : undefined),
+            cwd: dir,
+            arm,
+            mcpConfig,
+            timeoutMs: timeoutSec * 1000,
+            allowedTools,
+            hookSettings,
+          })
+          const dead = res.timedOut || res.apiError || !res.usage
+          if (!dead || attempts > retries) break
+          const why = res.timedOut ? '超时' : res.apiError ? 'API 错误' : 'usage 缺失'
+          console.log(`  ↻ ${task.id} 第 ${attempts} 次${why} ⇒ 重试`)
+          // 重试前**重置工作区** —— 上一轮的半成品留在那儿会干扰判分
+          try {
+            rmSync(dir, { recursive: true, force: true })
+          } catch {
+            /* 删不掉就算了 */
+          }
+          const ws = setupWorkspace(task, corpusRoot, cTaskDir)
+          dir = ws.dir
+          rel = ws.rel
+          targetAbs = join(dir, rel)
+        }
+
 
         const versions = reconstructVersions(res.toolUses, targetAbs, task.broken)
         // 模型没写文件、只在对话里贴了代码 ⇒ 也算一版
@@ -533,7 +599,7 @@ async function main() {
             file: targetAbs,
             exePath,
             cwd: findLangRepo() ?? dir,
-            outBase: `eval_${arm.name}_${tasks.indexOf(task)}_${r}_${i}`,
+            outBase: `eval_${arm.name}_${outTag}_${tasks.indexOf(task)}_${r}_${i}`,
           })
           grades.push({ passed: g.passed, reason: g.reason })
           if (g.passed && !firstPass) firstPass = true
@@ -551,6 +617,9 @@ async function main() {
           versions: versions.length,
           usedCompiler: usedCompiler(res.toolUses),
           reason: grades.find((g) => !g.passed)?.reason,
+          timedOut: res.timedOut,
+          apiError: res.apiError,
+          attempts,
           usage: res.usage,
           answer: res.answer.slice(0, 600),
           grades,
@@ -587,9 +656,27 @@ async function main() {
   const cost = records.reduce((a, r) => a + (r.usage?.costUsd ?? 0), 0)
   const turns = records.reduce((a, r) => a + (r.usage?.turns ?? 0), 0)
 
+  const dead = records.filter((r) => r.timedOut || r.apiError || !r.usage).length
+  const alive = records.filter((r) => !r.timedOut && !r.apiError && r.usage)
+  const aliveFinal = alive.filter((r) => r.finalPass).length
+  const aliveFirst = alive.filter((r) => r.firstPass).length
+  const aliveTurns = alive.reduce((a, r) => a + (r.usage?.turns ?? 0), 0)
+
   console.log(`\n===== 臂 ${arm.name} =====`)
   console.log(`首次写对：${first}/${n}（${n ? ((first / n) * 100).toFixed(0) : 0}%）`)
   console.log(`最终写对：${final}/${n}（${n ? ((final / n) * 100).toFixed(0) : 0}%）`)
+  // ⚠️ **这一行才是能用来做 A/B 的数字** —— 只统计**跑完**的题
+  //   （跑挂的题是基础设施故障，不是模型没写对）。
+  console.log(
+    `⚑ 跑挂：${dead}/${n}（超时或 API 错误）`,
+  )
+  console.log(
+    `只算跑完的 ${alive.length} 题：首次写对 ${aliveFirst}/${alive.length}` +
+      `（${alive.length ? ((aliveFirst / alive.length) * 100).toFixed(0) : 0}%）、` +
+      `最终写对 ${aliveFinal}/${alive.length}` +
+      `（${alive.length ? ((aliveFinal / alive.length) * 100).toFixed(0) : 0}%）、` +
+      `平均轮数 ${alive.length ? (aliveTurns / alive.length).toFixed(1) : 0}`,
+  )
   console.log(`用了编译器：${records.filter((r) => r.usedCompiler).length}/${n}`)
   console.log(`平均轮数：${n ? (turns / n).toFixed(1) : 0}`)
   console.log(`总花费：$${cost.toFixed(4)}`)

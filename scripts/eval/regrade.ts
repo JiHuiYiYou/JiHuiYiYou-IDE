@@ -60,6 +60,9 @@ async function main() {
   const taskFile = JSON.parse(readFileSync(tasksFile, 'utf8')) as { tasks: EvalTask[] }
   const taskById = new Map(taskFile.tasks.map((t) => [t.id, t]))
 
+  // ⚠️ 产物名标签（见下面 outBase 处的说明）
+  const outTag = Date.now().toString(36) + process.pid.toString(36)
+
   const exePath = findCompiler()
   if (!exePath) {
     console.error('✗ 找不到编译器')
@@ -115,7 +118,10 @@ async function main() {
         file: tmp,
         exePath,
         cwd,
-        outBase: `regrade_${rec.taskId.replace(/[^\w]/g, '_')}_${i}`,
+        // ⚠️ **产物名带本次运行的唯一标签** —— `compileFile()` 写进**共享的**
+        //   work 目录 ⇒ 跟正在跑的评测**并发**会撞名 ⇒ 互相覆盖
+        //   ⇒ 判分拿到的是对方的产物（实测踩过）。
+        outBase: `regrade_${outTag}_${rec.taskId.replace(/[^\w]/g, '_')}_${i}`,
       })
       grades.push({ passed: g.passed, reason: g.reason })
       if (g.passed) firstPass = true
