@@ -278,12 +278,29 @@ function main() {
       return
     }
     headline = `⚠️ 你刚写的 \`${file}\` **编译/链接不过**：`
-    lines = raw.slice(0, 10).map((l) => `- ${l}`)
+    // ⚠️ **链接期失败也要带上修法** —— 评测任务集里 **8 道题**是这个形态
+    //   （入口写成 `fn main`）⇒ 它是最值钱的一条诊断 ⇒ 别只给一行原始文本。
+    lines = raw.slice(0, 10).map((l) => {
+      const hit = lookupFix(l)
+      if (!hit) return `- ${l}`
+      const bits = []
+      if (hit.meaning) bits.push(`什么意思：${hit.meaning}`)
+      if (hit.fix) bits.push(`怎么改：${hit.fix}`)
+      const refs = []
+      if (hit.spec_ref) refs.push(`规范 ${hit.spec_ref}`)
+      if (hit.w_ref) refs.push(`台账 ${hit.w_ref}`)
+      if (refs.length) bits.push(`见 ${refs.join(' / ')}`)
+      return bits.length ? `- ${l}
+  → ${bits.join('；')}` : `- ${l}`
+    })
     // ⚠️ **链接失败时 gcc/ld 的真实原因被吞掉了**（语言仓 W-226）：
     //   本机 gcc 只给出「ld returned 1 exit status」，
     //   **`undefined reference to 'main'` 根本没传回来** ⇒ 拿这条错误**不知道该改什么**。
     //   ⇒ 这里补一条**针对性提示**（条件式，不武断）。
-    if (/ld returned|undefined reference|collect2/i.test(raw.join('\n'))) {
+    // ⚠️ **兜底**：速查表**没**给出修法时，才补这条针对性的提示
+    //   （有修法时上面那条已经说了 ⇒ 别把同一件事说两遍）。
+    const linkGotFix = lines.some((l) => l.includes('怎么改：'))
+    if (!linkGotFix && /ld returned|undefined reference|collect2/i.test(raw.join('\n'))) {
       lines.push(
         '- 💡 链接失败最常见的原因：**hosted 模式的入口函数名必须是 `main_jhyy`**' +
           '（不是 `main`）—— 先检查这个。',
