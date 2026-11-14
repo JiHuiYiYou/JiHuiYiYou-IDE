@@ -21,6 +21,7 @@
 """
 
 import json
+import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -61,6 +62,25 @@ def kinds(r):
     c = Counter()
     for t in r.get("trajectory") or []:
         c[t.get("kind", "?")] += 1
+    return c
+
+
+def compile_errors(r):
+    """这道题里模型**撞到的编译错误**（按错误文本归并）。
+
+    ⚠️ **为什么要有这个指标** —— 「通过率」是 29 个 0/1 的和 ⇒ n=1 噪声 ±5 题
+    ⇒ ⇒ 「hook 让正确率掉 5 题」这种结论**判不了**。
+    ⇒ 而**错型频率**是**事件计数**（几十次）⇒ 噪声 ±1~2 ⇒ ⇒
+    ⇒ **「某条规则有没有消掉它对应的那个坑」用 n=1 就能回答** ✓
+    """
+    c = Counter()
+    for t in r.get("trajectory") or []:
+        # ⚠️ **只取到引号/反斜杠/换行为止** —— 工具结果里的 JSON 尾巴
+        #   （`\\n`、`C:\\Users\\...`）会把同一种错误拆成好几行
+        #   （「type mismatch in binary\nsemantic errors\n」和
+        #   「type mismatch in binary\nC:\Users\...」其实是同一种）。
+        for m in re.finditer(r'error: ([^"\\\n\r]{3,60})', str(t.get("result", ""))):
+            c[m.group(1).strip()] += 1
     return c
 
 
@@ -133,6 +153,28 @@ def main():
         print("%-14s %6d %6d %+8d%s" % (k, ka[k], kb[k], d, mark))
     print("%-14s %6d %6d %+8d" % ("TOTAL", sum(ka.values()), sum(kb.values()),
                                   sum(kb.values()) - sum(ka.values())))
+    print()
+
+    # ── **错型频率**（比通过率灵敏得多 ⇒ n=1 就能用）────────────────
+    ea = Counter()
+    eb = Counter()
+    for t in common:
+        if hung(A[t]) or hung(B[t]):
+            continue
+        ea.update(compile_errors(A[t]))
+        eb.update(compile_errors(B[t]))
+    print("──── 编译错误**频率**（比通过率灵敏 ⇒ n=1 就能用）────")
+    if not ea and not eb:
+        print("  （两个臂都没撞到编译错误）")
+    else:
+        print("  %-42s %5s %5s %6s" % ("错误", "A", "B", "B-A"))
+        for k in sorted(set(ea) | set(eb), key=lambda x: -(eb[x] - ea[x])):
+            d = eb[k] - ea[k]
+            mark = "  ←↓" if d < 0 else ("  ←↑" if d > 0 else "")
+            print("  %-42s %5d %5d %+6d%s" % (k[:42], ea[k], eb[k], d, mark))
+        print("  %-42s %5d %5d %+6d" % (
+            "合计", sum(ea.values()), sum(eb.values()),
+            sum(eb.values()) - sum(ea.values())))
     print()
 
     # 结论变了的题 —— **标明是不是掐断造成的**
