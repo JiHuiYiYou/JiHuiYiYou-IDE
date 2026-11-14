@@ -403,19 +403,14 @@ function main() {
       return bits.length ? `- ${l}
   → ${bits.join('；')}` : `- ${l}`
     })
-    // ⚠️ **链接失败时 gcc/ld 的真实原因被吞掉了**（语言仓 W-226）：
-    //   本机 gcc 只给出「ld returned 1 exit status」，
-    //   **`undefined reference to 'main'` 根本没传回来** ⇒ 拿这条错误**不知道该改什么**。
-    //   ⇒ 这里补一条**针对性提示**（条件式，不武断）。
-    // ⚠️ **兜底**：速查表**没**给出修法时，才补这条针对性的提示
-    //   （有修法时上面那条已经说了 ⇒ 别把同一件事说两遍）。
-    const linkGotFix = lines.some((l) => l.includes('怎么改：'))
-    if (!linkGotFix && /ld returned|undefined reference|collect2/i.test(raw.join('\n'))) {
-      lines.push(
-        '- 💡 链接失败最常见的原因：**hosted 模式的入口函数名必须是 `main_jhyy`**' +
-          '（不是 `main`）—— 先检查这个。',
-      )
-    }
+    // ⚠️ **W-226 已修（2026-11-14）**：链接失败时**编译器自己**会点名缺哪个入口符号
+    //   （`error: link failed - no entry symbol \`main_jhyy\` …`）⇒ 语言仓的速查表
+    //   （`docs/generated/jhyy-error-fix.json`）里也**校订了这一条** ⇒ 这条诊断自带「怎么改」。
+    //   ⇒ 这里那条「💡 入口名必须是 main_jhyy」的**兜底提示撤掉了**：
+    //   它当时存在，是因为 gcc → collect2 → ld 三层里 **`ld` 的真实原因被 collect2 吞掉**
+    //   （只剩「ld returned 1 exit status」）⇒ 拿那条错误**不知道该改什么**。
+    //   而它对**其它**链接失败也会触发 ⇒ 入口明明在位时反而误导（让人去查入口名）。
+    //   ⚠️ 拿**旧版编译器**跑时链接失败可能什么都不说 ⇒ 那时该升级编译器，不是补提示。
   }
 
   // 4) 把诊断注入回上下文
