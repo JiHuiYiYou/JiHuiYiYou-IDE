@@ -90,8 +90,17 @@ def corpus_is_newer() -> bool:
       ⇒ ⇒ CI 里（全是 checkout 时间）也判得出来 ⇒ ⇒ 能当门用。
     ⇒ 产物里没有指纹（旧产物）⇒ 退回 **mtime** 判（不精确，但够用）。
     """
-    if fingerprint_mismatch() is True:
+    fp = fingerprint_mismatch()
+    if fp is True:
         return True
+    if fp is False:
+        # ⚠️ **指纹对得上就是最新** —— **不要再看 mtime**！
+        #   CI 里两个仓是**分两次 checkout** 的 ⇒ 语言仓的语料**必然比**
+        #   IDE 仓的任务集**新** ⇒ 用 mtime 判 ⇒ **永远判成「过期」**
+        #   ⇒ 门在 CI 上恒红（2026-11-15 实测踩过）。
+        # ⇒ 指纹（内容哈希）是**内容**的判据；mtime 只是**没有指纹时**的兜底。
+        return False
+    # 指纹判不了（产物是旧的 / import 失败）⇒ 退回 mtime 兜底
     newest_task = 0.0
     for f in TASK_FILES:
         p = ROOT / f
