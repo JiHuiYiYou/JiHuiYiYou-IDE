@@ -80,6 +80,7 @@ npm run conformance  # 只跑一致性测试
 npm run dist         # 打 NSIS 安装包
 
 npm run eval:tasks   # 重建评测任务集（真编译验过每道题）
+npm run eval:tasks:paired # 重建**配对**任务集（同 AST 的 C/JHYY 两个实现）
 npm run eval         # 跑评测（要花 API 额度，别在每次提交时跑）
 npm run eval:compare # A/B 对比两个臂的结果
 npm run eval:analyze # 轮数归因：轮数花在哪种活上（查工具调用轨迹）
