@@ -1,0 +1,41 @@
+#!/bin/sh
+# pre-commit —— **刷派生产物**（评测任务集）。
+#
+# 为什么有这个：本仓的 `eval/tasks*.json` + `eval/tasks-paired/` 是
+# **从语言仓的语料算出来的、但要进仓**的文件 ⇒ 语料变了就得重刷 ⇒
+# 忘了 ⇒ **评测在旧题上跑** ⇒ 结论对不上 reality ⇒ 而且没人会发现
+# （CI 没有「任务集是最新的」那道门）。
+#
+# ⚠️ **怎么装**（一次性，仓内）：
+#     git config core.hooksPath .githooks
+#
+# ⚠️ 任务集的重刷要**真跑编译器** ⇒ 要几分钟 ⇒ 只在「该过期时」才跑
+#   （改了生成器，或语言仓的语料比任务集新）。
+#
+# ⚠️ **为什么 npm 在这里跑、python 只负责判断**：`npm` 是 `.cmd` ⇒
+#   **Windows 的 Python 找不到它**（实测 FileNotFoundError）⇒ ⇒
+#   由 sh（MSYS）跑 npm，python 只回答「该刷吗」+ 刷完把产物 stage 进来。
+set -e
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+PY=""
+for c in python python3 py; do
+    if command -v "$c" >/dev/null 2>&1; then
+        PY="$c"
+        break
+    fi
+done
+if [ -z "$PY" ]; then
+    echo "⚠️ 找不到 python ⇒ 跳过任务集刷新（评测会在旧题上跑）" >&2
+    exit 0
+fi
+
+# 退出码 0 = 该刷；1 = 不用刷
+if "$PY" scripts/dev/refresh-artifacts.py --should-refresh; then
+    echo "[pre-commit] 评测任务集过期了 ⇒ 重刷（真跑编译器 ⇒ 要几分钟）……"
+    npm run eval:tasks
+    npm run eval:tasks:paired
+    "$PY" scripts/dev/refresh-artifacts.py --stage
+fi

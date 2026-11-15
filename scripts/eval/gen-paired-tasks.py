@@ -317,6 +317,97 @@ fn main_jhyy() -> i32 {
 """,
     },
     {
+        # ── **「难形状」**：struct ──────────────────────────────────
+        # 为什么要有难形状（2026-11-15 实测）：臂 I（11 题）里
+        # **编译错误总共只有 1 次** ⇒ difftest 那种 u32 算术题对模型
+        # **已经太容易** ⇒ 尺子**饱和了** ⇒ 再加同形状的题也测不出东西。
+        # ⇒ 要加**能卡住模型**的形状 ⇒ 挑「知识包里已登记、但 difftest
+        #   不会生成」的那些：
+        #   · struct 字面量的**字段类型必须精确匹配**（`P { c: 7 }` 报
+        #     `field type mismatch` —— 整数字面量默认是 i32）
+        #   · struct **按值传参/返回**
+        #   · struct 字面量**省略的字段是未初始化垃圾**（本测试不踩这个）
+        "id": "translate/struct-value/jhyy",
+        "title": "把 C 程序翻译成 JHYY（struct 按值传参）",
+        "rule": "C → JHYY 翻译（struct）",
+        "specFile": "translate_struct_value_c.c",
+        "c_src": """/* 手写翻译题 —— struct：按值传参 / 返回 + struct 字面量 */
+#include <stdio.h>
+
+struct Point {
+    int x;
+    int y;
+};
+
+static struct Point make(int x, int y) {
+    struct Point p;
+    p.x = x;
+    p.y = y;
+    return p;
+}
+
+static int dist2(struct Point a, struct Point b) {
+    int dx = a.x - b.x;
+    int dy = a.y - b.y;
+    return dx * dx + dy * dy;
+}
+
+int main(void) {
+    struct Point a = make(3, 4);
+    struct Point b = make(1, 1);
+    printf("%d\\n", a.x + a.y);
+    printf("%d\\n", dist2(a, b));
+    struct Point c = { 10, 20 };
+    printf("%d\\n", c.x);
+    printf("%d\\n", c.y);
+    return 0;
+}
+""",
+        "jhyy_src": """// 手写翻译题 —— struct：按值传参 / 返回 + struct 字面量
+import fmt;
+import io;
+
+type Point = struct {
+    x: i32,
+    y: i32,
+}
+
+fn make(x: i32, y: i32) -> Point {
+    let p: Point = Point { x: x, y: y };
+    return p;
+}
+
+fn dist2(a: Point, b: Point) -> i32 {
+    let dx: i32 = a.x - b.x;
+    let dy: i32 = a.y - b.y;
+    return dx * dx + dy * dy;
+}
+
+fn print_i32(v: i32) {
+    let mut buf: [u8; 32] = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
+                              0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
+                              0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
+                              0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+    let p: *u8 = &buf[0];
+    let n = fmt_i32(p, v);
+    buf[n] = 10u8;
+    buf[n + 1i64] = 0u8;
+    std_io_print(p);
+}
+
+fn main_jhyy() -> i32 {
+    let a: Point = make(3 as i32, 4 as i32);
+    let b: Point = make(1 as i32, 1 as i32);
+    print_i32(a.x + a.y);
+    print_i32(dist2(a, b));
+    let c: Point = Point { x: 10 as i32, y: 20 as i32 };
+    print_i32(c.x);
+    print_i32(c.y);
+    return 0;
+}
+""",
+    },
+    {
         "id": "translate/stdlib-math/jhyy",
         "title": "把 C 程序翻译成 JHYY（浮点）",
         "rule": "C → JHYY 翻译（浮点）",

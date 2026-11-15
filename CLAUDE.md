@@ -87,6 +87,25 @@ npm run eval:regrade # 用当前判分器离线重判一次已跑过的评测（
 npm run eval:probe   # 探针：验证知识包确实进了模型上下文
 ```
 
+## 派生产物：提交前自动刷
+
+`eval/tasks*.json` + `eval/tasks-paired/` 是**从语言仓的语料算出来的、但要进仓**的文件
+⇒ 语料变了就得重刷 ⇒ 忘了 ⇒ **评测在旧题上跑** ⇒ 结论对不上 reality，
+而且**没人会发现**（CI 没有「任务集是最新的」这道门）。
+
+⇒ 装一次钩子（本仓 `.githooks/` 已进仓）：
+
+```bash
+git config core.hooksPath .githooks
+```
+
+钩子只在「该过期时」（改了生成器，或语言仓的语料比任务集新）才重刷
+——重刷要**真跑编译器**，要几分钟。手动刷：
+
+```bash
+python scripts/dev/refresh-artifacts.py --all
+```
+
 ## 加一个新块
 
 1. 在 `src/lang/blocks/tree.ts` 的 `BLOCK` 里加类型名，并在 `BLOCK_FIELDS` /
