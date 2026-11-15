@@ -213,6 +213,22 @@ _HAND_PRINT_I64 = '''fn print_i64(v: i64) {
 }
 '''
 
+# 「a:b\\n」—— 两个 i32，中间一个冒号
+_HAND_PRINT_II = '''fn print_ii(a: i32, b: i32) {
+    let mut buf: [u8; 32] = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
+                              0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
+                              0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
+                              0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+    let p: *u8 = &buf[0];
+    let n = fmt_i32(p, a);
+    buf[n] = 58u8;
+    let n2 = fmt_i32(p + n + 1, b);
+    buf[n + n2 + 1i64] = 10u8;
+    buf[n + n2 + 2i64] = 0u8;
+    std_io_print(p);
+}
+'''
+
 HANDWRITTEN_TRANSLATE = [
     {
         "id": "translate/stdlib-string/jhyy",
@@ -444,6 +460,179 @@ fn main_jhyy() -> i32 {
     print_i64(((v * 2.0) as i32) as i64);
     print_i64((std_math_sqrt(16.0) as i32) as i64);
     print_i64((std_math_pow(2.0, 10.0) as i32) as i64);
+    return 0;
+}
+""",
+    },
+    {
+        # ── **「难形状」③：区间端点** ──────────────────────────
+        # 考的是 **match 的区间是闭区间、for 的区间是半开** —— 这两条
+        # **方向相反**，是同一个语言里最容易记反的一对。
+        # ⇒ 「按同一条规则理解两个构造」的模型**必错一边**：
+        #   · 以为「都是半开」（Rust 的 `..`）⇒ match 端点漏掉 10 / 20；
+        #   · 以为「都是闭区间」⇒ for 多算一轮 ⇒ 45 变 55。
+        # ⇒ 参考实现里 match 写成 `0..10` / `11..20`（闭），
+        #   for 写成 `for i in 0..10`（半开）—— **两边方向相反**。
+        "id": "translate/range-endpoint/jhyy",
+        "title": "把 C 程序翻译成 JHYY（区间端点）",
+        "rule": "C → JHYY 翻译（区间端点）",
+        "specFile": "translate_range_endpoint_c.c",
+        "c_src": """/* 手写翻译题 —— 区间端点：闭区间 vs 半开区间 */
+#include <stdio.h>
+
+/* 闭区间：[0,10] 与 [11,20] —— 两端都含 */
+static int classify(int x) {
+    if (x >= 0 && x <= 10) return 1;
+    if (x >= 11 && x <= 20) return 2;
+    return 3;
+}
+
+int main(void) {
+    printf("%d:%d\\n", 0, classify(0));
+    printf("%d:%d\\n", 9, classify(9));
+    printf("%d:%d\\n", 10, classify(10));
+    printf("%d:%d\\n", 11, classify(11));
+    printf("%d:%d\\n", 20, classify(20));
+    printf("%d:%d\\n", 21, classify(21));
+    /* 半开区间：[0,10) —— 不含 10 */
+    int s = 0;
+    for (int i = 0; i < 10; i++) s += i;
+    printf("%d:%d\\n", s, 0);
+    return 0;
+}
+""",
+        "jhyy_src": """// 手写翻译题 —— 区间端点：闭区间 vs 半开区间
+import fmt;
+import io;
+
+""" + _HAND_PRINT_II + """
+// ⚠️ match 的区间是**闭区间**（0..10 含 10）
+fn classify(x: i32) -> i32 {
+    let r: i32 = match x {
+        0..10 => 1,
+        11..20 => 2,
+        _ => 3,
+    };
+    return r;
+}
+
+fn main_jhyy() -> i32 {
+    print_ii(0, classify(0));
+    print_ii(9, classify(9));
+    print_ii(10, classify(10));
+    print_ii(11, classify(11));
+    print_ii(20, classify(20));
+    print_ii(21, classify(21));
+    // ⚠️ for 的区间是**半开**（0..10 不含 10）
+    let mut s: i32 = 0;
+    for i in 0..10 {
+        s = s + i;
+    }
+    print_ii(s, 0);
+    return 0;
+}
+""",
+    },
+    {
+        # ── **「难形状」④：无符号整型** ────────────────────────
+        # 考四件事（每件都是 C 过来的模型会踩的）：
+        #   ① `u32 + 1` —— 字面量不带后缀 ⇒ i32/u32 混算 ⇒ 编译不过；
+        #   ② u32 溢出**回绕**（不是报错）；
+        #   ③ u32 → i64 是**零扩展**（3000000000 还是 3000000000，
+        #      不是 -1294967296）；
+        #   ④ u32 除法按**无符号**语义；i32 除法/取模**向 0 截断**。
+        "id": "translate/uint-wrap/jhyy",
+        "title": "把 C 程序翻译成 JHYY（无符号整型）",
+        "rule": "C → JHYY 翻译（无符号整型）",
+        "specFile": "translate_uint_wrap_c.c",
+        "c_src": """/* 手写翻译题 —— 无符号整型：回绕 / 字面量后缀 / 零扩展 */
+#include <stdio.h>
+#include <stdint.h>
+
+int main(void) {
+    uint32_t max = 4294967295u;      /* u32 的上界 */
+    uint32_t w = max + 1u;            /* 溢出 ⇒ 回绕到 0 */
+    printf("%u\\n", (unsigned)w);
+    uint32_t big = 3000000000u;       /* 比 i32 上界还大 */
+    printf("%u\\n", (unsigned)big);
+    printf("%lld\\n", (long long)(int64_t)big);  /* u32 → i64 是零扩展 */
+    int32_t neg = -1;
+    printf("%lld\\n", (long long)(int64_t)neg);  /* i32 → i64 是符号扩展 */
+    uint32_t d = big / 3u;            /* 无符号除法 */
+    printf("%u\\n", (unsigned)d);
+    int32_t n = -7;
+    printf("%d\\n", n / 2);             /* 有符号除法 ⇒ 向 0 截断 */
+    printf("%d\\n", n % 2);
+    return 0;
+}
+""",
+        "jhyy_src": """// 手写翻译题 —— 无符号整型：回绕 / 字面量后缀 / 零扩展
+import fmt;
+import io;
+
+""" + _HAND_PRINT_I64 + """
+fn main_jhyy() -> i32 {
+    // ⚠️ u32 参与运算时，字面量**必须带 u32 后缀**（无后缀 = i32）
+    let max: u32 = 4294967295u32;
+    let w: u32 = max + 1u32;              // 溢出 ⇒ 回绕到 0
+    print_i64(w as i64);
+    let big: u32 = 3000000000u32;
+    print_i64(big as i64);
+    print_i64(big as i64);                // u32 → i64 是零扩展
+    let neg: i32 = -1;
+    print_i64(neg as i64);                // i32 → i64 是符号扩展
+    let d: u32 = big / 3u32;              // 无符号除法
+    print_i64(d as i64);
+    let n: i32 = -7;
+    print_i64((n / 2) as i64);            // 有符号 ⇒ 向 0 截断
+    print_i64((n % 2) as i64);
+    return 0;
+}
+""",
+    },
+    {
+        # ── **「难形状」⑤：`as` 的优先级** ─────────────────────
+        # 考的是 **「`as` 与 `*` 同级（左结合）」** —— 跟 C++/Rust 的
+        # 「转型比 `*` 紧」**相反**。
+        # ⇒ 从 C++/Rust 过来的模型会写 `a * b as u64`（想的是
+        #   `a * (b as u64)`）⇒ JHYY 实际是 `(a * b) as u64`
+        #   ⇒ u32 里先回绕 ⇒ 值不一样 ⇒ 行为不一致。
+        # ⇒ 两行 C 的值**故意不同**（6000000000 vs 1705032704），
+        #   所以「转型放在哪儿」这件事**藏不住**。
+        "id": "translate/as-precedence/jhyy",
+        "title": "把 C 程序翻译成 JHYY（`as` 的优先级）",
+        "rule": "C → JHYY 翻译（`as` 的优先级）",
+        "specFile": "translate_as_precedence_c.c",
+        "c_src": """/* 手写翻译题 —— `as` 的优先级：跟 `*` 同级（左结合） */
+#include <stdio.h>
+#include <stdint.h>
+
+int main(void) {
+    uint32_t a = 3000000000u;
+    uint32_t b = 2u;
+    /* ① 两个操作数**各自**转成 u64 之后再乘 */
+    uint64_t w = (uint64_t)a * (uint64_t)b;
+    printf("%llu\\n", (unsigned long long)w);
+    /* ② 先在 u32 里乘（**回绕**）再转 u64 */
+    uint64_t v = (uint64_t)(a * b);
+    printf("%llu\\n", (unsigned long long)v);
+    return 0;
+}
+""",
+        "jhyy_src": """// 手写翻译题 —— `as` 的优先级：跟 `*` 同级（左结合）
+import fmt;
+import io;
+
+""" + _HAND_PRINT_I64 + """
+fn main_jhyy() -> i32 {
+    let a: u32 = 3000000000u32;
+    let b: u32 = 2u32;
+    // ① 每个操作数**各自**转 u64 之后再乘
+    let w: u64 = (a as u64) * (b as u64);
+    print_i64(w as i64);
+    // ② 先在 u32 里乘（**回绕**）再转 u64
+    let v: u64 = (a * b) as u64;
+    print_i64(v as i64);
     return 0;
 }
 """,
