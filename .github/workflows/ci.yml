@@ -112,6 +112,18 @@ jobs:
         working-directory: JiHuiYiYou-IDE
         run: npx vitest run tests/lang tests/blocks tests/compiler tests/helpers tests/eval tests/claude tests/conformance/examples.test.ts
 
+      # ⚠️ **任务集是「尺子的定义」** —— 它是从语言仓的语料生成的，但**进仓**。
+      #   忘了重刷 ⇒ **评测跑在旧题上** ⇒ 结论对不上 reality ⇒ 而且
+      #   **没人会发现**（没有别的门看它）。
+      # ⇒ 这道门比**语料指纹**（内容哈希）：产物里记着生成时的指纹
+      #   ⇒ 现在重算一次比对 ⇒ 精确、不依赖 mtime（CI 里 mtime 全是 checkout 时间）。
+      - name: 评测任务集是最新的（语料指纹对得上）
+        working-directory: JiHuiYiYou-IDE
+        shell: msys2 {0}
+        run: |
+          # gate: eval-tasks-fresh
+          python scripts/dev/refresh-artifacts.py --check
+
   conformance:
     name: 全量一致性门（编译 + 运行）
     runs-on: windows-latest

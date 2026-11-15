@@ -106,6 +106,10 @@ git config core.hooksPath .githooks
 python scripts/dev/refresh-artifacts.py --all
 ```
 
+CI 里还有一道**兜底**（`eval-tasks-fresh`）：比**语料指纹**（内容哈希，
+产物里记着生成时的指纹）⇒ 精确、不依赖 mtime ⇒ 钩子被 `--no-verify` 绕过
+也照样能抓到。
+
 ## 加一个新块
 
 1. 在 `src/lang/blocks/tree.ts` 的 `BLOCK` 里加类型名，并在 `BLOCK_FIELDS` /

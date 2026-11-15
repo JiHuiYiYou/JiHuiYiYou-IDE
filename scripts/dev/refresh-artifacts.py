@@ -85,9 +85,13 @@ def builders_changed(files: list[str]) -> bool:
 def corpus_is_newer() -> bool:
     """语言仓的语料比任务集**新** ⇒ 任务集过期。
 
-    ⚠️ **按 mtime 比**（不是内容哈希）—— 便宜、够用；代价是「刚 clone 出来」
-    时 mtime 全是 checkout 时间 ⇒ 可能**误判过期** ⇒ 只是白刷一次（慢，不错）。
+    ⚠️ **优先用「语料指纹」**（内容哈希）：产物里记着生成时的指纹
+      ⇒ 现在重算一次比对 ⇒ **精确**，且**不依赖 mtime**
+      ⇒ ⇒ CI 里（全是 checkout 时间）也判得出来 ⇒ ⇒ 能当门用。
+    ⇒ 产物里没有指纹（旧产物）⇒ 退回 **mtime** 判（不精确，但够用）。
     """
+    if fingerprint_mismatch() is True:
+        return True
     newest_task = 0.0
     for f in TASK_FILES:
         p = ROOT / f
@@ -99,6 +103,37 @@ def corpus_is_newer() -> bool:
         if p.exists() and p.stat().st_mtime > newest_task:
             return True
     return False
+
+
+def fingerprint_mismatch() -> bool | None:
+    """产物里记的语料指纹 == 现在的语料指纹？
+
+    ⇒ `True`  = **对不上**（过期）
+    ⇒ `False` = 对得上（最新）
+    ⇒ `None`  = 判不了（产物里没有指纹，或生成器 import 失败）
+    """
+    import json
+
+    meta = ROOT / "eval" / "tasks-paired.json"
+    if not meta.exists():
+        return None
+    try:
+        recorded = json.loads(meta.read_text(encoding="utf-8")).get("corpusSha256")
+    except Exception:
+        return None
+    if not recorded:
+        return None
+    try:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "gen_paired_tasks", ROOT / "scripts" / "eval" / "gen-paired-tasks.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        current = mod.corpus_fingerprint()
+    except Exception:
+        return None
+    return recorded != current
 
 
 def main() -> int:
