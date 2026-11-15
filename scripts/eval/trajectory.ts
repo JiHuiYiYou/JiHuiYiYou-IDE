@@ -186,6 +186,8 @@ export type ToolKind =
   | 'edit' // 写/改文件
   | 'read' // 读文件
   | 'explore' // ls/grep/find/which/glob/powershell —— 找东西
+  | 'peek-grader' // **翻判分脚本 / 找答案**（评测自己的东西）
+  | 'peek-impl' // **翻编译器实现源码**（逆向实现）
   | 'run' // 跑程序（不是编译）
   | 'find-tool' // ToolSearch —— **在「找该用哪个工具」**
   | 'mcp:spec' // 查规范
@@ -211,7 +213,34 @@ function looksLikeCompileFailure(text: string): boolean {
  *   落盘时的归类规则可能比现在的旧 ⇒ 分析器**离线重新归类**，
  *   这样老 run 也能用新规则分析。
  */
+/**
+ * **越界探索** —— 模型跑去翻**评测自己**的东西，而不是做任务。
+ *
+ * 为什么要单独一类（2026-11-15 实测）：
+ *   翻译题的 8 道全部由 difftest 的**随机 u32 程序**生成 ⇒ 8 道题其实
+ *   是同一道题的 8 次采样。而 G 臂 157 次工具调用里，**28% 是「探索」**
+ *   —— 拆开看，其中一大块根本不是「摸 stdlib」，而是：
+ *     · 翻 `bench/difftest.py` / `bench/seeds/golden.json` —— **找答案**
+ *       （模型发现输出对不上 ⇒ 去判分脚本里找期望输出）
+ *     · 翻 `compiler/src0/jhyy_helpers.c` —— **逆向编译器实现**
+ *       （想知道 stdout 到底是不是 CRLF）
+ *
+ * ⇒ 这两类不是「探索」的一部分，是**离题**：它们既不产出答案也不产出
+ *   知识包能覆盖的东西。混在「探索」里 ⇒ 归因会把它误记成「摸 stdlib」
+ *   ⇒ 于是「该补 stdlib 用法」的结论就下错了。
+ *
+ * 判据只看**路径/命令文本**里有没有那些**不属于题目工作目录**的东西。
+ */
+const GRADER_PEEK_RE =
+  /difftest|golden\.json|known-divergent|tasks-paired|expected\.json|eval[\\/]tasks/i
+const IMPL_PEEK_RE =
+  /compiler[\\/]src|jhyy_helpers|jh_fputs|src0[\\/]|main\.jhyy\.il/i
+
 export function classifyTool(name: string, what: string): ToolKind {
+  // ⚠️ **越界探索要在所有常规归类之前判** —— 一条 `grep -rn difftest ...`
+  //   本来会被归成 'explore'，一条 `cat bench/difftest.py` 会被归成 'run'。
+  if (GRADER_PEEK_RE.test(what)) return 'peek-grader'
+  if (IMPL_PEEK_RE.test(what)) return 'peek-impl'
   if (name === 'Bash') {
     if (/\bcompile\b|\.exe\s+compile|jhyy\s+compile/i.test(what)) return 'compile'
     if (/\b(ls|grep|find|which|dir|tree|rg)\b/i.test(what)) return 'explore'

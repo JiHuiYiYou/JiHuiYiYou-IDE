@@ -56,6 +56,8 @@ const KIND_LABEL: Record<string, string> = {
   edit: '改代码',
   read: '读文件',
   explore: '探索(ls/grep/find)',
+  'peek-grader': '**翻判分脚本**(找答案)',
+  'peek-impl': '**翻编译器源码**(逆向)',
   run: '跑程序',
   'find-tool': '**找工具**(ToolSearch)',
   'mcp:spec': '查规范',
@@ -77,6 +79,10 @@ const GROUP: Record<string, string> = {
   'mcp:other': '查资料',
   read: '读/探索',
   explore: '读/探索',
+  // ⚠️ **离题，单独一类** —— 混进「读/探索」会让归因把它误记成
+  //   「摸 stdlib」⇒ 于是「该补 stdlib 用法」的结论就下错了。
+  'peek-grader': '**越界探索**(离题)',
+  'peek-impl': '**越界探索**(离题)',
   'find-tool': '**找工具**',
   subagent: '其它',
   other: '其它',
@@ -156,6 +162,39 @@ function main() {
     console.log(`\n【轮数花在哪种活上】（大类归并）`)
     for (const [g, n] of [...groups].sort((a, b) => b[1] - a[1])) {
       console.log(`  ${g.padEnd(18)} ${String(n).padStart(6)}  ${((n / calls) * 100).toFixed(1).padStart(6)}%`)
+    }
+
+    // ── 越界探索（离题）：翻判分脚本 / 翻编译器源码 ────────────────
+    // 单列一段，因为它**不是**「探索」的一部分 ——
+    // 混在「探索」里会让归因把它误记成「摸 stdlib」。
+    {
+      const peekRows: { task: string; turns: number; n: number; grader: number; impl: number }[] = []
+      let peekTotal = 0
+      for (const r of withTraj) {
+        let grader = 0
+        let impl = 0
+        for (const raw of r.trajectory!) {
+          const k = classifyTool(raw.tool, raw.what ?? '')
+          if (k === 'peek-grader') grader++
+          else if (k === 'peek-impl') impl++
+        }
+        const n = grader + impl
+        peekTotal += n
+        if (n > 0) {
+          peekRows.push({ task: r.taskId, turns: r.usage?.turns ?? 0, n, grader, impl })
+        }
+      }
+      console.log(`\n【越界探索（离题）】共 ${peekTotal} 次，涉及 ${peekRows.length} / ${withTraj.length} 道题`)
+      if (peekRows.length > 0) {
+        for (const p of peekRows.sort((a, b) => b.n - a.n)) {
+          console.log(
+            `  ${p.task.padEnd(28)} ${String(p.n).padStart(3)} 次（判分 ${p.grader} / 编译器源码 ${p.impl}）` +
+              `　该题 ${p.turns} 轮`,
+          )
+        }
+        console.log(`  ⇒ 这不是「知识不够」，是**离题**：翻判分脚本 = 找答案，`)
+        console.log(`     翻编译器源码 = 逆向实现。两者都不该记在「探索」账上。`)
+      }
     }
 
     // ── 试错开销 vs 过度验证开销 ─────────────────────────────

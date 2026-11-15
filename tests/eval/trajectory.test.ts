@@ -11,6 +11,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  classifyTool,
   extractCodeFromAnswer,
   normPath,
   parseStream,
@@ -154,5 +155,54 @@ describe('usedCompiler', () => {
 
   it('没调工具 ⇒ false', () => {
     expect(usedCompiler([])).toBe(false)
+  })
+})
+
+/**
+ * **越界探索**的归类 —— 2026-11-15 加。
+ *
+ * 为什么要有这一类：实测三臂 24 道题的轨迹里，**每一道翻了判分脚本的题，
+ * 它的第 1 版就已经通过了** ⇒ 模型不知道自己过了 ⇒ 去翻判分脚本找答案
+ * （最后还抄了 difftest 的参考实现）⇒ 白烧 5~9 次调用。
+ *
+ * ⇒ 这一类必须能**看见**这两件事，否则归因会把它们记成「探索」，
+ *   于是「该补 stdlib 用法」的结论就下错了。
+ */
+describe('classifyTool —— 越界探索', () => {
+  it('翻判分脚本 ⇒ peek-grader（不是 explore / 不是 run）', () => {
+    expect(
+      classifyTool('Bash', 'cat bench/difftest.py | tail -20'),
+    ).toBe('peek-grader')
+    expect(
+      classifyTool('Bash', 'head -c 600 bench/seeds/golden.json'),
+    ).toBe('peek-grader')
+    expect(
+      classifyTool('Read', 'C:/repo/JiHuiYiYou/bench/difftest.py'),
+    ).toBe('peek-grader')
+  })
+
+  it('翻编译器实现源码 ⇒ peek-impl', () => {
+    expect(
+      classifyTool('Bash', 'grep -n "fputs_stdout|setmode" compiler/src0/jhyy_helpers.c'),
+    ).toBe('peek-impl')
+    expect(
+      classifyTool('Read', 'C:/repo/JiHuiYiYou/compiler/src0/sema.jhyy'),
+    ).toBe('peek-impl')
+    // ⚠️ Windows 的**反斜杠**路径也要认出来（模型给 Read 的 file_path 常是反斜杠）
+    expect(
+      classifyTool('Read', 'C:\\repo\\JiHuiYiYou\\compiler\\src0\\sema.jhyy'),
+    ).toBe('peek-impl')
+  })
+
+  it('⚠️ 普通的探索/读文件**不能**被误判成越界', () => {
+    expect(classifyTool('Bash', 'ls -la')).toBe('explore')
+    expect(classifyTool('Bash', 'find . -name "*.jhyy"')).toBe('explore')
+    expect(classifyTool('Read', 'C:\tmp\jhyy-eval-abc\main.c')).toBe('read')
+    expect(classifyTool('Bash', 'cat main.c')).toBe('run')
+  })
+
+  it('⚠️ 越界判据**优先于**常规归类（一条 grep 判分脚本的命令先判 peek）', () => {
+    // 这条命令本来会被 `grep` 规则归成 'explore'
+    expect(classifyTool('Bash', 'grep -rn "difftest" --include=*.py .')).toBe('peek-grader')
   })
 })

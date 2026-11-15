@@ -219,6 +219,31 @@ function buildPrompt(task: EvalTask, rel: string, style: string, compilerPath?: 
   //   ⇒ 这类题**只判分**（编译 + 退出码 + stdout 逐字）。
   if (task.kind === 'translate') {
     const spec = task.specFile ? 'main.c' : 'main.c'
+    // ── **判分口径**：必须告诉模型 ──────────────────────────────
+    //
+    // ⚠️ **不告诉它 = 模型自己看不到「我过了没有」** ⇒ 它只能靠猜。
+    //   实测（2026-11-15，三臂 24 道题的轨迹）:**每一道翻了判分脚本的题，
+    //   它的第 1 版就已经通过了** —— 它不知道自己过了 ⇒ 继续找答案：
+    //     · 看到自己输出带 `\r\n`（Windows 文本模式），而存下来的期望输出
+    //       是 LF ⇒ 怀疑判分不过 ⇒ 去翻 `bench/difftest.py` / `golden.json`
+    //       ⇒ 找到 difftest 的**参考实现** ⇒ 直接抄 ⇒ 白烧 5~9 次调用 + 10 轮。
+    //   ⇒ 这既是**浪费**，也是**测量失效**（模型靠抄参考实现过的）。
+    //
+    // ⚠️ **这两句是「环境知识」,不是「语言知识」** ⇒ 放**任务 prompt**,
+    //   **不放知识包** —— 放进知识包会把「知识包的效果」和「口径说明」混在一起,
+    //   D 臂 vs G 臂的差就分不清是哪个带来的了。
+    const judgeRule = [
+      '**判分口径（就这两样，别的都不看）**：',
+      '- `stdout` **逐字**相同（同样的行、同样的顺序、同样的数值）；',
+      '- 退出码相同（0）；',
+      '- ⚠️ **行尾会归一**：`\\r\\n` 与 `\\n` 视为相同 ⇒ 你在 Windows 上跑出来的',
+      '  输出带 `\\r\\n` **是正常的、不算不一致**。',
+    ]
+    const noPeek = [
+      '- **不要**去翻判分脚本、期望输出、编译器源码 —— 上面那两条就是全部口径。',
+      '  （`bench/difftest.py`、`bench/seeds/golden.json` 里的东西**不是**本题的判据，',
+      '  翻它们只会把你带偏。）',
+    ]
     if (style === 'tight') {
       return [
         `工作目录里有 \`${spec}\` —— 那是**同一个程序的 C 实现**。`,
@@ -234,12 +259,15 @@ function buildPrompt(task: EvalTask, rel: string, style: string, compilerPath?: 
         '2. **注意** JHYY 跟 C 的差别：没有内建 `print`（要先 `extern fn printf` 声明）、',
         '   整数宽度要显式写、整数↔浮点不能隐式转。',
         '3. 用 `jhyy_check` 编译检查 —— 它**一次返回全部诊断**（行:列 + 错误原文）。',
-        '4. 用 `jhyy_run` 跑一遍，跟 `main.c` 的输出**逐字比**。',
-        '5. 一致 ⇒ 收工。',
+        '4. 用 `jhyy_run` 跑一遍，跟 `main.c` 的输出**逐字比**（行尾不同不算不一致）。',
+        '5. 一致 ⇒ **收工，别再改**。',
+        '',
+        ...judgeRule,
         '',
         '**范围（重要）**：',
         '- **不要**改 `main.c`。',
         '- **不要**做额外验证（不用探测别的边界）。',
+        ...noPeek,
       ].join('\n')
     }
     return [
@@ -257,6 +285,10 @@ function buildPrompt(task: EvalTask, rel: string, style: string, compilerPath?: 
       '',
       `把完整代码写回 \`${rel}\`。`,
       '你可以用编译器验证，改到它跟 C 版输出一致为止。',
+      '',
+      ...judgeRule,
+      '',
+      ...noPeek,
     ].join('\n')
   }
 
