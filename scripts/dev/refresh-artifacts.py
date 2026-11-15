@@ -318,10 +318,18 @@ def diagnose() -> tuple[bool, list[str]]:
 
 
 def report(ok: bool, lines: list[str]) -> None:
-    """把结论说清楚 —— **stderr**（CI 日志）+ **step summary**（能直接看）。"""
+    """把结论说清楚 —— **stderr**（CI 日志）+ **注解**（公开可读）+ **step summary**。"""
     head = "✅ 任务集是最新的" if ok else "❌ 任务集**过期**了"
     body = "\n".join(lines)
     print(f"[refresh-artifacts] {head}\n{body}", file=sys.stderr)
+
+    if not ok:
+        # ⚠️ **发一条 GitHub 注解** —— 注解在 PR 的「Checks」页里**直接能看**，
+        #   而且 `check-runs` 的公开 API 能读到（**日志要鉴权，注解不要**）
+        #   ⇒ 门红的时候，不登录也能知道**差在哪**（2026-11-15 实测踩过：
+        #   日志读不到 ⇒ 只能靠猜）。
+        msg = (head + "：" + " / ".join(lines))[:1500]
+        print("::error title=评测任务集过期::" + _gh_escape(msg), file=sys.stderr)
 
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
@@ -330,6 +338,11 @@ def report(ok: bool, lines: list[str]) -> None:
                 f.write(f"## {head}\n\n{body}\n\n")
         except OSError as e:
             print(f"[refresh-artifacts] ⚠️ step summary 写不进去：{e!r}", file=sys.stderr)
+
+
+def _gh_escape(s: str) -> str:
+    """GitHub 工作流命令的转义：`%` → `%25`，换行 → `%0A`。"""
+    return s.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
 def main() -> int:
