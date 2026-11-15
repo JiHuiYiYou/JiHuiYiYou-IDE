@@ -28,13 +28,74 @@ from pathlib import Path
 
 
 def load(path):
-    recs = {}
+    """题 → **记录列表**（同一题跑多次 ⇒ 多条）。"""
+    recs = defaultdict(list)
     for line in Path(path).read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         r = json.loads(line)
-        recs[r["taskId"]] = r
+        recs[r["taskId"]].append(r)
     return recs
+
+
+def pick(recs_list):
+    """一道题跑了几次 ⇒ 取**中位**的那次（对单次异常稳健）。
+
+    ⚠️ **掐断的先排除** —— 掐断是基础设施故障，不是模型的表现
+       （见本文件开头的「为什么必须把跑挂的单列」）。
+    """
+    alive = [r for r in recs_list if not hung(r)]
+    if not alive:
+        return recs_list[0]
+    alive.sort(key=lambda r: turns(r))
+    return alive[len(alive) // 2]
+
+
+def calls(r):
+    """这道题用了多少次工具调用（比轮数诚实 —— 轮数会被并行调用掩盖）。"""
+    return len(r.get("trajectory") or [])
+
+
+def boot_ci(diffs, iters=20000, seed=20251115):
+    """**配对差值的 bootstrap 95% CI**（对均值）。
+
+    ⇒ 为什么不用符号检验当主结论：**符号检验只看方向、不看幅度** ⇒
+      n=11 时要 10 胜 1 负才 p<0.05 ⇒ **真实存在的效应也判不出来**。
+    ⇒ 而 bootstrap CI 用上**幅度** ⇒ 同样的数据能给出「效应有多大、
+      大概率落在哪个区间」⇒ ⇒ **这才是能写进报告的东西**。
+    ⇒ 确定性种子 ⇒ 同样的输入永远同一个区间（可复算）。
+    """
+    import random
+    n = len(diffs)
+    if n == 0:
+        return (0.0, 0.0, 0.0)
+    rng = random.Random(seed)
+    means = []
+    for _ in range(iters):
+        s_ = sum(diffs[rng.randrange(n)] for _ in range(n))
+        means.append(s_ / n)
+    means.sort()
+    lo = means[int(0.025 * iters)]
+    hi = means[min(iters - 1, int(0.975 * iters))]
+    return (sum(diffs) / n, lo, hi)
+
+
+def sign_test(wins, losses):
+    """**配对符号检验**（双侧精确二项）—— 配对对照的结论该怎么下。
+
+    ⇒ n 道题里 B 比 A 好的有 `wins` 道、差的有 `losses` 道（持平不计）。
+    ⇒ 在「B 其实和 A 一样好」这个零假设下，每道非持平的题各有 1/2 概率
+      偏向任一边 ⇒ p = P(X ≤ min(w,l)) × 2。
+    ⇒ **这个检验只看方向、不看幅度** ⇒ 幅度再大，单边只有 1 道题也判不了
+      （p=0.5）⇒ ⇒ **别拿「平均轮数 −18%」当结论**，看的是**几道题变好了**。
+    """
+    n = wins + losses
+    if n == 0:
+        return 1.0
+    from math import comb
+    k = min(wins, losses)
+    tail = sum(comb(n, i) for i in range(0, k + 1)) / (2 ** n)
+    return min(1.0, tail * 2)
 
 
 def usage(r):
@@ -101,8 +162,14 @@ def report(tag, recs, common):
 
 def main():
     a_path, b_path = sys.argv[1], sys.argv[2]
-    A, B = load(a_path), load(b_path)
+    A_raw, B_raw = load(a_path), load(b_path)
+    # 同一题跑多次 ⇒ 取**中位**的那次当代表（下面的所有统计都用它）
+    A = {t: pick(rs) for t, rs in A_raw.items()}
+    B = {t: pick(rs) for t, rs in B_raw.items()}
     common = [t for t in A if t in B]
+    n_rep = max((len(rs) for rs in list(A_raw.values()) + list(B_raw.values())), default=1)
+    if n_rep > 1:
+        print(f"⚠️ 每题最多 {n_rep} 次 ⇒ **取每题的中位**当代表（掐断的先排除）\n")
     print("A = %s" % Path(a_path).name)
     print("B = %s" % Path(b_path).name)
     print("共同任务：%d\n" % len(common))
@@ -136,6 +203,57 @@ def main():
             tr = sum(turns(recs[t]) for t in done)
             cells.append("%d/%d/%d" % (p, len(done), tr))
         print("%-16s %3d | %-22s | %-22s" % (m, len(ts), cells[0], cells[1]))
+    print()
+
+    # ── **逐题配对 + 符号检验**（结论该怎么下）────────────────────────
+    # ⚠️ **只看「平均轮数 −18%」是不够的** —— 配对对照的结论看的是
+    #   **几道题真的变好了**（方向），幅度是次要的。
+    #   ⇒ 符号检验（双侧精确二项）：非持平的题里，B 赢几道、输几道。
+    #   ⇒ 单边只赢 1 道 ⇒ p=0.5 ⇒ **判不了**（哪怕幅度是 −90%）。
+    print("──── 逐题配对（只算两臂都跑完的题；多轮时取每题中位）────")
+    print("%-28s %6s %6s %7s | %6s %6s %7s" % ("题", "A 轮", "B 轮", "Δ轮", "A 调用", "B 调用", "Δ调用"))
+    wins = losses = ties = 0
+    wins_c = losses_c = ties_c = 0
+    dt_all, dc_all = [], []
+    for t in sorted(common):
+        if hung(A[t]) or hung(B[t]):
+            continue
+        ta, tb = turns(A[t]), turns(B[t])
+        ca, cb = calls(A[t]), calls(B[t])
+        dt, dc = tb - ta, cb - ca
+        mark = ""
+        if dt < 0:
+            wins += 1
+            mark = " ✓"
+        elif dt > 0:
+            losses += 1
+            mark = " ✗"
+        else:
+            ties += 1
+        dt_all.append(dt)
+        dc_all.append(dc)
+        if dc < 0:
+            wins_c += 1
+        elif dc > 0:
+            losses_c += 1
+        else:
+            ties_c += 1
+        print("%-28s %6d %6d %+7d%s | %6d %6d %+7d" % (
+            t[:28], ta, tb, dt, mark, ca, cb, dc))
+    p_turn = sign_test(wins, losses)
+    p_call = sign_test(wins_c, losses_c)
+    print()
+    print("  轮数：变好 %d / 变差 %d / 持平 %d ⇒ 符号检验 p = %.3f" % (wins, losses, ties, p_turn))
+    print("  调用：变好 %d / 变差 %d / 持平 %d ⇒ 符号检验 p = %.3f" % (wins_c, losses_c, ties_c, p_call))
+    if dt_all:
+        m, lo, hi = boot_ci(dt_all)
+        print("  轮数 **配对差值**（B−A）均值 %+.2f，bootstrap 95%% CI [%+.2f, %+.2f]%s"
+              % (m, lo, hi, "  ← **不含 0 ⇒ 效应成立**" if (lo > 0 or hi < 0) else "  ← 含 0 ⇒ 判不了"))
+    if dc_all:
+        m, lo, hi = boot_ci(dc_all)
+        print("  调用 **配对差值**（B−A）均值 %+.2f，bootstrap 95%% CI [%+.2f, %+.2f]%s"
+              % (m, lo, hi, "  ← **不含 0 ⇒ 效应成立**" if (lo > 0 or hi < 0) else "  ← 含 0 ⇒ 判不了"))
+    print("  ⇒ 结论看 **CI**：含 0 ⇒ 判不了（哪怕平均差很多）")
     print()
 
     # 工具调用分布
