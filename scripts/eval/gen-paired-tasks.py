@@ -639,6 +639,234 @@ fn main_jhyy() -> i32 {
 }
 """,
     },
+    {
+        # ── **「难形状」⑥：可变绑定（**静默**的错误）** ──────────────
+        # 为什么这道最值钱：**其它题的错误是「编译不过」或「看得见的错」**，
+        # 而这一道的错误是**静默**的 ——
+        #   不可变绑定（`let x`）经指针写 `*p = v` ⇒ **不报错、也不生效**
+        #   ⇒ 程序照跑、结果照错 ⇒ **从 C 过来的模型必踩**
+        #   （C 的 `int x = 5;` 天生可变 ⇒ 直觉是 `let x: i32 = 5;`）
+        # ⇒ ⇒ 这是本组题里**唯一**能测到「正确率」的形状
+        #   （其它题模型可以靠「跑一遍比 C 的输出」迭代收敛 ⇒ 正确率饱和）。
+        "id": "translate/mutable-binding/jhyy",
+        "title": "把 C 程序翻译成 JHYY（可变绑定）",
+        "rule": "C → JHYY 翻译（可变绑定）",
+        "specFile": "translate_mutable_binding_c.c",
+        "c_src": """/* 手写翻译题 —— 可变绑定：不可变绑定不能赋值；经指针写入**静默不生效** */
+#include <stdio.h>
+
+static int bump(int *p) {
+    *p = *p + 1;
+    return *p;
+}
+
+int main(void) {
+    int x = 5;
+    printf("%d\\n", bump(&x));
+    printf("%d\\n", x);
+    int y = 10;
+    int *q = &y;
+    *q = 20;
+    printf("%d\\n", y);
+    return 0;
+}
+""",
+        "jhyy_src": """// 手写翻译题 —— 可变绑定：不可变绑定不能赋值；经指针写入**静默不生效**
+import fmt;
+import io;
+
+""" + _HAND_PRINT_I64 + """
+fn bump(p: *i32) -> i32 {
+    *p = *p + 1;
+    return *p;
+}
+
+fn main_jhyy() -> i32 {
+    // ⚠️ 必须 `let mut`：不可变绑定的写入**静默不生效**（不报错、值也不变）
+    let mut x: i32 = 5;
+    print_i64(bump(&x) as i64);
+    print_i64(x as i64);
+    let mut y: i32 = 10;
+    let q: *i32 = &y;
+    *q = 20;
+    print_i64(y as i64);
+    return 0;
+}
+""",
+    },
+    {
+        # ── **「难形状」⑦：枚举 + match** ───────────────────────
+        # 考三件事（知识包里**只以「坑」的形式登记过**、没有能照抄的写法）：
+        #   · `type X = enum { ... }` **结尾不带分号**
+        #   · match 的 **arm body 只能是单个表达式**（不能写 return / 语句块）
+        #   · match 作用在 enum 上要**穷尽**（否则 `non-exhaustive match`）
+        "id": "translate/enum-match/jhyy",
+        "title": "把 C 程序翻译成 JHYY（枚举 + match）",
+        "rule": "C → JHYY 翻译（枚举 + match）",
+        "specFile": "translate_enum_match_c.c",
+        "c_src": """/* 手写翻译题 —— 枚举 + match（穷尽性检查 / arm 是独立作用域） */
+#include <stdio.h>
+
+enum Shape { CIRCLE, SQUARE, TRIANGLE };
+
+static int sides(enum Shape s) {
+    switch (s) {
+    case CIRCLE: return 0;
+    case SQUARE: return 4;
+    case TRIANGLE: return 3;
+    }
+    return -1;
+}
+
+int main(void) {
+    printf("%d\\n", sides(CIRCLE));
+    printf("%d\\n", sides(SQUARE));
+    printf("%d\\n", sides(TRIANGLE));
+    return 0;
+}
+""",
+        "jhyy_src": """// 手写翻译题 —— 枚举 + match（穷尽性检查 / arm 是独立作用域）
+import fmt;
+import io;
+
+""" + _HAND_PRINT_I64 + """
+type Shape = enum {
+    Circle,
+    Square,
+    Triangle,
+}
+
+fn sides(s: Shape) -> i32 {
+    // ⚠️ match 的 arm body 只能是**单个表达式**（不能写 return / 语句块）
+    let r: i32 = match s {
+        Shape::Circle => 0,
+        Shape::Square => 4,
+        Shape::Triangle => 3,
+    };
+    return r;
+}
+
+fn main_jhyy() -> i32 {
+    print_i64(sides(Shape::Circle) as i64);
+    print_i64(sides(Shape::Square) as i64);
+    print_i64(sides(Shape::Triangle) as i64);
+    return 0;
+}
+""",
+    },
+    {
+        # ── **「难形状」⑧：回调（**没有函数指针类型**）** ──────────
+        # C 的 `int (*f)(int, int)` 在 JHYY 里**根本写不出来**
+        #   （类型位置不认 `fn(i32, i32) -> i32` ⇒ 解析器直接报一串错）
+        # ⇒ 只能「打平」成普通函数 ⇒ ⇒ 模型必须知道「JHYY 没有函数值」，
+        #   否则它会先写一版 `fn(...)` 参数 ⇒ 撞一串解析错再回头。
+        "id": "translate/callback/jhyy",
+        "title": "把 C 程序翻译成 JHYY（回调）",
+        "rule": "C → JHYY 翻译（回调）",
+        "specFile": "translate_callback_c.c",
+        "c_src": """/* 手写翻译题 —— 回调：JHYY 没有函数指针类型 ⇒ 只能重构 */
+#include <stdio.h>
+
+static int apply_twice(int (*f)(int, int), int base, int k) {
+    int v = base;
+    for (int i = 0; i < 2; i++) v = f(v, k);
+    return v;
+}
+
+static int add(int x, int k) { return x + k; }
+static int times(int x, int k) { return x * k; }
+
+int main(void) {
+    printf("%d\\n", apply_twice(add, 3, 5));    /* 3 → 8 → 13 */
+    printf("%d\\n", apply_twice(times, 3, 5));  /* 3 → 15 → 75 */
+    return 0;
+}
+""",
+        "jhyy_src": """// 手写翻译题 —— 回调：JHYY 没有函数指针类型 ⇒ 只能重构
+import fmt;
+import io;
+
+""" + _HAND_PRINT_I64 + """
+// ⚠️ JHYY **没有 `fn(...)` 类型** ⇒ 回调只能「打平」成普通函数
+fn apply_twice_add(base: i32, k: i32) -> i32 {
+    let mut v: i32 = base;
+    let mut i: i32 = 0;
+    while i < 2 {
+        v = v + k;
+        i = i + 1;
+    }
+    return v;
+}
+
+fn apply_twice_times(base: i32, k: i32) -> i32 {
+    let mut v: i32 = base;
+    let mut i: i32 = 0;
+    while i < 2 {
+        v = v * k;
+        i = i + 1;
+    }
+    return v;
+}
+
+fn main_jhyy() -> i32 {
+    print_i64(apply_twice_add(3, 5) as i64);
+    print_i64(apply_twice_times(3, 5) as i64);
+    return 0;
+}
+""",
+    },
+    {
+        # ── **「难形状」⑨：切片（区间**半开** + 写穿透）** ─────────
+        # 考三件事：
+        #   · 数组 → 切片要**显式** `as [*]i32`（无隐式 decay）
+        #   · **切片的区间是半开**（`s[1..4]` ⇒ 3 个）—— 跟 match 的闭区间**相反**
+        #   · 切片是**视图** ⇒ 写**穿透**到原数组
+        "id": "translate/slice-view/jhyy",
+        "title": "把 C 程序翻译成 JHYY（切片）",
+        "rule": "C → JHYY 翻译（切片）",
+        "specFile": "translate_slice_view_c.c",
+        "c_src": """/* 手写翻译题 —— 切片：区间半开 + 写穿透到原数组 */
+#include <stdio.h>
+
+static int sum3(const int *a) {
+    return a[0] + a[1] + a[2];
+}
+
+int main(void) {
+    int arr[4] = {10, 20, 30, 40};
+    printf("%d\\n", sum3(arr));        /* 60 */
+    int *mid = arr + 1;
+    printf("%d\\n", sum3(mid));        /* 20 + 30 + 40 = 90 */
+    *mid = 99;
+    printf("%d\\n", arr[1]);           /* 99 */
+    printf("%d\\n", sum3(arr));        /* 10 + 99 + 30 = 139 */
+    return 0;
+}
+""",
+        "jhyy_src": """// 手写翻译题 —— 切片：区间半开 + 写穿透到原数组
+import fmt;
+import io;
+
+""" + _HAND_PRINT_I64 + """
+fn sum3(a: [*]i32) -> i32 {
+    return a[0] + a[1] + a[2];
+}
+
+fn main_jhyy() -> i32 {
+    let mut arr: [i32; 4] = [10 as i32, 20 as i32, 30 as i32, 40 as i32];
+    print_i64(sum3(arr as [*]i32) as i64);
+    // ⚠️ 切片的区间是**半开**（1..4 ⇒ 3 个元素）—— match 的区间是闭的，别混
+    let base: [*]i32 = arr as [*]i32;
+    let mid: [*]i32 = base[1..4];
+    print_i64(sum3(mid) as i64);
+    // ⚠️ 切片是**视图** ⇒ 写穿透到原数组
+    mid[0] = 99;
+    print_i64(arr[1] as i64);
+    print_i64(sum3(arr as [*]i32) as i64);
+    return 0;
+}
+""",
+    },
 ]
 
 
