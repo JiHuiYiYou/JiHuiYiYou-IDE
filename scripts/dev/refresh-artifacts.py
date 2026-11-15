@@ -140,8 +140,28 @@ def fingerprint_mismatch() -> bool | None:
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         current = mod.corpus_fingerprint()
-    except Exception:
+    except Exception as e:
+        print(f"[refresh-artifacts] ⚠️ 指纹算不出来：{e!r}", file=sys.stderr)
         return None
+    if recorded != current:
+        # ⚠️ **对不上时把每个输入的哈希都打出来** —— 否则只能猜
+        #   （2026-11-15 实测：CI 上对不上，本地一模一样 ⇒ 光看「对不上」没用，
+        #   得知道**是哪一个输入**不同）。
+        print(f"[refresh-artifacts] ✗ 语料指纹对不上：记录 {recorded} ≠ 现在 {current}",
+              file=sys.stderr)
+        try:
+            import hashlib
+
+            for name in ("difftest.py", "ci.txt", "tasks.ts", "gen-paired-tasks.py"):
+                for base in (ROOT.parent / "JiHuiYiYou", ROOT):
+                    for cand in base.rglob(name):
+                        if cand.is_file() and ("bench" in str(cand) or "scripts" in str(cand)):
+                            raw = cand.read_bytes()
+                            h = hashlib.sha256(raw.replace(b"\r\n", b"\n")).hexdigest()[:12]
+                            print(f"[refresh-artifacts]    {cand}  len={len(raw)}  sha={h}",
+                                  file=sys.stderr)
+        except Exception as e:
+            print(f"[refresh-artifacts] ⚠️ 诊断也失败了：{e!r}", file=sys.stderr)
     return recorded != current
 
 
