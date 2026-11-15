@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "builtAt": "2026-11-15T07:27:40.620Z",
+  "builtAt": "2026-11-15T07:54:25.143Z",
   "note": "由 scripts/eval/build-tasks.ts 生成 —— 别手改。",
   "tasks": [
     {
@@ -28,7 +28,7 @@
       "broken": "// W-129 回归门 —— alignof(TypeName) 是编译期常量表达式。\n//\n// 修复前:sema 里**只有** NODE_SIZEOF 分支,没有 NODE_ALIGNOF 分支 ⇒\n// alignof 表达式在推断链里走不到任何类型 ⇒\n//   带类型标注 → \"type mismatch in let\"\n//   不带标注   → \"function body type does not match return type\"\n// 编译器内部的 type_align() 早就是完整的,缺的只是这一层接线。\n//\n// 注:alignof(enum) 当前硬编码返回 4(与 enum 布局算出的\n// max(4, max_payload_align) 不一致)—— 那是 ABI v4.0.0 § 12.2 已登记的\n// 内部不一致,本门不把它固化进来。\ntype Point = struct { x: i32, y: i64 }\n\nfn main() -> i32 {\n    let a: i64 = alignof(i64);      // 8\n    let b: i64 = alignof(i32);      // 4\n    let c: i64 = alignof(u8);       // 1\n    let d: i64 = alignof(f64);      // 8\n    let e: i64 = alignof(*u8);      // 8\n    let f: i64 = alignof(Point);    // 8(含 i64 成员 ⇒ align 8)\n    return (a + b + c + d + e + f) as i32;   // 37\n}\n//EXPECT:37\n",
       "expectExit": 37,
       "expectStdout": "",
-      "breakError": "collect2.exe: error: ld returned 1 exit status | error: link failed - no entry symbol `main_jhyy` in the generated assembly | note: hosted programs must define `fn main_jhyy` (not `main`) - see lang-spec 1.1",
+      "breakError": "collect2.exe: error: ld returned 5 exit status | error: link failed - no entry symbol `main_jhyy` in the generated assembly | note: hosted programs must define `fn main_jhyy` (not `main`) - see lang-spec 1.1",
       "workspace": [
         "alignof_basic.jhyy"
       ]
@@ -43,7 +43,7 @@
       "broken": "// EXPECT: 1000042\n// i32/i64 mixed arithmetic + as conversion\n// v0.9 wip commit 2.5: covers extsw path stability (small_val as i64 + total_val as i32)\n//   + const-only data (no let mut → W-005 avoidance).\nextern fn printf(fmt: *u8, val: i64) -> i32;\n\nfn main() -> i32 {\n    let small_val: i32 = 42;\n    let big_val: i64 = 1000000 as i64;\n    let total_val: i64 = (small_val as i64) + big_val;\n    printf(\"total = %d\\n\", total_val);\n    let down_val: i32 = total_val as i32;\n    down_val\n}",
       "expectExit": 1000042,
       "expectStdout": "total = 1000042\r\n",
-      "breakError": "collect2.exe: error: ld returned 1 exit status | error: link failed - no entry symbol `main_jhyy` in the generated assembly | note: hosted programs must define `fn main_jhyy` (not `main`) - see lang-spec 1.1",
+      "breakError": "collect2.exe: error: ld returned 5 exit status | error: link failed - no entry symbol `main_jhyy` in the generated assembly | note: hosted programs must define `fn main_jhyy` (not `main`) - see lang-spec 1.1",
       "workspace": [
         "arith.jhyy"
       ]
@@ -74,7 +74,7 @@
       "expectExit": 0,
       "expectOut": "result = 100",
       "expectStdout": "positive\r\nresult = 100\r\n",
-      "breakError": "collect2.exe: error: ld returned 5 exit status | error: link failed - no entry symbol `main_jhyy` in the generated assembly | note: hosted programs must define `fn main_jhyy` (not `main`) - see lang-spec 1.1",
+      "breakError": "collect2.exe: error: ld returned 1 exit status | error: link failed - no entry symbol `main_jhyy` in the generated assembly | note: hosted programs must define `fn main_jhyy` (not `main`) - see lang-spec 1.1",
       "workspace": [
         "bug3_void_if.jhyy"
       ]
@@ -89,7 +89,7 @@
       "broken": "// v3.1.3 ship-gate test: Cap<T> + PhantomData<T> on SysV target.\n// Verifies abi_sysv_classify_arg KIND_CAP / KIND_PHANTOM arms route INTEGER class\n// on --target=amd64_sysv. Mirrors cap_table_basic.jhyy + phantom_zst.jhyy patterns\n// (Cap<T> + PhantomData<T> are opaque builtin 8B / 0B structs, no named fields).\n\n// 跨函数 Cap<T> pass-by-value (走 SysV INTEGER class, RDI arg slot for 8-byte)\nfn cross_fn_cap(c: Cap<i32>) -> i64 {\n    let s: i64 = sizeof(c);\n    return s;\n}\n\n// 跨函数 PhantomData<T> pass-by-value (ZST, defensive INTEGER fallback —\n// codegen 不 emit PhantomData layout, 但 abi_sysv_classify_arg 防御 arm 走 INTEGER)\nfn cross_fn_pd(p: PhantomData<i32>) -> i32 {\n    return 42;\n}\n\nfn main() -> i32 {\n    // sizeof sanity: Cap<i32> = 8B on all targets (per v3.1.0 spec § 3)\n    let s_cap: i64 = sizeof(Cap<i32>);\n    if s_cap != 8 {\n        return 10;\n    }\n\n    // cross-fn Cap<T> pass (Cap<i32> 8B → SysV INTEGER class, RDI)\n    let r1: i64 = cross_fn_cap(0 as Cap<i32>);\n    if r1 != 8 {\n        return 20;\n    }\n\n    // cross-fn PhantomData<T> pass (PhantomData<i32> ZST → INTEGER fallback)\n    let r2: i32 = cross_fn_pd(0 as PhantomData<i32>);\n    if r2 != 42 {\n        return 30;\n    }\n\n    return 42;\n}\n//EXPECT:42\n",
       "expectExit": 42,
       "expectStdout": "",
-      "breakError": "collect2.exe: error: ld returned 1 exit status | error: link failed - no entry symbol `main_jhyy` in the generated assembly | note: hosted programs must define `fn main_jhyy` (not `main`) - see lang-spec 1.1",
+      "breakError": "collect2.exe: error: ld returned 5 exit status | error: link failed - no entry symbol `main_jhyy` in the generated assembly | note: hosted programs must define `fn main_jhyy` (not `main`) - see lang-spec 1.1",
       "workspace": [
         "cap_test_sysv.jhyy"
       ]
@@ -104,7 +104,7 @@
       "broken": "// EXPECT: 0\n// v1.6: W-053 char pattern (spec §11.3) — RESOLVED in v1.6 sprint\n// v1.7.0 Stage 3: char type u8 → i32 (spec §4.4 alignment)\n//\n// Validates char 做 match arm pattern:\n// - `'\\n' => 1`  (literal char pattern, decoded via decode_char_literal)\n// - `'a'..'z' => 2`  (range pattern, lit..lit, spec §11.3)\n// - `_ => 0`  (wildcard fallthrough)\n//\n// v1.6 fix (parity src + src0):\n// - parser.c TOKEN_CHAR pattern path now calls decode_char_literal\n//   (was bare t.start[1] — would mismatch decoded values like '\\n' = 10)\n//\n// v1.7.0 Stage 3 (parity src + src0):\n// - classify parameter u8 → i32 (matches new PRIM_I32 char type)\n// - call sites drop `as u8` cast (char literal already i32)\n\nfn classify(c: i32) -> i32 {\n    match c {\n        '\\n'      => 1,\n        'a'..'z'  => 2,\n        _         => 0,\n    }\n}\n\nfn main() -> i32 {\n    let mut err: i32 = 0;\n\n    if classify('\\n') != 1 { err = err + 1; }\n    if classify('a') != 2 { err = err + 1; }\n    if classify('m') != 2 { err = err + 1; }\n    if classify('z') != 2 { err = err + 1; }\n    if classify('A') != 0 { err = err + 1; }   // 'A' not in a..z\n    if classify('0') != 0 { err = err + 1; }   // '0' not in a..z\n\n    err\n}",
       "expectExit": 0,
       "expectStdout": "",
-      "breakError": "collect2.exe: error: ld returned 5 exit status | error: link failed - no entry symbol `main_jhyy` in the generated assembly | note: hosted programs must define `fn main_jhyy` (not `main`) - see lang-spec 1.1",
+      "breakError": "collect2.exe: error: ld returned 1 exit status | error: link failed - no entry symbol `main_jhyy` in the generated assembly | note: hosted programs must define `fn main_jhyy` (not `main`) - see lang-spec 1.1",
       "workspace": [
         "char_pattern.jhyy"
       ]
@@ -119,7 +119,7 @@
       "broken": "// v3.2.1 (V3-C 3j): closures_multi_capture — closure with multiple params (M0 no outer-capture)\nfn main() -> i32 {\n    let add = |a: i32, b: i32| { a + b };\n    let r: i32 = add(3, 4);\n    return r;\n}\n//EXPECT:7\n",
       "expectExit": 7,
       "expectStdout": "",
-      "breakError": "collect2.exe: error: ld returned 1 exit status | error: link failed - no entry symbol `main_jhyy` in the generated assembly | note: hosted programs must define `fn main_jhyy` (not `main`) - see lang-spec 1.1",
+      "breakError": "collect2.exe: error: ld returned 5 exit status | error: link failed - no entry symbol `main_jhyy` in the generated assembly | note: hosted programs must define `fn main_jhyy` (not `main`) - see lang-spec 1.1",
       "workspace": [
         "closures_multi_capture.jhyy"
       ]

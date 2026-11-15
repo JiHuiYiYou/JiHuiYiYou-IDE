@@ -471,7 +471,11 @@ def corpus_fingerprint() -> str:
     for p in inputs:
         h.update(p.name.encode("utf-8"))
         h.update(b"\x00")
-        h.update(p.read_bytes() if p.exists() else b"<missing>")
+        # ⚠️ **归一化一下**（CRLF/LF）—— CI 与本机的 checkout 行尾结束符可能不同
+        # ⇒ 按字节算指纹就会 **平台不一致** ⇒ 门在 CI 上假红。
+        # ⇒ 先归一行尾再算。
+        raw = p.read_bytes() if p.exists() else b"<missing>"
+        h.update(raw.replace(b"\r\n", b"\n"))
         h.update(b"\x00")
     return h.hexdigest()[:16]
 

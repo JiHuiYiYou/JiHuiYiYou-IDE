@@ -82,10 +82,14 @@ jobs:
           # ⚠️ **说明必须写在 `install:` 之外** —— YAML 折叠块标量（`>-`）里
           #    **整行都是内容**，`#` 开头**不是注释** ⇒ pacman 会把说明当包名
           #    ⇒ `error: target not found: #`（2026-11-13 实测踩过）。
+          # ⚠️ **python 也要装** —— 「评测任务集新鲜度」那道门是 python 写的
+          #   （2026-11-15 实测：没装 ⇒ `python` 找不到 ⇒ 退出码 127 ⇒ 门红，
+          #   而门红的原因跟门本身无关 ⇒ 白找）。
           install: >-
             git
             base-devel
             coreutils
+            python
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-binutils
 
@@ -122,7 +126,14 @@ jobs:
         shell: msys2 {0}
         run: |
           # gate: eval-tasks-fresh
-          python scripts/dev/refresh-artifacts.py --check
+          # ⚠️ **不许静默跳过** —— 找不到 python 就**红**，别当「门过了」。
+          for c in python python3 py; do
+              if command -v "$c" >/dev/null 2>&1; then
+                  exec "$c" scripts/dev/refresh-artifacts.py --check
+              fi
+          done
+          echo "::error::找不到 python ⇒ 这道门没法跑（不是「门过了」）"
+          exit 127
 
   conformance:
     name: 全量一致性门（编译 + 运行）
