@@ -477,7 +477,9 @@ fn main_jhyy() -> i32 {
         "title": "把 C 程序翻译成 JHYY（区间端点）",
         "rule": "C → JHYY 翻译（区间端点）",
         "specFile": "translate_range_endpoint_c.c",
-        "c_src": """/* 手写翻译题 —— 区间端点：闭区间 vs 半开区间 */
+        "c_src": """/* 手写翻译题 —— 区间端点：闭区间 vs 半开区间
+   ⚠️ 分类那段在 JHYY 里请用 `match` 的区间 pattern 写（形如 `0..10`）——
+   端点含不含，**自己按 JHYY 的规则判断**，别照搬 C 的写法。 */
 #include <stdio.h>
 
 /* 闭区间：[0,10] 与 [11,20] —— 两端都含 */

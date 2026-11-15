@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "builtAt": "2026-11-15T18:11:37.682542",
+  "builtAt": "2026-11-15T18:59:56.609862",
   "note": "语料锁 —— 改了语料或生成器就要重刷任务集（npm run eval:tasks && npm run eval:tasks:paired）",
-  "corpusSha256": "5c514995db36975e",
+  "corpusSha256": "1cf3895c57c65c19",
   "groups": {
     "lang/bench/difftest.py": "a6bb799df4e173f8",
     "lang/bench/seeds/ci.txt": "b55f43a436c2284c",
@@ -10,12 +10,12 @@
     "ide/scripts/eval/build-tasks.ts": "62456c047fc0e653",
     "ide/scripts/eval/tasks.ts": "4f33daeae900a5b5",
     "ide/scripts/eval/mutations.ts": "1bc1df0bc0156807",
-    "ide/scripts/eval/gen-paired-tasks.py": "80425c26f304f268",
+    "ide/scripts/eval/gen-paired-tasks.py": "0e24bb157faa5cf0",
     "ide/tests/helpers/repo.ts": "812d9f538ca81855"
   },
   "artifacts": {
     "eval/tasks.json": "8c952d4b36d97052",
-    "eval/tasks-paired.json": "8932d8a659397408",
-    "eval/tasks-paired/": "6f74337b1f079f77"
+    "eval/tasks-paired.json": "c9163bee4e5c598f",
+    "eval/tasks-paired/": "69b080ee01f85c3d"
   }
 }

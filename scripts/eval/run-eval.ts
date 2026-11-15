@@ -414,6 +414,17 @@ async function main() {
   // --task-lang jhyy|c ⇒ 只跑某种语言的任务（配对集里两侧同 id ⇒ 只能按语言筛）
   const taskLang = arg('task-lang')
   if (taskLang) tasks = tasks.filter((t) => (t.lang ?? 'jhyy') === taskLang)
+  // --task-ids a,b,c ⇒ **只跑这几道题**（按 id 精确筛）
+  //
+  // ⚠️ **为什么要有这个** —— `--mutations` 只能按**变异种类**筛 ⇒
+  //   「翻译」那 15 道里**手写的 7 道**和**语料生成的 8 道**混在一起
+  //   ⇒ 想单独盯手写题（难形状那几道）就只能**全跑** ⇒ 每次多烧十几道。
+  //   ⇒ 定向跑能省钱（一次跑 ≈ $2 而不是 ≈ $19）。
+  const taskIds = arg('task-ids')
+  if (taskIds) {
+    const want = new Set(taskIds.split(',').map((s) => s.trim()).filter(Boolean))
+    tasks = tasks.filter((t) => want.has(t.id))
+  }
   if (limit > 0) tasks = tasks.slice(0, limit)
 
   console.log(`臂：${arm.name}`)
