@@ -119,21 +119,38 @@ jobs:
       # ⚠️ **任务集是「尺子的定义」** —— 它是从语言仓的语料生成的，但**进仓**。
       #   忘了重刷 ⇒ **评测跑在旧题上** ⇒ 结论对不上 reality ⇒ 而且
       #   **没人会发现**（没有别的门看它）。
-      # ⇒ 这道门比**语料指纹**（内容哈希）：产物里记着生成时的指纹
-      #   ⇒ 现在重算一次比对 ⇒ 精确、不依赖 mtime（CI 里 mtime 全是 checkout 时间）。
+      # ⇒ 这道门比**语料指纹**（内容哈希）：锁文件 `eval/corpus-lock.json` 里
+      #   记着生成时的指纹（语料 + 生成器 + 产物自己的哈希）⇒ 现在重算一次
+      #   比对 ⇒ 精确、不依赖 mtime（CI 里 mtime 全是 checkout 时间 ⇒
+      #   用 mtime 判 ⇒ **门恒红**，2026-11-15 实测踩了两次）。
       - name: 评测任务集是最新的（语料指纹对得上）
         working-directory: JiHuiYiYou-IDE
         shell: msys2 {0}
         run: |
           # gate: eval-tasks-fresh
           # ⚠️ **不许静默跳过** —— 找不到 python 就**红**，别当「门过了」。
+          # ⚠️ **别用 exec** —— 要拿到退出码、把 step summary 也打进日志。
+          # ⚠️ **要真的能跑**（不只是 `command -v` 找得到）—— Windows 上有个
+          #   「Microsoft Store 的 python 桩」⇒ 找得到、跑起来退 9009 ⇒
+          #   ⇒ 探一下（`import sys` 能过才算数）。
+          rc=127
           for c in python python3 py; do
-              if command -v "$c" >/dev/null 2>&1; then
-                  exec "$c" scripts/dev/refresh-artifacts.py --check
+              if command -v "$c" >/dev/null 2>&1 \
+                 && "$c" -c "import sys; sys.exit(0)" >/dev/null 2>&1; then
+                  rc=0
+                  "$c" scripts/dev/refresh-artifacts.py --check || rc=$?
+                  break
               fi
           done
-          echo "::error::找不到 python ⇒ 这道门没法跑（不是「门过了」）"
-          exit 127
+          if [ "$rc" -eq 127 ]; then
+              echo "::error::找不到 python ⇒ 这道门没法跑（不是「门过了」）"
+              exit 127
+          fi
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+              echo "---- 语料锁检查（step summary）----"
+              cat "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$rc"
 
   conformance:
     name: 全量一致性门（编译 + 运行）

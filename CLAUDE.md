@@ -91,7 +91,7 @@ npm run eval:probe   # 探针：验证知识包确实进了模型上下文
 
 `eval/tasks*.json` + `eval/tasks-paired/` 是**从语言仓的语料算出来的、但要进仓**的文件
 ⇒ 语料变了就得重刷 ⇒ 忘了 ⇒ **评测在旧题上跑** ⇒ 结论对不上 reality，
-而且**没人会发现**（CI 没有「任务集是最新的」这道门）。
+而且**没人会发现**（CI 没有「任务集是最新的」那道门）。
 
 ⇒ 装一次钩子（本仓 `.githooks/` 已进仓）：
 
@@ -99,16 +99,20 @@ npm run eval:probe   # 探针：验证知识包确实进了模型上下文
 git config core.hooksPath .githooks
 ```
 
-钩子只在「该过期时」（改了生成器，或语言仓的语料比任务集新）才重刷
-——重刷要**真跑编译器**，要几分钟。手动刷：
+钩子只在「该过期时」才重刷 —— 判据是**内容哈希**，不是 mtime：
+锁文件 `eval/corpus-lock.json` 记着生成时的**语料指纹**（语言仓的语料 +
+本仓的生成器 + 产物自己的哈希）⇒ 变了才刷。重刷要**真跑编译器**，要几分钟。
+
+手动刷：
 
 ```bash
-python scripts/dev/refresh-artifacts.py --all
+npm run eval:tasks && npm run eval:tasks:paired
+python scripts/dev/refresh-artifacts.py --write-lock   # 记账：把新指纹写进锁
 ```
 
-CI 里还有一道**兜底**（`eval-tasks-fresh`）：比**语料指纹**（内容哈希，
-产物里记着生成时的指纹）⇒ 精确、不依赖 mtime ⇒ 钩子被 `--no-verify` 绕过
-也照样能抓到。
+CI 里还有一道**兜底**（`eval-tasks-fresh`）：重算指纹跟锁比 ⇒ 精确、
+不依赖 mtime（CI 里 mtime 全是 checkout 时间 ⇒ 用 mtime 判 ⇒ 门恒红）
+⇒ 钩子被 `--no-verify` 绕过也照样能抓到。
 
 ## 加一个新块
 

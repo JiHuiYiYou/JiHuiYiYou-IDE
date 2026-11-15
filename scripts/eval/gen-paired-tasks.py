@@ -452,34 +452,6 @@ fn main_jhyy() -> i32 {
 
 
 
-def corpus_fingerprint() -> str:
-    """**语料指纹** —— 决定题目内容的那几个文件的 sha256。
-
-    ⚠️ **为什么要有它**：任务集是**从语料生成的**，而「过期了没有」这件事
-    只靠 **mtime** 判是不可靠的（CI 里全是 checkout 时间 ⇒ 判不出来）。
-    ⇒ ⇒ 把指纹**写进产物**（`tasks-paired.json` 的 `corpusSha256`）⇒
-    ⇒ 任何地方都能**精确**地判「产物 == 现在的语料？」⇒ ⇒ CI 也能当门用。
-    """
-    import hashlib
-    inputs = [
-        BENCH / "difftest.py",
-        BENCH / "seeds" / "ci.txt",
-        IDE_ROOT / "scripts" / "eval" / "tasks.ts",
-        Path(__file__).resolve(),
-    ]
-    h = hashlib.sha256()
-    for p in inputs:
-        h.update(p.name.encode("utf-8"))
-        h.update(b"\x00")
-        # ⚠️ **归一化一下**（CRLF/LF）—— CI 与本机的 checkout 行尾结束符可能不同
-        # ⇒ 按字节算指纹就会 **平台不一致** ⇒ 门在 CI 上假红。
-        # ⇒ 先归一行尾再算。
-        raw = p.read_bytes() if p.exists() else b"<missing>"
-        h.update(raw.replace(b"\r\n", b"\n"))
-        h.update(b"\x00")
-    return h.hexdigest()[:16]
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--count", type=int, default=16)
@@ -691,7 +663,6 @@ def main():
             "version": 1,
             "builtAt": __import__("datetime").datetime.now().isoformat(),
             "note": "由 scripts/eval/gen-paired-tasks.py 生成 —— 同一个 AST 的 C/JHYY 两个实现，严格配对",
-            "corpusSha256": corpus_fingerprint(),
             "tasks": tasks,
         }, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8", newline="",

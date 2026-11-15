@@ -185,6 +185,127 @@ async function tryCompile(
   return { ok: false, firstError: meaningful.slice(-3).join(' | ') || '编译失败（无诊断）' }
 }
 
+/** 「原文件体检」的结果（**按文件缓存** —— 见 `buildTasks` 里的说明）。 */
+interface OrigInfo {
+  /** 原文件自己能不能编译过。 */
+  ok: boolean
+  /** 编译不过时的第一条错误。 */
+  firstError?: string
+  /** 原文件能不能跑起来。 */
+  ran: boolean
+  /** 跑不起来时的原因。 */
+  why?: string
+  /** 第一次跑的 stdout。 */
+  stdout: string
+  /** 第一次跑的退出码。 */
+  exitCode?: number | null
+  /** 两次跑的 stdout 是不是**逐字一样**。 */
+  stdoutStable: boolean
+  /** EXPECT-OUT 子串是不是在两次跑里都出现。 */
+  expectOutStable: boolean
+  /** 语料里的 EXPECT-OUT 子串（没写就是 undefined）。 */
+  expectOut?: string
+}
+
+/** 编译产物的序号（每次编译一个唯一名 ⇒ 互不覆盖）。 */
+let origSeq = 0
+
+/**
+ * 给**原文件**做体检：编译 + 在临时工作区里跑两遍。
+ *
+ * ⚠️ **原文件也要在「临时工作区」里跑** —— 跟判分时**同条件**。
+ *   有些语料打印的**地址依赖二进制布局**（实测 `arena_test` 打印
+ *   `p1=-968043984`）⇒ 在语料目录跑和在临时工作区跑**地址不一样**
+ *   ⇒ 在语料目录跑两遍是「稳定」的，骗过了检测。
+ *   ⇒ 复制到临时工作区再跑，地址照样每次变（进程级 ASLR）
+ *   ⇒ 稳定性检测才抓得住。
+ *
+ * ⚠️ **输出稳定性检测 —— 跑两遍比。**
+ *   有些语料会打印**堆指针地址**（实测 `arena_test` 打印 `p1=-968043984`
+ *   ⇒ 每次跑都不一样）⇒ 逐字比对**天然不稳定** ⇒ 模型改对了也会被判失败。
+ *   有些语料是**随机游戏**（实测 `dungeon_game` 的期望输出是「最终金币：0」
+ *   ⇒ 两次跑金币数不一样）⇒ 连 EXPECT-OUT 都不可信。
+ *
+ *   ⇒ 三档：
+ *     ① 两次 stdout **完全一样** ⇒ 逐字比（最强判据）
+ *     ② 不一样，但 **EXPECT-OUT 子串在两次里都出现** ⇒ 只用子串判
+ *     ③ 子串也不稳定 / 没有子串 ⇒ **这道题判不了** ⇒ 丢弃
+ */
+async function inspectOriginal(
+  exePath: string,
+  file: string,
+  src: string,
+  root: string,
+): Promise<OrigInfo> {
+  const origCheck = await tryCompile(exePath, file, `eval_orig_${origSeq++}`)
+  if (!origCheck.ok) {
+    return {
+      ok: false,
+      firstError: origCheck.firstError,
+      ran: false,
+      stdout: '',
+      stdoutStable: false,
+      expectOutStable: false,
+    }
+  }
+
+  const rel = relative(root, file).replace(/\\/g, '/')
+  const scratch = mkdtempSync(join(tmpdir(), 'jhyy-build-'))
+  try {
+    const origInScratch = join(scratch, rel)
+    mkdirSync(dirname(origInScratch), { recursive: true })
+    for (const dep of collectWorkspace(root, rel)) {
+      const dest = join(scratch, dep)
+      mkdirSync(dirname(dest), { recursive: true })
+      copyFileSync(join(root, dep), dest)
+    }
+    const runOpts = {
+      exePath,
+      file: origInScratch,
+      timeoutMs: 20_000,
+      cwd: findLangRepo() ?? dirname(file),
+      env: readDirectives(src).setenv,
+      // ⚠️ stdin 接空设备（立刻 EOF）—— 跟回归 harness 同口径（见 grader 的注释）
+      stdinPipe: false,
+    }
+    const origRun = await runFile(runOpts)
+    const origRun2 = await runFile(runOpts)
+
+    if (!origRun.ok || !origRun.ran) {
+      const why =
+        origRun.diagnostics.find((d) => d.severity === 'error')?.message ??
+        `退出码 ${origRun.exitCode}`
+      return {
+        ok: true,
+        ran: false,
+        why,
+        stdout: origRun.programStdout,
+        exitCode: origRun.exitCode,
+        stdoutStable: false,
+        expectOutStable: false,
+      }
+    }
+
+    const stdoutStable = origRun2.programStdout === origRun.programStdout
+    const expectOut = readDirectives(src).expectOut
+    const expectOutStable =
+      expectOut !== undefined &&
+      origRun.programStdout.includes(expectOut) &&
+      origRun2.programStdout.includes(expectOut)
+    return {
+      ok: true,
+      ran: true,
+      stdout: origRun.programStdout,
+      exitCode: origRun.exitCode,
+      stdoutStable,
+      expectOutStable,
+      expectOut,
+    }
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
+  }
+}
+
 /**
  * 构建任务集。
  *
@@ -204,6 +325,19 @@ export async function buildTasks(opts: BuildOptions = {}): Promise<BuiltTasks> {
   const tasks: EvalTask[] = []
   const skipped: SkippedCandidate[] = []
   const perMutCount = new Map<string, number>()
+
+  /**
+   * **原文件的体检结果缓存**（按文件路径）。
+   *
+   * ⚠️ **为什么要有**：同一个语料文件会被**好几个变异**挑中 ⇒ 不缓存的话，
+   *   「编译原文件 + 跑两遍测稳定性」每个（变异 × 文件）组合都重做一遍
+   *   ⇒ 实测构建 40 道题要 **35 分钟**（缓存前）⇒ 钩子每次都跑半小时 ⇒ 没人愿意用。
+   *
+   * ⚠️ **顺带修了一个不一致**：输出稳定性（ASLR / 随机游戏）是**每次跑都可能不同**的
+   *   ⇒ 同一个文件在**不同变异**下可能一会儿「稳」一会儿「不稳」
+   *   ⇒ 同一道题的判据会飘 ⇒ 缓存后**同一个文件只有一个判定** ⇒ 前后一致。
+   */
+  const origCache = new Map<string, OrigInfo>()
 
   const all = collectJhyyFiles(root).filter((f) => !f.endsWith('.exe'))
 
@@ -234,73 +368,24 @@ export async function buildTasks(opts: BuildOptions = {}): Promise<BuiltTasks> {
       const broken = mutation.apply(src)
       if (!broken || broken === src) continue
 
-      // ── 原文件先过一遍 ────────────────────────────────────
+      // ── 原文件先过一遍（**按文件缓存**）────────────────────
       // 原文件必须**能过能跑** —— 否则这道题没有「正确答案」可言。
-      const origCheck = await tryCompile(exePath, file, `eval_orig_${tasks.length}`)
-      if (!origCheck.ok) {
-        skipped.push({ file: rel, mutationId: mutation.id, reason: `原文件自己就编不过：${origCheck.firstError}` })
+      let orig = origCache.get(file)
+      if (!orig) {
+        orig = await inspectOriginal(exePath, file, src, root)
+        origCache.set(file, orig)
+      }
+      if (!orig.ok) {
+        skipped.push({ file: rel, mutationId: mutation.id, reason: `原文件自己就编不过：${orig.firstError}` })
         continue
       }
-      // ⚠️ **原文件也要在「临时工作区」里跑** —— 跟判分时**同条件**。
-      //   有些语料打印的**地址依赖二进制布局**（实测 `arena_test` 打印
-      //   `p1=-968043984`）⇒ 在语料目录跑和在临时工作区跑**地址不一样**
-      //   ⇒ 在语料目录跑两遍是「稳定」的，骗过了检测。
-      //   ⇒ 复制到临时工作区再跑，地址照样每次变（进程级 ASLR）
-      //   ⇒ 稳定性检测才抓得住。
-      const scratch = mkdtempSync(join(tmpdir(), 'jhyy-build-'))
-      const origInScratch = join(scratch, rel)
-      mkdirSync(dirname(origInScratch), { recursive: true })
-      for (const dep of collectWorkspace(root, rel)) {
-        const dest = join(scratch, dep)
-        mkdirSync(dirname(dest), { recursive: true })
-        copyFileSync(join(root, dep), dest)
-      }
-      const origRun = await runFile({
-        exePath,
-        file: origInScratch,
-        timeoutMs: 20_000,
-        cwd: findLangRepo() ?? dirname(file),
-        env: readDirectives(src).setenv,
-        // ⚠️ stdin 接空设备（立刻 EOF）—— 跟回归 harness 同口径（见 grader 的注释）
-        stdinPipe: false,
-      })
-
-      // ⚠️ **输出稳定性检测 —— 跑两遍比。**
-      //   有些语料会打印**堆指针地址**（实测 `arena_test` 打印 `p1=-968043984`
-      //   ⇒ 每次跑都不一样）⇒ 逐字比对**天然不稳定** ⇒ 模型改对了也会被判失败。
-      //   有些语料是**随机游戏**（实测 `dungeon_game` 的期望输出是「最终金币：0」
-      //   ⇒ 两次跑金币数不一样）⇒ 连 EXPECT-OUT 都不可信。
-      //
-      //   ⇒ 三档：
-      //     ① 两次 stdout **完全一样** ⇒ 逐字比（最强判据）
-      //     ② 不一样，但 **EXPECT-OUT 子串在两次里都出现** ⇒ 只用子串判
-      //     ③ 子串也不稳定 / 没有子串 ⇒ **这道题判不了** ⇒ 丢弃
-      const origRun2 = await runFile({
-        exePath,
-        file: origInScratch,
-        timeoutMs: 20_000,
-        cwd: findLangRepo() ?? dirname(file),
-        env: readDirectives(src).setenv,
-        // ⚠️ stdin 接空设备（立刻 EOF）—— 跟回归 harness 同口径（见 grader 的注释）
-        stdinPipe: false,
-      })
-      rmSync(scratch, { recursive: true, force: true })
-
-      if (!origRun.ok || !origRun.ran) {
-        const why =
-          origRun.diagnostics.find((d) => d.severity === 'error')?.message ??
-          `退出码 ${origRun.exitCode}`
-        skipped.push({ file: rel, mutationId: mutation.id, reason: `原文件跑不起来：${why}` })
+      if (!orig.ran) {
+        skipped.push({ file: rel, mutationId: mutation.id, reason: `原文件跑不起来：${orig.why}` })
         continue
       }
 
-      const stdoutStable = origRun2.programStdout === origRun.programStdout
-      const expectOut = readDirectives(src).expectOut
-      const expectOutStable =
-        expectOut !== undefined &&
-        origRun.programStdout.includes(expectOut) &&
-        origRun2.programStdout.includes(expectOut)
-      if (!stdoutStable && !expectOutStable) {
+      const stdoutStable = orig.stdoutStable
+      if (!stdoutStable && !orig.expectOutStable) {
         skipped.push({
           file: rel,
           mutationId: mutation.id,
@@ -348,8 +433,8 @@ export async function buildTasks(opts: BuildOptions = {}): Promise<BuiltTasks> {
             skipped.push({ file: rel, mutationId: mutation.id, reason: '行为变异后跑不起来' })
             continue
           }
-          const sameOut = brokenRun.programStdout === origRun.programStdout
-          const sameExit = (brokenRun.exitCode ?? 0) === (origRun.exitCode ?? 0)
+          const sameOut = brokenRun.programStdout === orig.stdout
+          const sameExit = (brokenRun.exitCode ?? 0) === (orig.exitCode ?? 0)
           if (sameOut && sameExit) {
             skipped.push({ file: rel, mutationId: mutation.id, reason: '变异后行为跟原来一样（没真坏掉）' })
             continue
@@ -377,7 +462,7 @@ export async function buildTasks(opts: BuildOptions = {}): Promise<BuiltTasks> {
         broken,
         expectExit: d.expectExit,
         expectOut: d.expectOut,
-        expectStdout: stdoutStable ? origRun.programStdout : undefined,
+        expectStdout: stdoutStable ? orig.stdout : undefined,
         breakError: brokenCheck.firstError,
         workspace: collectWorkspace(root, rel),
       })

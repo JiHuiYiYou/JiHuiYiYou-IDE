@@ -1,200 +1,370 @@
 #!/usr/bin/env python3
-"""刷**派生产物** —— 提交前跑一次就够（本仓只有评测任务集这一样）。
+"""**语料锁** —— 「派生产物是不是最新的」这件事的**唯一**判据。
 
 ## 本仓的派生产物
 
-= **从源码算出来的、但要进仓**的文件：
+| 产物 | 生成器 |
+|---|---|
+| `eval/tasks.json`（破坏题） | `npm run eval:tasks`（`scripts/eval/build-tasks.ts`） |
+| `eval/tasks-paired.json` + `eval/tasks-paired/`（配对/翻译题） | `npm run eval:tasks:paired`（`scripts/eval/gen-paired-tasks.py`） |
 
-| 产物 | 生成器 | 什么时候会过期 |
-|---|---|---|
-| `eval/tasks.json`（32 道破坏题） | `npm run eval:tasks`（`scripts/eval/build-tasks.ts`） | 语言仓的**语料/变异定义**变了 |
-| `eval/tasks-paired.json` + `eval/tasks-paired/*`（配对/翻译题） | `npm run eval:tasks:paired`（`scripts/eval/gen-paired-tasks.py`） | 同上 |
+它们是**从语言仓的语料算出来的、但要进仓**的文件 ⇒ 语料（或生成器）变了
+就得重刷 ⇒ 忘了 ⇒ **评测在旧题上跑** ⇒ 结论对不上 reality，而且**没人会发现**
+（CI 里没有「任务集是最新的」这道门）。
 
-⚠️ **它们的真相在**语言仓**（`../JiHuiYiYou/bench/`）** ⇒ ⇒ **跨仓**：
-改了语言仓的语料 ⇒ 本仓的任务集就过期了 ⇒ ⇒ 光看「暂存了哪些文件」
-**发现不了** ⇒ ⇒ 所以这里**额外**比一次**新旧**（语料比任务集新 ⇒ 过期）。
+## 判据：**内容哈希**，不是 mtime
 
-## 为什么要有这个脚本
+`eval/corpus-lock.json`（进仓）记着生成时的内容哈希：
 
-忘了刷 ⇒ 任务集与语料对不上 ⇒ **评测在旧题上跑** ⇒ 结论对不上 reality
-⇒ 而且**没人会发现**（CI 没有「任务集是最新的」这道门）。
+| 字段 | 是什么 |
+|---|---|
+| `corpusSha256` | 所有输入（语言仓的语料 + 本仓的生成器）的**聚合**哈希 |
+| `groups` | 每个输入**组**单独的哈希（诊断用：到底是哪一组变了） |
+| `artifacts` | 产物文件自己的哈希（抓「手改产物」/「产物没跟着重刷」） |
+
+⚠️ **为什么不用 mtime**：CI 里两个仓是**分两次 checkout** 的 ⇒ 语言仓的语料
+**必然比** IDE 仓的任务集**新** ⇒ 用 mtime 判 ⇒ **永远判成「过期」** ⇒
+门在 CI 上恒红（2026-11-15 实测踩了两次）。内容哈希跟 checkout 时间无关。
+
+⚠️ **为什么锁是**单独一个文件**、而不是把指纹塞进产物里**：
+两个产物由**两个不同语言的生成器**产出（TS / Python）⇒ 指纹算法塞进产物里
+就得写两遍 ⇒ **两份实现漂移**（一处改了另一处没改 ⇒ 门永远判「过期」）。
+锁文件由**这一个脚本**写 ⇒ **只有一份实现** ⇒ 生成器不用改。
 
 ## 用法
 
-    python scripts/dev/refresh-artifacts.py --should-refresh   # 该刷吗？（钩子用：退出码 0 = 该刷）
-    python scripts/dev/refresh-artifacts.py --stage            # 把产物 git add 进去（钩子用）
+    python scripts/dev/refresh-artifacts.py --should-refresh   # 该刷吗？（退出码 0 = 该刷）
+    python scripts/dev/refresh-artifacts.py --write-lock       # 重刷后：把锁写下来
+    python scripts/dev/refresh-artifacts.py --stage            # 把产物 + 锁 git add 进去
     python scripts/dev/refresh-artifacts.py --check            # 只查不改（= CI 那道门）
 
 ⚠️ **为什么把「跑生成器」留给 shell**：生成器是 `npm run …` ⇒ `npm` 是
 `.cmd` ⇒ **Windows 的 Python 找不到它**（实测 FileNotFoundError）⇒
-⇒ 由 `.githooks/pre-commit`（sh）去跑 npm，本脚本只负责**判断**与**暂存**。
+⇒ 由 `.githooks/pre-commit`（sh）去跑 npm，本脚本只负责**判断**与**记账**。
 """
 from __future__ import annotations
 
 import argparse
-import fnmatch
+import hashlib
+import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-LANG_REPO = ROOT.parent / "JiHuiYiYou"
+LOCK_REL = "eval/corpus-lock.json"
 
-# 任务集的生成器（改了它们 ⇒ 任务集一定该重刷）
-BUILDER_TRIGGERS = [
+# 产物（进仓，但都是从语料算出来的）
+ARTIFACT_FILES = ["eval/tasks.json", "eval/tasks-paired.json"]
+ARTIFACT_DIRS = ["eval/tasks-paired"]
+
+# 本仓里**决定产物内容**的生成器（改了就可能改产物）
+GENERATORS = [
     "scripts/eval/build-tasks.ts",
     "scripts/eval/tasks.ts",
+    "scripts/eval/mutations.ts",
     "scripts/eval/gen-paired-tasks.py",
+    "tests/helpers/repo.ts",
 ]
 
-# 语言仓里**决定题目内容**的东西（它们比任务集新 ⇒ 任务集过期）
-CORPUS_INPUTS = [
-    LANG_REPO / "bench" / "difftest.py",
-    LANG_REPO / "bench" / "seeds" / "ci.txt",
+# 语言仓里**决定产物内容**的语料（相对语言仓根）
+LANG_FILES = [
+    "bench/difftest.py",
+    "bench/seeds/ci.txt",
 ]
+# 语言仓的「破坏题语料」目录（递归；`_` 开头的**不进**语料 —— 跟
+# `tests/helpers/repo.ts:collectJhyyFiles` 同口径）
+LANG_EXAMPLES = "compiler/tests/examples"
 
-TASK_FILES = ["eval/tasks.json", "eval/tasks-paired.json"]
+# 语言仓的候选目录名（CI 里 checkout 成 `JiHuiYiYou`，本地可能叫别的）
+LANG_DIR_NAMES = ["JiHuiYiYou", "JiHuiYiYou-compiler"]
 
 
-def changed_files() -> list[str]:
-    """**暂存 + 未暂存 + 未跟踪**的文件名（不只是暂存区！）。
+# ── 语言仓在哪 ──────────────────────────────────────────────────────
 
-    ⚠️ **为什么要把未暂存的也算进来**：`--check` 模式（CI 用）跑的时候
-    改动可能还没进暂存区 ⇒ 只看暂存区会**漏判**「生成器变了 ⇒ 产物过期」。
+def find_lang_repo() -> Path | None:
+    """语言仓（JiHuiYiYou）的位置。
+
+    ⚠️ **为什么不能只认「兄弟目录」**：CI 里两个仓是**分两次 checkout** 的
+    ⇒ 兄弟目录名取决于 workflow 怎么写 ⇒ 认死了 ⇒ 门在 CI 上「找不到语料」
+    ⇒ 恒红（2026-11-15 实测）。
+
+    ⇒ 找法依次是：
+      1. 环境变量 `JHY_LANG_REPO`（显式指定，最优先）
+      2. 兄弟目录 / 祖先目录下的 `JiHuiYiYou` / `JiHuiYiYou-compiler`
+         （**认「有语料」**，不认名字 ⇒ 名字变了也不怕）
     """
-    names: set[str] = set()
-    try:
-        for args in (["git", "diff", "--cached", "--name-only"],
-                     ["git", "diff", "--name-only"]):
-            out = subprocess.run(args, cwd=str(ROOT), capture_output=True, text=True,
-                                 encoding="utf-8", errors="replace")
-            names.update(ln.strip() for ln in out.stdout.splitlines() if ln.strip())
-        out = subprocess.run(["git", "ls-files", "--others", "--exclude-standard"],
-                             cwd=str(ROOT), capture_output=True, text=True,
-                             encoding="utf-8", errors="replace")
-        names.update(ln.strip() for ln in out.stdout.splitlines() if ln.strip())
-    except OSError:
-        pass
-    return sorted(names)
+    env = os.environ.get("JHY_LANG_REPO")
+    if env:
+        p = Path(env)
+        if _looks_like_lang_repo(p):
+            return p
+    # 从本仓往上找（最多 6 层）——跟 `tests/helpers/repo.ts:findLangRepo` 同口径
+    base = ROOT
+    for _ in range(6):
+        for name in LANG_DIR_NAMES:
+            cand = base / name
+            if _looks_like_lang_repo(cand):
+                return cand
+        if base.parent == base:
+            break
+        base = base.parent
+    return None
 
 
-def builders_changed(files: list[str]) -> bool:
-    return any(any(fnmatch.fnmatch(f, p) for p in BUILDER_TRIGGERS) for f in files)
+def _looks_like_lang_repo(p: Path) -> bool:
+    """这个目录**像**语言仓吗？（看有没有语料，不看名字）"""
+    return (p / "bench" / "difftest.py").exists() or (p / "compiler" / "src0" / "main.jhyy").exists()
 
 
-def corpus_is_newer() -> bool:
-    """语言仓的语料比任务集**新** ⇒ 任务集过期。
+# ── 指纹 ────────────────────────────────────────────────────────────
 
-    ⚠️ **优先用「语料指纹」**（内容哈希）：产物里记着生成时的指纹
-      ⇒ 现在重算一次比对 ⇒ **精确**，且**不依赖 mtime**
-      ⇒ ⇒ CI 里（全是 checkout 时间）也判得出来 ⇒ ⇒ 能当门用。
-    ⇒ 产物里没有指纹（旧产物）⇒ 退回 **mtime** 判（不精确，但够用）。
+def _norm(raw: bytes) -> bytes:
+    """归一化行尾（CRLF → LF）。
+
+    ⚠️ **为什么必须归一**：CI（Windows checkout，`core.autocrlf=true`）与
+    本机的**行尾结束符可能不同** ⇒ 按原始字节算指纹 ⇒ 平台不一致 ⇒
+    门在 CI 上假红（2026-11-15 实测踩过一次）。
     """
-    fp = fingerprint_mismatch()
-    if fp is True:
-        return True
-    if fp is False:
-        # ⚠️ **指纹对得上就是最新** —— **不要再看 mtime**！
-        #   CI 里两个仓是**分两次 checkout** 的 ⇒ 语言仓的语料**必然比**
-        #   IDE 仓的任务集**新** ⇒ 用 mtime 判 ⇒ **永远判成「过期」**
-        #   ⇒ 门在 CI 上恒红（2026-11-15 实测踩过）。
-        # ⇒ 指纹（内容哈希）是**内容**的判据；mtime 只是**没有指纹时**的兜底。
-        return False
-    # 指纹判不了（产物是旧的 / import 失败）⇒ 退回 mtime 兜底
-    newest_task = 0.0
-    for f in TASK_FILES:
-        p = ROOT / f
+    return raw.replace(b"\r\n", b"\n")
+
+
+def _sha(raw: bytes) -> str:
+    return hashlib.sha256(_norm(raw)).hexdigest()[:16]
+
+
+def _sha_tree(root: Path) -> str:
+    """一个目录的聚合哈希（按相对路径排序 ⇒ 与文件系统顺序无关）。"""
+    h = hashlib.sha256()
+    for p in sorted(root.rglob("*")):
+        if not p.is_file():
+            continue
+        h.update(p.relative_to(root).as_posix().encode("utf-8"))
+        h.update(b"\x00")
+        h.update(_norm(p.read_bytes()))
+        h.update(b"\x00")
+    return h.hexdigest()[:16]
+
+
+def corpus_groups() -> tuple[dict[str, str], list[str]]:
+    """⇒ (每组的哈希, 找不到的组)
+
+    组 = 判「什么变了」的**最小单位**（组太细则锁文件大，组太粗则诊断没处下嘴）。
+    """
+    groups: dict[str, str] = {}
+    missing: list[str] = []
+
+    lang = find_lang_repo()
+    if lang is None:
+        missing.append("语言仓（设 `JHY_LANG_REPO` 或把它放在本仓的兄弟/祖先目录）")
+    else:
+        for rel in LANG_FILES:
+            p = lang / rel
+            if p.exists():
+                groups[f"lang/{rel}"] = _sha(p.read_bytes())
+            else:
+                missing.append(f"lang/{rel}")
+        ex = lang / LANG_EXAMPLES
+        if ex.is_dir():
+            files = [p for p in sorted(ex.rglob("*.jhyy")) if not p.name.startswith("_")]
+            if not files:
+                missing.append(f"lang/{LANG_EXAMPLES}（一个 .jhyy 都没有）")
+            else:
+                h = hashlib.sha256()
+                for p in files:
+                    h.update(p.relative_to(ex).as_posix().encode("utf-8"))
+                    h.update(b"\x00")
+                    h.update(_norm(p.read_bytes()))
+                    h.update(b"\x00")
+                groups[f"lang/{LANG_EXAMPLES}"] = h.hexdigest()[:16]
+        else:
+            missing.append(f"lang/{LANG_EXAMPLES}")
+
+    for rel in GENERATORS:
+        p = ROOT / rel
         if p.exists():
-            newest_task = max(newest_task, p.stat().st_mtime)
-    if newest_task == 0.0:
-        return True
-    for p in CORPUS_INPUTS:
-        if p.exists() and p.stat().st_mtime > newest_task:
-            return True
-    return False
+            groups[f"ide/{rel}"] = _sha(p.read_bytes())
+        else:
+            missing.append(f"ide/{rel}")
+
+    return groups, missing
 
 
-def fingerprint_mismatch() -> bool | None:
-    """产物里记的语料指纹 == 现在的语料指纹？
+def corpus_sha(groups: dict[str, str]) -> str:
+    """所有组的**聚合**哈希（组的键排序 ⇒ 与文件系统顺序无关）。"""
+    h = hashlib.sha256()
+    for k in sorted(groups):
+        h.update(k.encode("utf-8"))
+        h.update(b"\x00")
+        h.update(groups[k].encode("utf-8"))
+        h.update(b"\x00")
+    return h.hexdigest()[:16]
 
-    ⇒ `True`  = **对不上**（过期）
-    ⇒ `False` = 对得上（最新）
-    ⇒ `None`  = 判不了（产物里没有指纹，或生成器 import 失败）
-    """
-    import json
 
-    meta = ROOT / "eval" / "tasks-paired.json"
-    if not meta.exists():
+def artifact_hashes() -> dict[str, str]:
+    """产物自己的哈希（抓「手改产物」/「产物没跟着重刷」）。"""
+    out: dict[str, str] = {}
+    for rel in ARTIFACT_FILES:
+        p = ROOT / rel
+        if p.exists():
+            out[rel] = _sha(p.read_bytes())
+    for rel in ARTIFACT_DIRS:
+        d = ROOT / rel
+        if d.is_dir():
+            out[rel + "/"] = _sha_tree(d)
+    return out
+
+
+# ── 锁 ──────────────────────────────────────────────────────────────
+
+def read_lock() -> dict | None:
+    p = ROOT / LOCK_REL
+    if not p.exists():
         return None
     try:
-        recorded = json.loads(meta.read_text(encoding="utf-8")).get("corpusSha256")
-    except Exception:
-        return None
-    if not recorded:
-        return None
-    try:
-        import importlib.util
-
-        spec = importlib.util.spec_from_file_location(
-            "gen_paired_tasks", ROOT / "scripts" / "eval" / "gen-paired-tasks.py")
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        current = mod.corpus_fingerprint()
+        data = json.loads(p.read_text(encoding="utf-8"))
     except Exception as e:
-        print(f"[refresh-artifacts] ⚠️ 指纹算不出来：{e!r}", file=sys.stderr)
+        print(f"[refresh-artifacts] ⚠️ 锁文件读不出来：{e!r}", file=sys.stderr)
         return None
-    if recorded != current:
-        # ⚠️ **对不上时把每个输入的哈希都打出来** —— 否则只能猜
-        #   （2026-11-15 实测：CI 上对不上，本地一模一样 ⇒ 光看「对不上」没用，
-        #   得知道**是哪一个输入**不同）。
-        print(f"[refresh-artifacts] ✗ 语料指纹对不上：记录 {recorded} ≠ 现在 {current}",
-              file=sys.stderr)
-        try:
-            import hashlib
+    return data if isinstance(data, dict) else None
 
-            for name in ("difftest.py", "ci.txt", "tasks.ts", "gen-paired-tasks.py"):
-                for base in (ROOT.parent / "JiHuiYiYou", ROOT):
-                    for cand in base.rglob(name):
-                        if cand.is_file() and ("bench" in str(cand) or "scripts" in str(cand)):
-                            raw = cand.read_bytes()
-                            h = hashlib.sha256(raw.replace(b"\r\n", b"\n")).hexdigest()[:12]
-                            print(f"[refresh-artifacts]    {cand}  len={len(raw)}  sha={h}",
-                                  file=sys.stderr)
-        except Exception as e:
-            print(f"[refresh-artifacts] ⚠️ 诊断也失败了：{e!r}", file=sys.stderr)
-    return recorded != current
+
+def write_lock() -> int:
+    groups, missing = corpus_groups()
+    if missing:
+        print("[refresh-artifacts] ✗ 找不到输入：\n  - " + "\n  - ".join(missing),
+              file=sys.stderr)
+        return 1
+    lock = {
+        "version": 1,
+        "builtAt": __import__("datetime").datetime.now().isoformat(),
+        "note": ("语料锁 —— 改了语料或生成器就要重刷任务集"
+                 "（npm run eval:tasks && npm run eval:tasks:paired）"),
+        "corpusSha256": corpus_sha(groups),
+        "groups": groups,
+        "artifacts": artifact_hashes(),
+    }
+    p = ROOT / LOCK_REL
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(lock, ensure_ascii=False, indent=2) + "\n",
+                 encoding="utf-8", newline="")
+    print(f"[refresh-artifacts] ✓ 锁已写：{LOCK_REL}（corpusSha256={lock['corpusSha256']}）")
+    return 0
+
+
+# ── 判据 ────────────────────────────────────────────────────────────
+
+def diagnose() -> tuple[bool, list[str]]:
+    """⇒ (是不是最新, 人类能读的说明行)"""
+    groups, missing = corpus_groups()
+    lock = read_lock()
+    lines: list[str] = []
+    ok = True
+
+    # ⚠️ **先说「在哪儿找的」** —— CI 上找不到语言仓是最常见的事故，
+    #   而「找不到」如果没有下文，就只能猜（2026-11-15 在 CI 上白找了一轮）。
+    lang = find_lang_repo()
+    lines.append(f"语言仓：`{lang}`" if lang else "语言仓：**没找到**")
+    lines.append(f"本仓：`{ROOT}`")
+
+    if missing:
+        ok = False
+        lines.append("**找不到输入**：")
+        lines += [f"- {m}" for m in missing]
+
+    if lock is None:
+        ok = False
+        lines.append(f"**没有锁文件**（{LOCK_REL}）⇒ 产物是「没有指纹的旧流程」"
+                     "生成的 ⇒ 重刷一次就有了。")
+        return ok, lines
+
+    current = corpus_sha(groups) if groups else ""
+    recorded = lock.get("corpusSha256")
+    if recorded != current:
+        ok = False
+        lines.append(f"**语料指纹对不上**：锁里 `{recorded}` ≠ 现在 `{current}`")
+        old_groups = lock.get("groups") or {}
+        for k in sorted(set(old_groups) | set(groups)):
+            a, b = old_groups.get(k), groups.get(k)
+            if a != b:
+                lines.append(f"- `{k}`：{a} → {b}")
+    else:
+        lines.append(f"语料指纹对得上（`{current}`）")
+
+    old_art = lock.get("artifacts") or {}
+    new_art = artifact_hashes()
+    for k in sorted(set(old_art) | set(new_art)):
+        a, b = old_art.get(k), new_art.get(k)
+        if a != b:
+            ok = False
+            if a is None:
+                lines.append(f"- 产物 `{k}`：**锁里没有**（新加的？）")
+            elif b is None:
+                lines.append(f"- 产物 `{k}`：**文件不见了**")
+            else:
+                lines.append(f"- 产物 `{k}`：{a} → {b}（产物被改过，或没跟着重刷）")
+    if not old_art:
+        ok = False
+        lines.append("- 锁里**没有产物哈希** ⇒ 旧版锁 ⇒ 重刷一次就有了。")
+
+    # 附上当前各组的哈希 —— 绿了也要看得见「到底比的是啥」
+    lines.append("各输入组（现在）：")
+    lines += [f"- `{k}` = `{v}`" for k, v in sorted(groups.items())]
+    lines.append("各产物（现在）：")
+    lines += [f"- `{k}` = `{v}`" for k, v in sorted(new_art.items())]
+
+    return ok, lines
+
+
+def report(ok: bool, lines: list[str]) -> None:
+    """把结论说清楚 —— **stderr**（CI 日志）+ **step summary**（能直接看）。"""
+    head = "✅ 任务集是最新的" if ok else "❌ 任务集**过期**了"
+    body = "\n".join(lines)
+    print(f"[refresh-artifacts] {head}\n{body}", file=sys.stderr)
+
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        try:
+            with open(summary, "a", encoding="utf-8") as f:
+                f.write(f"## {head}\n\n{body}\n\n")
+        except OSError as e:
+            print(f"[refresh-artifacts] ⚠️ step summary 写不进去：{e!r}", file=sys.stderr)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--should-refresh", action="store_true",
                     help="只判断：该刷吗？（退出码 0 = 该刷）")
-    ap.add_argument("--stage", action="store_true", help="把产物 git add 进去")
+    ap.add_argument("--write-lock", action="store_true", help="把当前的指纹写进锁")
+    ap.add_argument("--stage", action="store_true", help="把产物 + 锁 git add 进去")
     ap.add_argument("--check", action="store_true", help="只查不改（CI 那道门）")
     args = ap.parse_args()
 
     if args.stage:
-        for f in TASK_FILES:
+        for f in ARTIFACT_FILES + [LOCK_REL]:
             subprocess.run(["git", "add", "--", f], cwd=str(ROOT))
         subprocess.run(["git", "add", "--", "eval/tasks-paired"], cwd=str(ROOT))
-        print("[refresh-artifacts] ✓ 任务集已进暂存区")
+        print("[refresh-artifacts] ✓ 产物 + 锁已进暂存区")
         return 0
 
-    stale = builders_changed(changed_files()) or corpus_is_newer()
+    if args.write_lock:
+        return write_lock()
+
+    ok, lines = diagnose()
 
     if args.should_refresh:
-        if stale:
+        if not ok:
             print("[refresh-artifacts] 评测任务集过期了 ⇒ 要重刷")
-        return 0 if stale else 1
+        return 0 if not ok else 1
 
     if args.check:
-        if stale:
-            print("[refresh-artifacts] ✗ 评测任务集**过期**了"
-                  "（改了生成器，或语言仓的语料更新了）⇒ 跑 "
-                  "`npm run eval:tasks && npm run eval:tasks:paired`", file=sys.stderr)
-            return 1
-        print("[refresh-artifacts] OK —— 任务集是最新的")
-        return 0
+        report(ok, lines)
+        if not ok:
+            print("[refresh-artifacts] ⇒ 跑 `npm run eval:tasks && npm run eval:tasks:paired`"
+                  "（重刷完再 `python scripts/dev/refresh-artifacts.py --write-lock`）",
+                  file=sys.stderr)
+        return 0 if ok else 1
 
     # 默认：自己刷（Windows 的 Python 跑不了 npm ⇒ 交给 shell）
     print("[refresh-artifacts] ⚠️ 请用 `.githooks/pre-commit`（或 `sh -c`）跑刷新 —— "

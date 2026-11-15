@@ -13,6 +13,18 @@
 *.txt   text eol=lf
 *.lock  text eol=lf
 
+# ⚠️ **语料 / 脚本也要锁 LF** —— 不锁的话，CI（Windows runner，
+#    `core.autocrlf=true`）的 checkout 会把它们变成 **CRLF** ⇒
+#    ① 任务语料（`eval/tasks-paired/*.c` / `*.jhyy`）在 CI 上跟本机**字节不同**
+#       ⇒ 评测的「stdout 逐字一致」判据两边看到的东西不一样；
+#    ② `.githooks/pre-commit` 是 shell 脚本 ⇒ CRLF 会让 sh 直接报错。
+*.py    text eol=lf
+*.c     text eol=lf
+*.h     text eol=lf
+*.jhyy  text eol=lf
+*.sh    text eol=lf
+.githooks/* text eol=lf
+
 # 二进制 —— 不能做换行转换（转换会损坏文件）
 *.exe   binary
 *.dll   binary

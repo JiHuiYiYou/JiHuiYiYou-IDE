@@ -1,5 +1,5 @@
 #!/bin/sh
-# pre-commit —— **刷派生产物**（评测任务集）。
+# pre-commit —— **刷派生产物**（评测任务集 + 语料锁）。
 #
 # 为什么有这个：本仓的 `eval/tasks*.json` + `eval/tasks-paired/` 是
 # **从语言仓的语料算出来的、但要进仓**的文件 ⇒ 语料变了就得重刷 ⇒
@@ -10,11 +10,14 @@
 #     git config core.hooksPath .githooks
 #
 # ⚠️ 任务集的重刷要**真跑编译器** ⇒ 要几分钟 ⇒ 只在「该过期时」才跑
-#   （改了生成器，或语言仓的语料比任务集新）。
+#   （语料或生成器的**内容哈希**变了 —— 不是 mtime！mtime 在 CI 上恒判「过期」）。
 #
-# ⚠️ **为什么 npm 在这里跑、python 只负责判断**：`npm` 是 `.cmd` ⇒
-#   **Windows 的 Python 找不到它**（实测 FileNotFoundError）⇒ ⇒
-#   由 sh（MSYS）跑 npm，python 只回答「该刷吗」+ 刷完把产物 stage 进来。
+# ⚠️ **为什么 npm 在这里跑、python 只负责判断**：生成器是 `npm run …` ⇒
+#   `npm` 是 `.cmd` ⇒ **Windows 的 Python 找不到它**（实测 FileNotFoundError）⇒
+#   ⇒ 由 sh（MSYS）跑 npm，python 只回答「该刷吗」+ 记账（写锁）+ stage。
+#
+# ⚠️ **找不到 python 就直接拦住提交** —— 静默跳过 = 「评测在旧题上跑」
+#   且**没人会发现**（跟 CI 里那道门一个道理：门不许静默跳过）。
 set -e
 
 repo_root=$(git rev-parse --show-toplevel)
@@ -22,14 +25,19 @@ cd "$repo_root"
 
 PY=""
 for c in python python3 py; do
-    if command -v "$c" >/dev/null 2>&1; then
+    # ⚠️ **要真的能跑**（不只是 `command -v` 找得到）—— Windows 上有个
+    #   「Microsoft Store 的 python 桩」⇒ 找得到、跑起来退 9009。
+    if command -v "$c" >/dev/null 2>&1 \
+       && "$c" -c "import sys; sys.exit(0)" >/dev/null 2>&1; then
         PY="$c"
         break
     fi
 done
 if [ -z "$PY" ]; then
-    echo "⚠️ 找不到 python ⇒ 跳过任务集刷新（评测会在旧题上跑）" >&2
-    exit 0
+    echo "✗ 找不到 python ⇒ **没法判断任务集是不是最新的**" >&2
+    echo "  ⇒ 拦住提交（静默跳过 = 评测悄悄跑在旧题上）。" >&2
+    echo "  ⇒ 装个 python，或用 git commit --no-verify（自负其责）。" >&2
+    exit 1
 fi
 
 # 退出码 0 = 该刷；1 = 不用刷
@@ -37,5 +45,7 @@ if "$PY" scripts/dev/refresh-artifacts.py --should-refresh; then
     echo "[pre-commit] 评测任务集过期了 ⇒ 重刷（真跑编译器 ⇒ 要几分钟）……"
     npm run eval:tasks
     npm run eval:tasks:paired
+    # 记账：把「生成时的语料指纹 + 产物哈希」写进锁 ⇒ CI 那道门才有得比
+    "$PY" scripts/dev/refresh-artifacts.py --write-lock
     "$PY" scripts/dev/refresh-artifacts.py --stage
 fi
