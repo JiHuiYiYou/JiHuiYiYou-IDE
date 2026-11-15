@@ -20,6 +20,15 @@ tmp/
 # 评测运行产物（每次跑都新生成、含模型输出快照；不进仓）
 # ⚠️ `eval/tasks.json`（任务集本身）是**进仓**的 —— 它是尺子的定义。
 eval/out/
+# 生成器的**暂存目录** —— 语料是「先写暂存、最后一次性换上去」的
+# （中途被打断时旧语料原封不动）⇒ 被打断后暂存目录会留下垃圾。
+eval/tasks-paired.new/
+eval/tasks-paired.json.new
+eval/tasks-paired.old/
 
 # Claude Code 本地配置（指针 + 本机设置，不入仓）
 .claude
+
+# Python 字节码缓存
+__pycache__/
+*.pyc

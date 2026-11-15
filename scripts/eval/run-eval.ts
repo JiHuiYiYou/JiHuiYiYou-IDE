@@ -240,9 +240,9 @@ function buildPrompt(task: EvalTask, rel: string, style: string, compilerPath?: 
       '  输出带 `\\r\\n` **是正常的、不算不一致**。',
     ]
     const noPeek = [
-      '- **不要**去翻判分脚本、期望输出、编译器源码 —— 上面那两条就是全部口径。',
-      '  （`bench/difftest.py`、`bench/seeds/golden.json` 里的东西**不是**本题的判据，',
-      '  翻它们只会把你带偏。）',
+      '- **不要**去翻判分脚本、期望输出、编译器源码 —— 上面那两条就是全部口径，',
+      '  本题的一切都在这个工作目录里（`main.c` + 你写的 `main.jhyy`）。',
+      '  （去了只会把你带偏：**判定口径不会因为你去翻它而改变**。）',
     ]
     if (style === 'tight') {
       return [
@@ -807,6 +807,16 @@ async function main() {
   )
   console.log(`用了编译器：${records.filter((r) => r.usedCompiler).length}/${n}`)
   console.log(`平均轮数：${n ? (turns / n).toFixed(1) : 0}`)
+  // ⚠️ **工具调用数要跟轮数并排打** —— 「轮数」会被**并行调用**掩盖。
+  //   实测（2026-11-15）：G 臂 seed3 把 **34 次调用打包成 2 轮** ⇒
+  //   那一题的「轮数」看着比谁都少，实际工作量最大。
+  //   ⇒ 两个数一起看才不会被「并行打包」骗。
+  const aliveCalls = alive.reduce((a, r) => a + (r.trajectory?.length ?? 0), 0)
+  const allCalls = records.reduce((a, r) => a + (r.trajectory?.length ?? 0), 0)
+  console.log(
+    `平均工具调用：${n ? (allCalls / n).toFixed(1) : 0}` +
+      `（跑完的 ${alive.length} 题：${alive.length ? (aliveCalls / alive.length).toFixed(1) : 0}）`,
+  )
   console.log(`总花费：$${cost.toFixed(4)}`)
   console.log(`明细：${jsonl}`)
 

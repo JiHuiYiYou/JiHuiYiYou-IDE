@@ -43,6 +43,7 @@
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -179,6 +180,186 @@ def run_jhyy(src: str, tag: str):
             pass
 
 
+# ═══════════════════════════════════════════════════════════════════
+# **手写翻译题** —— 形状跟 difftest 那种「u32 算术」不一样
+#
+# 为什么要有（2026-11-15 实测逼出来的）：
+#   difftest 的生成器**只用 u32/u64 算术**（不用 struct/enum/数组/闭包/
+#   import/defer/match/全局变量/浮点/递归）⇒ 8 道翻译题其实是
+#   **同一道题的 8 次采样** ⇒
+#   ⇒ **知识包里 string/vec/fmt/mem/math 那一整块从未被考过**
+#   ⇒ ⇒ 「该补 stdlib 用法」这个结论**现在根本无法验证**
+#
+# ⇒ 所以手写一组**形状不同**的题：C 侧用标准库（string.h / string.h /
+#   math.h），JHYY 侧用对应模块 ⇒ 正好考「知识包的 stdlib 那一节够不够用」。
+#
+# ⚠️ **配对纪律不变**：C 侧与 JHYY 侧参考 stdout 必须**逐字相同**
+#   ⇒ 不相同就跳过这一对（跟 difftest 那批一个规矩）⇒ 不会混进「题目本身
+#   没定义好」的噪声。
+# ⚠️ **参考实现是我写的** ⇒ 它同时是「标准答案」和「知识包该讲什么」的样本
+#   —— 写它的时候卡住的地方，就是要补进知识包的地方。
+# ═══════════════════════════════════════════════════════════════════
+
+_HAND_PRINT_I64 = '''fn print_i64(v: i64) {
+    let mut buf: [u8; 32] = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
+                              0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
+                              0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
+                              0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+    let p: *u8 = &buf[0];
+    let n = fmt_i64(p, v);
+    buf[n] = 10u8;
+    buf[n + 1i64] = 0u8;
+    std_io_print(p);
+}
+'''
+
+HANDWRITTEN_TRANSLATE = [
+    {
+        "id": "translate/stdlib-string/jhyy",
+        "title": "把 C 程序翻译成 JHYY（字符串）",
+        "rule": "C → JHYY 翻译（stdlib）",
+        "specFile": "translate_stdlib_string_c.c",
+        "c_src": """/* 手写翻译题 —— 字符串：strlen / strcmp / strstr */
+#include <stdio.h>
+#include <string.h>
+
+int main(void) {
+    const char *a = "hello";
+    const char *b = "world";
+    printf("%d\\n", (int)strlen(a));
+    printf("%d\\n", (int)strlen(b));
+    printf("%d\\n", strcmp(a, b) < 0 ? 1 : 0);
+    printf("%d\\n", strcmp(b, a) < 0 ? 1 : 0);
+    printf("%d\\n", strcmp(a, a) == 0 ? 1 : 0);
+    const char *hay = "the quick brown fox";
+    printf("%d\\n", (int)(strstr(hay, "brown") - hay));
+    printf("%d\\n", strstr(hay, "zzz") == NULL ? 0 : 1);
+    return 0;
+}
+""",
+        "jhyy_src": """// 手写翻译题 —— 字符串：strlen / strcmp / strstr
+import arena;
+import string;
+import fmt;
+import io;
+
+""" + _HAND_PRINT_I64 + """
+fn main_jhyy() -> i32 {
+    // JHYY 的 string 模块要一个 arena 放字符串数据
+    let mut abuf: [i32; 10] = [0 as i32, 0 as i32, 0 as i32, 0 as i32, 0 as i32,
+                               0 as i32, 0 as i32, 0 as i32, 0 as i32, 0 as i32];
+    let a = abuf as *u8;
+    arena_init(a, 4096 as i64);
+    let s1 = str_from_cstr(a, "hello" as *u8);
+    let s2 = str_from_cstr(a, "world" as *u8);
+    print_i64(str_len(s1));
+    print_i64(str_len(s2));
+    if (str_compare(s1, s2) < 0) { print_i64(1); } else { print_i64(0); }
+    if (str_compare(s2, s1) < 0) { print_i64(1); } else { print_i64(0); }
+    if (str_compare(s1, s1) == 0) { print_i64(1); } else { print_i64(0); }
+    let hay = str_from_cstr(a, "the quick brown fox" as *u8);
+    print_i64(str_find(hay, "brown" as *u8));
+    let miss = str_find(hay, "zzz" as *u8);
+    if (miss < 0) { print_i64(0); } else { print_i64(1); }
+    return 0;
+}
+""",
+    },
+    {
+        "id": "translate/stdlib-mem/jhyy",
+        "title": "把 C 程序翻译成 JHYY（字节块）",
+        "rule": "C → JHYY 翻译（stdlib）",
+        "specFile": "translate_stdlib_mem_c.c",
+        "c_src": """/* 手写翻译题 —— 字节块：memcpy / memcmp / memset */
+#include <stdio.h>
+#include <string.h>
+
+int main(void) {
+    char a[16];
+    char b[16];
+    for (int i = 0; i < 16; i++) a[i] = (char)(i + 1);
+    memcpy(b, a, 16);
+    memset(b, 0, 4);
+    printf("%d\\n", memcmp(a, b, 16) < 0 ? 1 : 0);
+    int s = 0;
+    for (int i = 0; i < 16; i++) s += (int)(unsigned char)b[i];
+    printf("%d\\n", s);
+    printf("%d\\n", (int)(unsigned char)b[4]);
+    return 0;
+}
+""",
+        "jhyy_src": """// 手写翻译题 —— 字节块：memcpy / memcmp / memset
+import mem;
+import fmt;
+import io;
+
+""" + _HAND_PRINT_I64 + """
+fn main_jhyy() -> i32 {
+    let mut a: [u8; 16] = [1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8,
+                           9u8, 10u8, 11u8, 12u8, 13u8, 14u8, 15u8, 16u8];
+    let mut b: [u8; 16] = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
+                           0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+    let pa: *u8 = &a[0];
+    let pb: *u8 = &b[0];
+    mem_copy(pb, pa, 16 as i64);
+    mem_set(pb, 0 as i32, 4 as i64);
+    if (mem_compare(pa, pb, 16 as i64) < 0) { print_i64(1); } else { print_i64(0); }
+    let mut s: i64 = 0 as i64;
+    let mut i: i64 = 0 as i64;
+    while i < 16 as i64 {
+        s = s + (*(pb + i) as i64);
+        i = i + 1 as i64;
+    }
+    print_i64(s);
+    print_i64(*(pb + 4) as i64);
+    return 0;
+}
+""",
+    },
+    {
+        "id": "translate/stdlib-math/jhyy",
+        "title": "把 C 程序翻译成 JHYY（浮点）",
+        "rule": "C → JHYY 翻译（浮点）",
+        "specFile": "translate_stdlib_math_c.c",
+        "c_src": """/* 手写翻译题 —— 浮点：整数↔浮点不能隐式转 */
+#include <stdio.h>
+#include <math.h>
+
+static double f(double x) {
+    return x * x + 1.5;
+}
+
+int main(void) {
+    double v = f(3);
+    printf("%d\\n", (int)(v * 2.0));
+    printf("%d\\n", (int)sqrt(16.0));
+    printf("%d\\n", (int)pow(2.0, 10.0));
+    return 0;
+}
+""",
+        "jhyy_src": """// 手写翻译题 —— 浮点：整数↔浮点不能隐式转
+import math;
+import fmt;
+import io;
+
+""" + _HAND_PRINT_I64 + """
+fn f(x: f64) -> f64 {
+    return x * x + 1.5;
+}
+
+fn main_jhyy() -> i32 {
+    // C 里 f(3) 会把 int 隐式转成 double ⇒ JHYY 必须显式写 as
+    let v = f(3 as f64);
+    print_i64(((v * 2.0) as i32) as i64);
+    print_i64((std_math_sqrt(16.0) as i32) as i64);
+    print_i64((std_math_pow(2.0, 10.0) as i32) as i64);
+    return 0;
+}
+""",
+    },
+]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--count", type=int, default=16)
@@ -186,14 +367,21 @@ def main():
     args = ap.parse_args()
 
     dt = load_difftest()
+    # ⚠️ **先写到暂存目录，最后再换上去**（2026-11-15 实测踩过）——
+    #   生成过程会被**中途打断**（例：`| head -10` ⇒ SIGPIPE ⇒ 生成器半路死），
+    #   而旧写法是「**先清空**目录、再逐个写」⇒ 打断的那一瞬间
+    #   **语料是残的**（实测：少了 30 多个文件、3 道手写题一个没写进去）。
+    #   ⇒ 残语料会**静默**进评测 ⇒ 判分拿到缺文件的题 ⇒ 结论全歪。
+    #   ⇒ 改成：写暂存目录 → 全部写完 → **一次性换上去**。
+    #   ⇒ 被打断 ⇒ 旧语料原封不动（最坏是「没更新」，不是「残的」）。
     out_dir = IDE_ROOT / "eval" / "tasks-paired"
-    # ⚠️ **先清空** —— 上一轮生成的文件会留着（实测：改了 per-mutation 上限后
-    #   目录里还挂着上一轮的 92 个文件 ⇒ 看着像 92 道题，实际只有 58 道）。
-    if out_dir.exists():
-        for f in out_dir.iterdir():
+    staging = IDE_ROOT / "eval" / "tasks-paired.new"
+    if staging.exists():
+        for f in staging.iterdir():
             if f.is_file():
                 f.unlink()
-    out_dir.mkdir(parents=True, exist_ok=True)
+    staging.mkdir(parents=True, exist_ok=True)
+    out_dir = staging  # ← 生成期间，所有写入都落暂存目录
 
     seeds = []
     seeds_file = BENCH / "seeds" / "ci.txt"
@@ -330,8 +518,55 @@ def main():
                 skipped.append({"seed": seed, "mutation": "translate",
                                 "reason": "C 侧与 JHYY 侧 stdout 不同 ⇒ 翻译不成立"})
 
+    # ── **手写翻译题**：形状不同（stdlib / 浮点）────────────────────
+    # 纪律与 difftest 那批**一样**：C 侧与 JHYY 侧参考 stdout 必须逐字相同。
+    # ⚠️ **但手写题配不上 = bug,不是「跳过」** —— 它没有「这个种子不合适」
+    #   这种解释 ⇒ 静默跳过会让题集**悄悄少一道** ⇒ 门还绿着。
+    #   ⇒ 手写题配不上 ⇒ **响亮失败**（退出码非 0）。
+    hand_failures = []
+    for t in HANDWRITTEN_TRANSLATE:
+        ok_c, c_out, c_err = run_c(t["c_src"], "hand_c")
+        if not ok_c:
+            hand_failures.append((t["id"], f"C 侧编不过：{c_err[:400]}"))
+            continue
+        ok_j, j_out, j_err = run_jhyy(t["jhyy_src"], "hand_j")
+        if not ok_j:
+            hand_failures.append((t["id"], f"JHYY 参考实现编不过：{j_err[:400]}"))
+            continue
+        if c_out != j_out:
+            hand_failures.append(
+                (t["id"], f"C 侧 stdout {c_out!r} ≠ JHYY 侧 {j_out!r}"))
+            continue
+        (out_dir / t["specFile"]).write_text(t["c_src"], encoding="utf-8", newline="")
+        tasks.append({
+            "id": t["id"],
+            "lang": "jhyy",
+            "pairId": t["id"],
+            "mutationId": "translate",
+            "kind": "translate",
+            "title": t["title"],
+            "rule": t.get("rule", "C → JHYY 翻译"),
+            "sourceFile": "",
+            "specFile": t["specFile"],
+            "specContent": t["c_src"],
+            "broken": "",
+            "expectStdout": j_out,
+            "actualStdout": None,
+            "breakError": "",
+            "expectExit": 0,
+        })
+    if hand_failures:
+        print("\n✗ 手写翻译题配对失败 —— 这是**题目/参考实现的 bug**，不是「跳过」：",
+              file=sys.stderr)
+        for tid, why in hand_failures:
+            print(f"    - {tid}: {why}", file=sys.stderr)
+        print("  ⇒ 修好（或删掉那道题）再生成 —— 静默跳过会让题集悄悄少一道。",
+              file=sys.stderr)
+        return 1
+
     out_json = IDE_ROOT / "eval" / "tasks-paired.json"
-    out_json.write_text(
+    tmp_json = IDE_ROOT / "eval" / "tasks-paired.json.new"
+    tmp_json.write_text(
         json.dumps({
             "version": 1,
             "builtAt": __import__("datetime").datetime.now().isoformat(),
@@ -341,14 +576,33 @@ def main():
         encoding="utf-8", newline="",
     )
 
+    # ── **一次性换上去** ────────────────────────────────────────
+    # 前面所有写入都落在暂存目录 ⇒ 只有**全部写完**了才动真目录。
+    # ⇒ 被打断（Ctrl-C / SIGPIPE / 断网）⇒ 旧语料**原封不动**。
+    final_dir = IDE_ROOT / "eval" / "tasks-paired"
+    old_dir = IDE_ROOT / "eval" / "tasks-paired.old"
+    if old_dir.exists():
+        shutil.rmtree(old_dir, ignore_errors=True)
+    if final_dir.exists():
+        os.rename(final_dir, old_dir)
+    os.rename(staging, final_dir)
+    shutil.rmtree(old_dir, ignore_errors=True)
+    os.replace(tmp_json, out_json)
+
     n_c = sum(1 for t in tasks if t["lang"] == "c")
     n_j = len(tasks) - n_c
     print(f"✓ 配对任务 {len(tasks)} 道（C {n_c} / JHYY {n_j}），{len(seeds)} 个种子")
     pairs = len({t["pairId"] for t in tasks})
     print(f"  配对组 {pairs} 组")
-    from collections import Counter
-    for k, v in sorted(Counter(t["pairId"].split("/")[0] for t in tasks).items()):
-        print(f"    {k:18} {v // 2} 对")
+    # ⚠️ **按「组数」数，不要按「题数 // 2」** —— 「翻译」那类是**只有 JHYY 侧**
+    #   （C 程序是**规格书**，不是对照组）⇒ 除以 2 会把它少算一半
+    #   （实测：11 道翻译题被显示成「5 对」）。
+    from collections import defaultdict
+    groups_by_prefix = defaultdict(set)
+    for t in tasks:
+        groups_by_prefix[t["pairId"].split("/")[0]].add(t["pairId"])
+    for k, ids in sorted(groups_by_prefix.items()):
+        print(f"    {k:18} {len(ids)} 组")
     print(f"  丢弃 {len(skipped)} 个候选")
     for s in skipped[:6]:
         print(f"    - {s.get('lang','')} {s.get('mutation','')} seed{s['seed']}: {s['reason'][:70]}")
