@@ -43,6 +43,7 @@ import { loadLoginShellEnv, mergeShellEnv } from '../../src/main/shellEnv'
 import { jhyyCheatsheet } from '../../src/main/claude/jhyy-rules'
 import { findCompiler, findLangRepo, ideRoot } from '../../tests/helpers/repo'
 import { grade } from './grader'
+import { buildPrompt } from './prompt'
 import {
   extractCodeFromAnswer,
   parseStream,
@@ -212,207 +213,7 @@ function setupWorkspace(
  *   「帮我修这个错」，边界是模糊的。⇒ `tight` 的收益**不能直接搬到真实场景**，
  *   它衡量的是「把边界说清楚能省多少轮」。
  */
-function buildPrompt(task: EvalTask, rel: string, style: string, compilerPath?: string): string {
-  // ── **「翻译」题：措辞完全不同** ───────────────────────────────
-  //
-  // ⚠️ **绝对不能把期望输出给模型** ⇒ 否则它把答案直接打印出来就过
-  //   ⇒ 这类题**只判分**（编译 + 退出码 + stdout 逐字）。
-  if (task.kind === 'translate') {
-    const spec = task.specFile ? 'main.c' : 'main.c'
-    // ── **判分口径**：必须告诉模型 ──────────────────────────────
-    //
-    // ⚠️ **不告诉它 = 模型自己看不到「我过了没有」** ⇒ 它只能靠猜。
-    //   实测（2026-11-15，三臂 24 道题的轨迹）:**每一道翻了判分脚本的题，
-    //   它的第 1 版就已经通过了** —— 它不知道自己过了 ⇒ 继续找答案：
-    //     · 看到自己输出带 `\r\n`（Windows 文本模式），而存下来的期望输出
-    //       是 LF ⇒ 怀疑判分不过 ⇒ 去翻 `bench/difftest.py` / `golden.json`
-    //       ⇒ 找到 difftest 的**参考实现** ⇒ 直接抄 ⇒ 白烧 5~9 次调用 + 10 轮。
-    //   ⇒ 这既是**浪费**，也是**测量失效**（模型靠抄参考实现过的）。
-    //
-    // ⚠️ **这两句是「环境知识」,不是「语言知识」** ⇒ 放**任务 prompt**,
-    //   **不放知识包** —— 放进知识包会把「知识包的效果」和「口径说明」混在一起,
-    //   D 臂 vs G 臂的差就分不清是哪个带来的了。
-    const judgeRule = [
-      '**判分口径（就这两样，别的都不看）**：',
-      '- `stdout` **逐字**相同（同样的行、同样的顺序、同样的数值）；',
-      '- 退出码相同（0）；',
-      '- ⚠️ **行尾会归一**：`\\r\\n` 与 `\\n` 视为相同 ⇒ 你在 Windows 上跑出来的',
-      '  输出带 `\\r\\n` **是正常的、不算不一致**。',
-    ]
-    const noPeek = [
-      '- **不要**去翻判分脚本、期望输出、编译器源码 —— 上面那两条就是全部口径，',
-      '  本题的一切都在这个工作目录里（`main.c` + 你写的 `main.jhyy`）。',
-      '  （去了只会把你带偏：**判定口径不会因为你去翻它而改变**。）',
-    ]
-    if (style === 'tight') {
-      return [
-        `工作目录里有 \`${spec}\` —— 那是**同一个程序的 C 实现**。`,
-        '',
-        `用 **JHYY** 写一个 \`${rel}\`，**行为跟它完全一致**：`,
-        '- **输出逐字相同**（同样的行、同样的顺序、同样的数值）。',
-        '- 退出码相同（0）。',
-        '',
-        `把完整代码写回 \`${rel}\`。`,
-        '',
-        '**怎么做（照这个来，别绕）**：',
-        '1. 先读 `main.c` 搞清它算什么。',
-        '2. **注意** JHYY 跟 C 的差别：没有内建 `print`（要先 `extern fn printf` 声明）、',
-        '   整数宽度要显式写、整数↔浮点不能隐式转。',
-        '3. 用 `jhyy_check` 编译检查 —— 它**一次返回全部诊断**（行:列 + 错误原文）。',
-        '4. 用 `jhyy_run` 跑一遍，跟 `main.c` 的输出**逐字比**（行尾不同不算不一致）。',
-        '5. 一致 ⇒ **收工，别再改**。',
-        '',
-        ...judgeRule,
-        '',
-        '**范围（重要）**：',
-        '- **不要**改 `main.c`。',
-        '- **不要**做额外验证（不用探测别的边界）。',
-        ...noPeek,
-      ].join('\n')
-    }
-    return [
-      `工作目录里有 \`${spec}\` —— 那是**同一个程序的 C 实现**。`,
-      '',
-      '下面是它的内容：',
-      '',
-      '```c',
-      task.specContent ?? '',
-      '```',
-      '',
-      `用 **JHYY** 写一个 \`${rel}\`，**行为跟它完全一致**：`,
-      '- **输出逐字相同**（同样的行、同样的顺序、同样的数值）。',
-      '- 退出码相同（0）。',
-      '',
-      `把完整代码写回 \`${rel}\`。`,
-      '你可以用编译器验证，改到它跟 C 版输出一致为止。',
-      '',
-      ...judgeRule,
-      '',
-      ...noPeek,
-    ].join('\n')
-  }
-
-  // ── **两种破坏方式要两种措辞** ─────────────────────────────────
-  //
-  // ⚠️ **实测踩过**：behavior-break（能编译、但输出不对）的题，prompt 写「编译不过」
-  //   ⇒ 模型**编译一次发现过了 ⇒ 认为没问题 ⇒ 交卷不改**
-  //   （实测 C 侧 wrong-format / mask-change 全是「版本数=1」= 模型根本没写文件）。
-  // ⇒ 这类题必须说清「**能编译，但输出不对**」，并把**实际输出和期望输出**都给出来。
-  const behavior = task.kind === 'behavior-break'
-  const opening = behavior
-    ? `工作目录里的 \`${rel}\` **能编译，但输出不对**。`
-    : `工作目录里的 \`${rel}\` 编译不过。`
-  const outputBlock: string[] = []
-  if (behavior && task.actualStdout !== undefined) {
-    const head = (x: string) => x.split('\n').slice(0, 4).join('\n')
-    outputBlock.push(
-      '',
-      '它现在的输出是：',
-      '```',
-      head(task.actualStdout),
-      '```',
-      '',
-      '**期望**的输出是：',
-      '```',
-      head(task.expectStdout ?? ''),
-      '```',
-    )
-  }
-
-  // ── C 对照组：题目措辞跟 JHYY 侧平行，只是语言换了 ──────────────
-  if (task.lang === 'c') {
-    if (style === 'tight') {
-      return [
-        opening + '（自己读这个文件看内容）。',
-        '',
-        behavior
-          ? '把它修好：让它**输出跟期望一致**。'
-          : '把它修好：让它能编译通过，而且输出跟原来一致。',
-        ...outputBlock,
-        `把修好的完整代码写回 \`${rel}\`。`,
-        '',
-        '**怎么做（照这个来，别绕）**：',
-        behavior
-          ? '1. 先跑一遍看现在的输出（**跟期望比**，找出不一样的地方）。'
-          : '1. 先用 Bash 跑 `gcc -O0 -o main.exe ' + rel + '` 编译 —— 它会打印**全部**错误。',
-        '2. **只改错误指出的那一处**。',
-        '3. 再跑一次确认输出跟期望一致 ⇒ 收工。',
-        '',
-        '**范围（重要）**：',
-        '- **不要**改注释。',
-        '- **不要**做额外验证（不用探测别的边界）。',
-        '- **不要**顺手修你发现的其他问题。',
-      ].join('\n')
-    }
-    return [
-      opening,
-      '',
-      '下面是它现在的内容：',
-      '',
-      '```c',
-      task.broken,
-      '```',
-      ...outputBlock,
-      '',
-      behavior
-        ? '把它修好：让它**输出跟期望一致**。'
-        : '把它修好：让它能编译通过，而且输出跟原来一致。',
-      `把修好的完整代码写回 \`${rel}\`。`,
-      '你可以用编译器验证，改到它通过为止。',
-    ].join('\n')
-  }
-
-  if (style === 'tight') {
-    const base = [
-      opening + '（自己读这个文件看内容）。',
-      '',
-      behavior
-        ? '把它修好：让它**输出跟期望一致**。'
-        : `把它修好：让它能编译通过，而且行为跟原来一致（退出码 ${task.expectExit}）。`,
-      ...outputBlock,
-      `把修好的完整代码写回 \`${rel}\`。`,
-      '',
-      '**怎么做（照这个来，别绕）**：',
-      behavior
-        ? '1. 先用 `jhyy_run` 跑一遍看现在的输出（**跟期望比**，找出不一样的地方）。'
-        : '1. 先用 `jhyy_check` 编译检查 —— 它**一次返回全部诊断**（行:列 + 错误原文）。',
-      '2. **只改指出的那一处**。',
-      '3. 再验一次确认跟期望一致 ⇒ 收工。',
-      '',
-      '**范围（重要）**：',
-      '- **不要**改注释、文档、断言。',
-      '- **不要**做额外验证（不用证明断言非空、不用探测别的边界）。',
-      '- **不要**顺手修你发现的其他问题。',
-    ]
-    if (compilerPath) {
-      base.push(
-        '',
-        `编译命令（**直接用这个，别去找**）：`,
-        '```',
-        `${compilerPath} compile ${rel} -o ${rel.replace(/\.jhyy$/, '')}.out`,
-        '```',
-      )
-    }
-    return base.join('\n')
-  }
-
-  return [
-    opening,
-    '',
-    '下面是它现在的内容：',
-    '',
-    '```jhyy',
-    task.broken,
-    '```',
-    ...outputBlock,
-    '',
-    behavior
-      ? '把它修好：让它**输出跟期望一致**。'
-      : `把它修好：让它能编译通过，而且行为跟原来一致（退出码 ${task.expectExit}）。`,
-    `把修好的完整代码写回 \`${rel}\`。`,
-    '你可以用编译器验证，改到它通过为止。',
-  ].join('\n')
-}
+// buildPrompt 已移到 ./prompt.ts（纯函数，单独成文件 ⇒ 单测不用拖上重模块）
 
 /** 跑一次 `claude -p`，收事件流。 */
 function runClaude(opts: {
@@ -566,6 +367,15 @@ async function main() {
   const retries = Number(arg('retries', '2'))
   // --prompt-style current|tight ⇒ 题目的措辞风格（归因实验用，见 buildPrompt 的注释）
   const promptStyle = arg('prompt-style', 'current') ?? 'current'
+  // --judge-rule on|off / --env-contract on|off ⇒ prompt 里的两个「环境契约」块
+  //   （A/B 用）。默认 **on** = 更好的那套；**off** = 复现旧 prompt。
+  //   ⚠️ 这两块是**环境知识**（判分口径 / 工具链在哪）⇒ 放 prompt、**不放知识包**
+  //   —— 放进知识包会把「知识包的效果」和「环境说明」混在一起。
+  const judgeRuleOn = (arg('judge-rule', 'on') ?? 'on') !== 'off'
+  const envContractOn = (arg('env-contract', 'on') ?? 'on') !== 'off'
+  console.log(
+    `Prompt 契约：判分口径=${judgeRuleOn ? '开' : '关'} 环境契约=${envContractOn ? '开' : '关'}`,
+  )
   // --allowed-tools：覆盖工具白名单（实验用）
   const allowedTools = arg('allowed-tools')
   const outDir = arg('out') ?? join(ideRoot, 'eval', 'out')
@@ -675,7 +485,10 @@ async function main() {
           attempts++
           res = await runClaude({
             exe: claude.path,
-            prompt: buildPrompt(task, rel, promptStyle, promptStyle === 'tight' ? exePath : undefined),
+            prompt: buildPrompt(task, rel, promptStyle, promptStyle === 'tight' ? exePath : undefined, {
+          judgeRule: judgeRuleOn,
+          envContract: envContractOn,
+        }),
             cwd: dir,
             arm,
             mcpConfig,
