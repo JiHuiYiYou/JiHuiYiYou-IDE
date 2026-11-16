@@ -373,8 +373,16 @@ async function main() {
   //   —— 放进知识包会把「知识包的效果」和「环境说明」混在一起。
   const judgeRuleOn = (arg('judge-rule', 'on') ?? 'on') !== 'off'
   const envContractOn = (arg('env-contract', 'on') ?? 'on') !== 'off'
+  // --hook-notice on|off ⇒ prompt 里**加一句**「写完会自动编译、诊断已回灌」
+  // ⚠️ **默认关** ⇒ 它是**独立的一个变量**（跟判分口径 / 环境契约分开）
+  //   ⇒ ⇒ 开着/关着的差值**全归这一句**。
+  // ⚠️ **为什么值得单独测**：IDE 的 system prompt 里**没有**这句话 ⇒
+  //   ⇒ 模型**不知道**写完已经被编译过 ⇒ ⇒ 它会** redundantly **自己再调
+  //   `jhyy_check` ⇒ ⇒ 「验证」那一大类里可能就有这些多余的调用。
+  const hookNoticeOn = (arg('hook-notice', 'off') ?? 'off') !== 'off'
   console.log(
-    `Prompt 契约：判分口径=${judgeRuleOn ? '开' : '关'} 环境契约=${envContractOn ? '开' : '关'}`,
+    `Prompt 契约：判分口径=${judgeRuleOn ? '开' : '关'} 环境契约=${envContractOn ? '开' : '关'} ` +
+    `hook通知=${hookNoticeOn ? '开' : '关'}`,
   )
   // --allowed-tools：覆盖工具白名单（实验用）
   const allowedTools = arg('allowed-tools')
@@ -499,6 +507,7 @@ async function main() {
             prompt: buildPrompt(task, rel, promptStyle, promptStyle === 'tight' ? exePath : undefined, {
           judgeRule: judgeRuleOn,
           envContract: envContractOn,
+          hookNotice: hookNoticeOn,
         }),
             cwd: dir,
             arm,

@@ -1285,8 +1285,9 @@ function jhyyCheatSheet(source?: string): string {
 
   lines.push(
     '',
-    '写完代码后，用 jhyy_check 工具编译检查，用 jhyy_run 工具实际跑一遍，',
-    '根据真实报错修改 —— 别靠猜。',
+    '⚠️ **写完 `.jhyy` 会自动编译**：真实诊断**已经回灌**给你了 ⇒',
+    '  **不用**自己再调 `jhyy_check`（除非你要看全部诊断的行号）。',
+    '要**看程序实际输出** ⇒ 用 `jhyy_run` 跑一遍，再按真实输出改 —— 别靠猜。',
   )
 
   return lines.join('\n')

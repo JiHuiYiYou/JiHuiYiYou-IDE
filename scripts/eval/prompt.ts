@@ -13,10 +13,17 @@ export function buildPrompt(
   rel: string,
   style: string,
   compilerPath?: string,
-  opts: { judgeRule?: boolean; envContract?: boolean } = {},
+  opts: { judgeRule?: boolean; envContract?: boolean; hookNotice?: boolean } = {},
 ): string {
   const JUDGE_RULE = opts.judgeRule !== false
   const ENV_CONTRACT = opts.envContract !== false
+  // ⚠️ **hook 通知** —— 「写完会自动编译、诊断已回灌」这句话
+  //   ⇒ **默认关**：它是**独立的一个变量**（跟判分口径 / 环境契约分开）
+  //   ⇒ ⇒ 开着/关着的差值**全归这一句**。
+  //   ⚠️ **为什么值得单独测**：IDE 的 system prompt 里**没有**这句话 ⇒
+  //   ⇒ 模型**不知道**写完已经被编译过 ⇒ ⇒ 它会** redundantly **自己去调
+  //   `jhyy_check` ⇒ ⇒ 这一句可能就是那几次「多余的验证」。
+  const HOOK_NOTICE = opts.hookNotice === true
   // ── **「翻译」题：措辞完全不同** ───────────────────────────────
   //
   // ⚠️ **绝对不能把期望输出给模型** ⇒ 否则它把答案直接打印出来就过
@@ -76,6 +83,15 @@ export function buildPrompt(
           '  **不用**去磁盘上找 jhyy.exe 或产物 exe。',
         ]
       : []
+    // ⚠️ **hook 通知**（独立变量，默认关）—— 「写完会自动编译、诊断已回灌」
+    //   ⇒ 模型**不知道**的话 ⇒ 会** redundantly **自己再调 `jhyy_check`
+    //   ⇒ ⇒ 这一句就可能是那几次「多余的验证」。
+    const hookNotice = HOOK_NOTICE
+      ? [
+          '- **写完 `main.jhyy` 会自动编译**：诊断**已经回灌**给你了 ⇒',
+          '  **不用**自己再调 `jhyy_check`（除非你要看全部诊断的行号）。',
+        ]
+      : []
     if (style === 'tight') {
       return [
         `工作目录里有 \`${spec}\` —— 那是**同一个程序的 C 实现**。`,
@@ -97,6 +113,7 @@ export function buildPrompt(
         ...judgeRule,
         '',
         ...envContract,
+        ...hookNotice,
         '',
         '**范围（重要）**：',
         '- **不要**改 `main.c`。',
@@ -123,6 +140,7 @@ export function buildPrompt(
       ...judgeRule,
       '',
       ...envContract,
+      ...hookNotice,
       '',
       ...noPeek,
     ].join('\n')
