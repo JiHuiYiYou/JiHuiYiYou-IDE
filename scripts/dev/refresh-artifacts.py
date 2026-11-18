@@ -56,7 +56,7 @@ ROOT = Path(__file__).resolve().parents[2]
 LOCK_REL = "eval/corpus-lock.json"
 
 # 产物（进仓，但都是从语料算出来的）
-ARTIFACT_FILES = ["eval/tasks.json", "eval/tasks-paired.json"]
+ARTIFACT_FILES = ["eval/tasks.json", "eval/tasks-paired.json", "eval/tasks-quiz.json"]
 ARTIFACT_DIRS = ["eval/tasks-paired"]
 
 # 本仓里**决定产物内容**的生成器（改了就可能改产物）
@@ -65,6 +65,7 @@ GENERATORS = [
     "scripts/eval/tasks.ts",
     "scripts/eval/mutations.ts",
     "scripts/eval/gen-paired-tasks.py",
+    "scripts/eval/gen-quiz-tasks.py",
     "tests/helpers/repo.ts",
 ]
 

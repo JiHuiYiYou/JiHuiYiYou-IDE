@@ -27,6 +27,7 @@
     "smoke:pty": "electron-vite build && electron scripts/pty-host-smoke.cjs",
     "eval:analyze": "vite-node scripts/eval/analyze-turns.ts",
     "eval:tasks:paired": "python scripts/eval/gen-paired-tasks.py",
+    "eval:tasks:quiz": "python scripts/eval/gen-quiz-tasks.py",
     "eval:compare-langs": "vite-node scripts/eval/compare-langs.ts"
   },
   "dependencies": {

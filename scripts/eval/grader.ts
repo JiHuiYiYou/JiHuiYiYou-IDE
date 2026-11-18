@@ -228,3 +228,79 @@ export async function grade(input: GradeInput): Promise<Grade> {
     errors: [],
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// **「推理题」判分** —— 读代码说结果 ⇒ 比对**答案文本**
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * 推理题的答案**归一化**：去代码块围栏 ⇒ 逐行 trim ⇒ 丢空行。
+ *
+ * ⚠️ 为什么不能直接 `trim()` 比字符串：模型很爱写
+ * 「输出是：\n```\n5\n```」⇒ ⇒ 内容对、格式不一样 ⇒ 直接比会**误判**。
+ */
+function normAnswer(x: string): string[] {
+  return x
+    .replace(/```[\s\S]*?```/g, '\n')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+}
+
+/** 答案里有没有**连续**包含 expected 那一组行。 */
+function containsBlock(lines: string[], block: string[]): boolean {
+  if (block.length === 0) return false
+  outer: for (let i = 0; i + block.length <= lines.length; i++) {
+    for (let j = 0; j < block.length; j++) {
+      if (lines[i + j] !== block[j]) continue outer
+    }
+    return true
+  }
+  return false
+}
+
+/**
+ * 判一道推理题。
+ *
+ * ⚠️ **三级判定**（从严到宽）—— 因为「答对」和「格式对」是两件事：
+ * 1. **逐行完全一致**（模型照要求只写了那个值）
+ * 2. 期望那一行**连续**出现在答案里（模型前面写了句解释）
+ * 3. **只比数字**（顺序一致）—— 模型写「返回值是 5」也算对
+ *
+ * ⚠️ 第 3 级**只对数字答案**开 ⇒ 答案里混着别的数字时会挂（宁可严不可松）。
+ */
+export function gradeQuiz(task: EvalTask, answer: string): Grade {
+  const expected = normAnswer(task.expectStdout ?? '')
+  const got = normAnswer(answer ?? '')
+  const base = {
+    compiled: true,
+    exitOk: true,
+    stdoutOk: false,
+    actualStdout: got.join('\n'),
+    errors: [],
+  }
+  if (expected.length === 0) {
+    return { ...base, passed: false, reason: '题目没有期望值' }
+  }
+  // ① 逐行完全一致
+  if (got.length === expected.length && got.every((l, i) => l === expected[i])) {
+    return { ...base, stdoutOk: true, passed: true, reason: '逐行一致' }
+  }
+  // ② 期望那一行连续出现
+  if (containsBlock(got, expected)) {
+    return { ...base, stdoutOk: true, passed: true, reason: '包含期望值' }
+  }
+  // ③ 只比数字（顺序一致）
+  const ne = expected.join(' ').match(/-?\d+/g) ?? []
+  const ng = got.join(' ').match(/-?\d+/g) ?? []
+  if (ne.length > 0 && ng.length === ne.length && ng.every((x, i) => x === ne[i])) {
+    return { ...base, stdoutOk: true, passed: true, reason: '数字一致' }
+  }
+  return {
+    ...base,
+    passed: false,
+    reason:
+      `答案不对：期望 ${JSON.stringify(expected.join(' '))}，` +
+      `实际 ${JSON.stringify(got.join(' ').slice(0, 120))}`,
+  }
+}

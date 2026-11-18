@@ -42,7 +42,7 @@ import { buildHookSettings } from '../../src/main/claude/hooks'
 import { loadLoginShellEnv, mergeShellEnv } from '../../src/main/shellEnv'
 import { jhyyCheatsheet } from '../../src/main/claude/jhyy-rules'
 import { findCompiler, findLangRepo, ideRoot } from '../../tests/helpers/repo'
-import { grade } from './grader'
+import { grade, gradeQuiz } from './grader'
 import { buildPrompt } from './prompt'
 import {
   extractCodeFromAnswer,
@@ -62,6 +62,25 @@ function arg(name: string, fallback?: string): string | undefined {
   if (i < 0) return fallback
   const next = process.argv[i + 1]
   return next && !next.startsWith('--') ? next : fallback
+}
+
+/**
+ * **无值开关**（`--with-hook` / `--no-mcp` 这类）该怎么读。
+ *
+ * ⚠️⚠️ **踩过的坑（2026-11-18 实测发现）**：`arg('--with-hook')` 要求
+ * 「下一个 argv **不是** `--` 开头」⇒ ⇒ 而 `--with-hook` 后面**通常**就是
+ * 下一个选项（`--out` / `--repeat` …）⇒ ⇒ **`arg()` 永远读不到它**
+ * ⇒ ⇒ **开关一直是关的** ⇒ ⇒ 而 harness **照样往下跑**、**照样出数**
+ * ⇒ ⇒ **量了十几轮才发现：拿「同一配置」当两臂在比**（§ 8.7 / § 8.19）。
+ *
+ * ⇒ ⇒ 无值开关**一律用这个函数**读：出现就是开（除非后面明写 `off`）。
+ */
+function flagEnabled(name: string, fallback = false): boolean {
+  const i = process.argv.indexOf(`--${name}`)
+  if (i < 0) return fallback
+  const next = process.argv[i + 1]
+  if (next === 'off' || next === 'false') return false
+  return true
 }
 
 /** 一个实验臂 = 一组配置。 */
@@ -382,7 +401,9 @@ async function main() {
   const hookNoticeOn = (arg('hook-notice', 'off') ?? 'off') !== 'off'
   console.log(
     `Prompt 契约：判分口径=${judgeRuleOn ? '开' : '关'} 环境契约=${envContractOn ? '开' : '关'} ` +
-    `hook通知=${hookNoticeOn ? '开' : '关'}`,
+    `hook通知=${hookNoticeOn ? '开' : '关'} ` +
+    `hook=${flagEnabled('with-hook') ? '开' : '关'} ` +
+    `mcp=${flagEnabled('no-mcp') ? '不挂' : '挂'}`,
   )
   // --allowed-tools：覆盖工具白名单（实验用）
   const allowedTools = arg('allowed-tools')
@@ -393,7 +414,13 @@ async function main() {
   const tasksFile = join(
     ideRoot,
     'eval',
-    lang === 'c' ? 'tasks-c.json' : lang === 'paired' ? 'tasks-paired.json' : 'tasks.json',
+    lang === 'c'
+      ? 'tasks-c.json'
+      : lang === 'paired'
+        ? 'tasks-paired.json'
+        : lang === 'quiz'
+          ? 'tasks-quiz.json'
+          : 'tasks.json',
   )
   const cTaskDir = join(ideRoot, 'eval', lang === 'paired' ? 'tasks-paired' : 'tasks-c')
   if (!existsSync(tasksFile)) {
@@ -462,11 +489,15 @@ async function main() {
     console.log('⚠ 导登录 shell env 失败 ⇒ 用继承来的（hook 可能会撞上假链接错误）')
   }
 
-  const mcpConfig = arm.useMcp ? await buildMcpConfig() : null
+  // --no-mcp ⇒ **不挂 MCP** ⇒ 推理题那一类没有 jhyy_check / jhyy_run
+  // ⇒ ⇒ **反馈回路从工具层断掉** ⇒ ⇒ 模型只能靠推理（否则它会直接跑一遍）
+  const noMcp = flagEnabled('no-mcp')
+  const mcpConfig = arm.useMcp && !noMcp ? await buildMcpConfig() : null
+  if (noMcp) console.log('⚠ --no-mcp ⇒ **不挂 MCP**（推理题要断掉反馈回路）')
   // --with-hook ⇒ 装 PostToolUse 钩子（模型写完 .jhyy ⇒ 自动编译 ⇒ 诊断回灌）
   // ⚠️ **这正是 IDE 里已经在做的事** —— 评测装上它 ⇒ 量的是「hook 值多少轮」
   let hookSettings: string | undefined
-  if (arg('with-hook')) {
+  if (flagEnabled('with-hook')) {
     const hookScript = resolve(ideRoot, 'scripts', 'jhyy-check-hook.mjs')
     if (existsSync(hookScript)) {
       hookSettings = buildHookSettings({ compilerPath: exePath, scriptPath: hookScript })
@@ -552,6 +583,15 @@ async function main() {
         const grades: RunRecord['grades'] = []
         let firstPass = false
         let finalPass = false
+        // ⚠️ **「推理题」判的是「答案文本」，不是文件** ——
+        //   模型**不写代码**，只回答「这个函数返回什么」⇒
+        //   ⇒ 没有文件可编译 ⇒ ⇒ 拿 `res.answer` 去比。
+        if (task.kind === 'quiz') {
+          const g = gradeQuiz(task, res.answer ?? '')
+          grades.push({ passed: g.passed, reason: g.reason })
+          firstPass = g.passed
+          finalPass = g.passed
+        } else
         for (let i = 0; i < versions.length; i++) {
           const isLast = i === versions.length - 1
           writeFileSync(targetAbs, versions[i], 'utf8')
