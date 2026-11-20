@@ -64,6 +64,14 @@ export function jhyyCheatsheet(): string {
  * IDE 本来就依赖语言仓（找 `mcp-jhyy/server.py`、找编译器），这条依赖不新增。
  */
 export function knowledgePackPath(): string | null {
+  // ⓪ **打进安装包的那份**（`extraResources` ⇒ 落在 `resources/` 下）
+  //    ⇒ **装出来的 IDE**（用户机器上没有语言仓）**只能靠这一条**才有知识包
+  //    ⇒ 不然就退回 12 行速查表 ⇒ ⇒ 前面所有提示词工作对用户等于零。
+  //    ⚠️ **开发态下这个文件不在**（拷贝目标是 `build-resources/`，不是
+  //    `resources/`；Electron 的 `resourcesPath` 指向 Electron 自己的安装目录）
+  //    ⇒ ⇒ 开发态自然落到下面那几条 ⇒ 用的永远是**语言仓里刚生成的那份**。
+  const bundled = bundledResource('jhyy-knowledge.md')
+  if (bundled) return bundled
   // 候选根目录 —— 挨个试，谁先命中用谁。
   const roots = [
     // ① **按模块自身位置**（最可靠）：本文件在 `<IDE仓>/src/main/claude/` ⇒
@@ -83,6 +91,19 @@ export function knowledgePackPath(): string | null {
 }
 
 /**
+ * **打进安装包**的那份资源（`extraResources` ⇒ `<app>/resources/`）。
+ *
+ * ⚠️ `process.resourcesPath` 是 **Electron 专有**属性 ⇒ 普通 Node（评测 harness）
+ *   上是 `undefined` ⇒ 这里判一下 ⇒ ⇒ 评测读的还是语言仓那份 ✓（同一个文件）。
+ */
+function bundledResource(name: string): string | null {
+  const rp = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath
+  if (!rp) return null
+  const candidate = join(rp, name)
+  return existsSync(candidate) ? candidate : null
+}
+
+/**
  * 「报错 → 修法」表在语言仓里的位置 —— 找不到返回 `null`。
  *
  * ⚠️ **跟知识包同一个套路**：真相在语言仓（`scripts/gen-knowledge.py` 导出），
@@ -93,6 +114,11 @@ export function knowledgePackPath(): string | null {
  *   会让模型「照诊断改」而不是「去查规范」⇒ 反而掉正确率）。
  */
 export function errorFixPath(): string | null {
+  // ⓪ **打进安装包的那份** —— 同 `knowledgePackPath()` 的道理：
+  //    用户机器上没有语言仓 ⇒ 只有这一条才有「报错 → 怎么改」表
+  //    ⇒ 没有它 ⇒ hook 只说「哪里错」，模型得自己再查一次工具。
+  const bundled = bundledResource('jhyy-error-fix.json')
+  if (bundled) return bundled
   const roots = [
     resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..', 'JiHuiYiYou'),
     resolve(process.cwd(), '..', 'JiHuiYiYou'),

@@ -14,7 +14,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "conformance": "vitest run tests/conformance",
-    "dist": "electron-vite build && electron-builder --win nsis --publish never",
+    "dist": "node scripts/dev/sync-knowledge-pack.mjs && electron-vite build && electron-builder --win nsis --publish never",
     "gen:spec": "node scripts/gen-spec-index.mjs",
     "eval:tasks": "vite-node scripts/eval/build-tasks.ts",
     "eval": "vite-node scripts/eval/run-eval.ts",
@@ -81,6 +81,14 @@
       {
         "from": "scripts/jhyy-check-hook.mjs",
         "to": "jhyy-check-hook.mjs"
+      },
+      {
+        "from": "build-resources/jhyy-knowledge.md",
+        "to": "jhyy-knowledge.md"
+      },
+      {
+        "from": "build-resources/jhyy-error-fix.json",
+        "to": "jhyy-error-fix.json"
       }
     ]
   }

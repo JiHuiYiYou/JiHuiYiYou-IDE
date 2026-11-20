@@ -152,6 +152,18 @@ jobs:
           fi
           exit "$rc"
 
+      - name: 知识包**拿得到**（打包时要拷进安装包）
+        working-directory: JiHuiYiYou-IDE
+        run: |
+          # gate: knowledge-pack-sync
+          # ⚠️ **为什么要有这道门**：知识包是 IDE 聊天功能的**常驻知识**，
+          #   它长在语言仓、IDE **跨仓读** ⇒ ⇒ **装出来的 IDE 没有它**
+          #   ⇒ ⇒ 用户的 IDE 只有 12 行速查表 ⇒ ⇒ **所有提示词工作对用户归零**
+          #   ⇒ ⇒ 而**没人会发现**（IDE 照常启动、照常有聊天）。
+          # ⇒ ⇒ 打包前必须能把它拷出来 ⇒ ⇒ 这道门红 = **别发布**。
+          # ⚠️ **不许静默跳过** —— 脚本自己会喊「找不到语言仓」并退出非 0。
+          node scripts/dev/sync-knowledge-pack.mjs
+
   conformance:
     name: 全量一致性门（编译 + 运行）
     runs-on: windows-latest

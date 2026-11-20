@@ -68,6 +68,12 @@ jobs:
         with:
           path: JiHuiYiYou-IDE
 
+      - name: Checkout 编译器仓库（**知识包就在它那儿**）
+        uses: actions/checkout@v4
+        with:
+          repository: JiHuiYiYou/JiHuiYiYou-compiler
+          path: JiHuiYiYou
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
