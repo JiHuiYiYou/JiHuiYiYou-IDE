@@ -39,6 +39,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from quiz_bank import BREADTH  # noqa: E402  —— 同目录的题库模块
+
 IDE_ROOT = Path(__file__).resolve().parents[2]
 LANG_REPO = IDE_ROOT.parent / "JiHuiYiYou"
 JHY = os.environ.get(
@@ -305,10 +308,15 @@ def main():
 
     tasks = []
     failures = []
-    for i, q in enumerate(QUIZ):
+    # ⚠️ **广度批**在另一个文件（`quiz_bank.py`）⇒ 两批分开放 ⇒ 目的不同
+    all_q = QUIZ + BREADTH
+    for i, q in enumerate(all_q):
         # 生成器把函数包进 main ⇒ **真跑一遍** ⇒ 期望值由编译器给
+        imports = "".join(l + "\n" for l in q.get("imports", []))
         src = (
-            HELPER
+            imports
+            + HELPER
+            + q.get("extra", "")
             + q["code"]
             + "\nfn main_jhyy() -> i32 {\n    print_i64(f());\n    return 0;\n}\n"
         )
@@ -316,9 +324,10 @@ def main():
         if not ok:
             failures.append((q["id"], "编译不过：" + err[-300:]))
             continue
-        lines = [ln for ln in out.replace("\r\n", "\n").split("\n") if ln.strip()]
-        if len(lines) != 1:
-            failures.append((q["id"], f"输出不是恰好一行：{out!r}"))
+        # ⚠️ **允许多行** —— 有些题（defer 的顺序、打印）**就是要多行**
+        lines = [ln for ln in out.replace("\r\n", "\n").split("\n") if ln.strip() != ""]
+        if len(lines) == 0:
+            failures.append((q["id"], f"输出是空的：{out!r}"))
             continue
         tasks.append({
             "id": q["id"],
@@ -334,7 +343,7 @@ def main():
             "broken": "",
             "quizCode": q["code"],
             "helperCode": HELPER,
-            "expectStdout": lines[0],
+            "expectStdout": "\n".join(lines),
             "actualStdout": None,
             "breakError": "",
             "expectExit": 0,
