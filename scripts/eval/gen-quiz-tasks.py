@@ -372,6 +372,11 @@ def main():
             "specContent": "",
             "broken": "",
             "quizCode": q["code"],
+            # ⚠️ **顶层声明也要给模型看** —— 2026-11-20 实测踩到的：
+            #   有些题靠**顶层的 `const` / `let`**才有意义（`EARR[1]`、`G`）
+            #   ⇒ 题面里只给函数 ⇒ 模型看到的是**一个没定义过的变量**
+            #   ⇒ ⇒ 题目本身**不成立**（模型答「未定义」反而是对的！）
+            "quizPreCode": q.get("extra", ""),
             "helperCode": HELPER,
             "quizAnswerKind": answer_kind,
             "expectStdout": "\n".join(answer),

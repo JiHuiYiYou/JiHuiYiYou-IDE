@@ -46,7 +46,9 @@ export function buildPrompt(
         : '下面这个 JHYY 函数，**返回**什么？',
       '',
       '```jhyy',
-      task.quizCode ?? '',
+      // ⚠️ **顶层声明要先给** —— 否则模型看到的是「一个没定义过的变量」
+      //   （`EARR` / `G`）⇒ ⇒ 题目不成立 ⇒ 模型答「未定义」反而是对的。
+      (task.quizPreCode ?? '') + (task.quizCode ?? ''),
       '```',
       '',
       isPrint
