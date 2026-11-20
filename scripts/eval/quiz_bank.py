@@ -350,8 +350,8 @@ fn f() -> i64 {
     },
     {
         "id": "quiz/u16-narrow",
-        "title": "u16 窄化",
-        "rule": "`as` 到更窄的类型 ⇒ 截断",
+        "title": "u16 窄化（**不截断**）",
+        "rule": "窄化 `as` **不截断**（局部变量按 32 位算）—— 已知缺陷 W-235",
         "code": """fn f() -> i64 {
     let x: u32 = 70000u32;
     let y: u16 = x as u16;
@@ -360,8 +360,8 @@ fn f() -> i64 {
     },
     {
         "id": "quiz/i8-sign",
-        "title": "i8 的符号",
-        "rule": "有符号窄化 ⇒ 保留符号位",
+        "title": "i8 的符号（**不截断**）",
+        "rule": "窄化 `as` **不截断**（局部变量按 32 位算）—— 已知缺陷 W-235",
         "code": """fn f() -> i64 {
     let x: i32 = 200;
     let y: i8 = x as i8;
@@ -1212,8 +1212,8 @@ fn f() -> i64 {
     },
     {
         "id": "quiz/u8-add-wrap",
-        "title": "u8 加法回绕",
-        "rule": "整数溢出是回绕",
+        "title": "u8 加法（**不回绕**）",
+        "rule": "窄类型的**局部变量**按 32 位算 ⇒ 不回绕（已知缺陷 W-235）",
         "code": """fn f() -> i64 {
     let a: u8 = 250u8;
     let b: u8 = a + 10u8;
@@ -1222,8 +1222,8 @@ fn f() -> i64 {
     },
     {
         "id": "quiz/i8-add-wrap",
-        "title": "i8 加法回绕",
-        "rule": "整数溢出是回绕",
+        "title": "i8 加法（**不回绕**）",
+        "rule": "窄类型的**局部变量**按 32 位算 ⇒ 不回绕（已知缺陷 W-235）",
         "code": """fn f() -> i64 {
     let a: i8 = 120i8;
     let b: i8 = a + 10i8;
@@ -1446,14 +1446,14 @@ fn f() -> i64 {
     },
     {
         "id": "quiz/stdlib-strlen-local",
-        "title": "`strlen_local`",
-        "rule": "string 模块的 API",
+        "title": "`str_len`（字符串头 @8）",
+        "rule": "`str_from_cstr` 返回的是**头**（不是数据）⇒ 长度用 `str_len`",
         "code": """fn f() -> i64 {
     let mut abuf: [i64; 5] = [0i64, 0i64, 0i64, 0i64, 0i64];
     let a: *u8 = abuf as *u8;
     arena_init(a, 4096 as i64);
     let s: *u8 = str_from_cstr(a, "hello" as *u8);
-    return strlen_local(s) as i64;
+    return str_len(s) as i64;
 }""",
         "imports": ["import arena;", "import string;"],
     },

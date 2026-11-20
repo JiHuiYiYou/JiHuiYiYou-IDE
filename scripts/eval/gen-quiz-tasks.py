@@ -49,6 +49,17 @@ JHY = os.environ.get(
 )
 TIMEOUT = 60
 
+# ── **哨兵** ─────────────────────────────────────────────────────
+# ⚠️ **为什么要有**：有些题（defer 的顺序、打印）**函数自己会打印东西**
+#   ⇒ 那道题的答案是「**它打印了什么**」⇒ ⇒ 可 wrapper 一律
+#   `print_i64(f())` ⇒ 期望值里会**多出最后一行**（返回值）
+#   ⇒ ⇒ 模型答「打印了什么」就**永远对不了**（实测 4 道题两个臂都错，
+#   错的是**题**、不是模型）⇒ ⇒ 用哨兵把两段**分开**：
+#     哨兵**之前** = 函数自己的输出 ⇒ 那就是答案
+#     哨兵**之后** = 返回值 ⇒ 只在函数**不打印**时才是答案
+SENTINEL = "-987654321"
+SENTINEL_STR = "-987654321"
+
 # ── 每题都自带的打印辅助（**题目里不再重复**）────────────────────
 HELPER = '''import fmt;
 import io;
@@ -318,9 +329,16 @@ def main():
             + HELPER
             + q.get("extra", "")
             + q["code"]
-            + "\nfn main_jhyy() -> i32 {\n    print_i64(f());\n    return 0;\n}\n"
+            + "\nfn main_jhyy() -> i32 {\n"
+              "    let r: i64 = f();\n"
+              "    print_i64(" + SENTINEL + "i64);\n"
+              "    print_i64(r);\n"
+              "    return 0;\n}\n"
         )
         ok, out, err = compile_and_run(src, "q%d" % i)
+        # ⚠️ **进度** —— 150 道题要跑十几分钟 ⇒ 不打印就看不出是在跑还是在挂
+        if (i + 1) % 10 == 0 or i + 1 == len(all_q):
+            print("  … %d/%d" % (i + 1, len(all_q)), flush=True)
         if not ok:
             failures.append((q["id"], "编译不过：" + err[-300:]))
             continue
@@ -329,6 +347,18 @@ def main():
         if len(lines) == 0:
             failures.append((q["id"], f"输出是空的：{out!r}"))
             continue
+        # ⚠️ **哨兵分段** —— 见上面 SENTINEL 的说明
+        if SENTINEL_STR not in lines:
+            failures.append((q["id"], f"没找到哨兵（wrapper 坏了）：{out!r}"))
+            continue
+        k = lines.index(SENTINEL_STR)
+        own = lines[:k]          # 函数**自己**打印的
+        ret = lines[k + 1:]      # 返回值
+        answer = own if own else ret
+        if not answer:
+            failures.append((q["id"], f"答案段是空的：{out!r}"))
+            continue
+        answer_kind = "print" if own else "return"
         tasks.append({
             "id": q["id"],
             "lang": "jhyy",
@@ -343,7 +373,8 @@ def main():
             "broken": "",
             "quizCode": q["code"],
             "helperCode": HELPER,
-            "expectStdout": "\n".join(lines),
+            "quizAnswerKind": answer_kind,
+            "expectStdout": "\n".join(answer),
             "actualStdout": None,
             "breakError": "",
             "expectExit": 0,

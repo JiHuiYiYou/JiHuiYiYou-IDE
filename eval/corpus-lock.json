@@ -1,23 +1,24 @@
 {
   "version": 1,
-  "builtAt": "2026-11-20T09:26:55.650934",
+  "builtAt": "2026-11-20T11:36:24.658812",
   "note": "语料锁 —— 改了语料或生成器就要重刷任务集（npm run eval:tasks && npm run eval:tasks:paired）",
-  "corpusSha256": "7dc90bc0d3ba542f",
+  "corpusSha256": "e0fe2f97c74f3279",
   "groups": {
     "lang/bench/difftest.py": "a6bb799df4e173f8",
     "lang/bench/seeds/ci.txt": "b55f43a436c2284c",
     "lang/compiler/tests/examples": "d3080daa8f3cda5f",
     "ide/scripts/eval/build-tasks.ts": "62456c047fc0e653",
-    "ide/scripts/eval/tasks.ts": "157cce8682327916",
+    "ide/scripts/eval/tasks.ts": "4b0f515f33d04332",
     "ide/scripts/eval/mutations.ts": "1bc1df0bc0156807",
     "ide/scripts/eval/gen-paired-tasks.py": "a3f650d9017b73c9",
-    "ide/scripts/eval/gen-quiz-tasks.py": "5bc64a1c477bc4bf",
+    "ide/scripts/eval/gen-quiz-tasks.py": "833dc2dbd0c9631d",
+    "ide/scripts/eval/quiz_bank.py": "e6460e6c507867ab",
     "ide/tests/helpers/repo.ts": "812d9f538ca81855"
   },
   "artifacts": {
     "eval/tasks.json": "8c952d4b36d97052",
     "eval/tasks-paired.json": "c6ae58649b3b504e",
-    "eval/tasks-quiz.json": "e78c722fa8a2ec9c",
+    "eval/tasks-quiz.json": "521db755a51e1e93",
     "eval/tasks-paired/": "2323135ae59d3859"
   }
 }

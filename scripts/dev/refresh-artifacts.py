@@ -66,8 +66,31 @@ GENERATORS = [
     "scripts/eval/mutations.ts",
     "scripts/eval/gen-paired-tasks.py",
     "scripts/eval/gen-quiz-tasks.py",
+    "scripts/eval/quiz_bank.py",
     "tests/helpers/repo.ts",
 ]
+
+# ⚠️ **哪个生成器决定哪个产物** —— 分开是为了**别白跑**：
+#   推理题集要**真编译 150 道题**（十几分钟）⇒ 改了别的生成器也去重刷它
+#   ⇒ ⇒ 提交被拖死 ⇒ ⇒ 最后就没人提交了。
+# ⚠️ **`quiz_bank.py` 才是题目的真正来源**（`gen-quiz-tasks.py` 只是壳）
+#   ⇒ 它**不在** GENERATORS 里 ⇒ 改了题库、锁纹丝不动 ⇒ 门永远绿
+#   ⇒ ⇒ **推理题集可以悄悄过期** ⇒ ⇒ 补上。
+TASKS_GENERATORS = [
+    "scripts/eval/build-tasks.ts",
+    "scripts/eval/tasks.ts",
+    "scripts/eval/mutations.ts",
+    "tests/helpers/repo.ts",
+]
+PAIRED_GENERATORS = [
+    "scripts/eval/gen-paired-tasks.py",
+]
+QUIZ_GENERATORS = [
+    "scripts/eval/gen-quiz-tasks.py",
+    "scripts/eval/quiz_bank.py",
+]
+# 语言仓的**语料**（只影响 tasks / paired ⇒ **不影响**推理题集）
+CORPUS_GROUP_PREFIXES = ("lang/",)
 
 # 语言仓里**决定产物内容**的语料（相对语言仓根）
 LANG_FILES = [
@@ -217,6 +240,42 @@ def artifact_hashes() -> dict[str, str]:
     return out
 
 
+# ── **哪个产物该重刷** ─────────────────────────────────────────────
+
+def _changed_groups(lock: dict) -> list[str]:
+    """锁里记的组 vs 现在算的组 ⇒ 变了哪些。"""
+    groups, _missing = corpus_groups()
+    old = lock.get("groups") or {}
+    return [k for k in sorted(set(old) | set(groups)) if old.get(k) != groups.get(k)]
+
+
+def needs_refresh(artifact: str, generators: list[str],
+                  with_corpus: bool = False) -> tuple[bool, list[str]]:
+    """⇒ (该不该重刷这个产物, 原因)
+
+    ⚠️ **两个条件都会让「该刷」成立**：
+    - **生成器变了**（题库改了 / 语料改了）
+    - **产物自己的哈希跟锁里对不上**（产物被手改过 / 没跟着重刷）
+    """
+    lock = read_lock()
+    if lock is None:
+        return True, ["没有锁文件"]
+    reasons: list[str] = []
+    changed = _changed_groups(lock)
+    mine = ["ide/" + g for g in generators]
+    if with_corpus:
+        mine += [k for k in changed if k.startswith(CORPUS_GROUP_PREFIXES)]
+    for k in mine:
+        if k in changed:
+            reasons.append("生成器/语料变了：`%s`" % k)
+    old_art = (lock.get("artifacts") or {}).get(artifact)
+    new_art = artifact_hashes().get(artifact)
+    if old_art != new_art:
+        reasons.append("产物哈希对不上（锁 `%s` vs 现在 `%s`）"
+                       % (old_art, new_art))
+    return (bool(reasons), reasons)
+
+
 # ── 锁 ──────────────────────────────────────────────────────────────
 
 def read_lock() -> dict | None:
@@ -350,6 +409,12 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--should-refresh", action="store_true",
                     help="只判断：该刷吗？（退出码 0 = 该刷）")
+    ap.add_argument("--should-refresh-tasks", action="store_true",
+                    help="只判断 `eval/tasks.json` 该不该刷")
+    ap.add_argument("--should-refresh-paired", action="store_true",
+                    help="只判断 `eval/tasks-paired.json` 该不该刷")
+    ap.add_argument("--should-refresh-quiz", action="store_true",
+                    help="只判断 `eval/tasks-quiz.json` 该不该刷")
     ap.add_argument("--write-lock", action="store_true", help="把当前的指纹写进锁")
     ap.add_argument("--stage", action="store_true", help="把产物 + 锁 git add 进去")
     ap.add_argument("--check", action="store_true", help="只查不改（CI 那道门）")
@@ -371,6 +436,28 @@ def main() -> int:
         if not ok:
             print("[refresh-artifacts] 评测任务集过期了 ⇒ 要重刷")
         return 0 if not ok else 1
+
+    # ⚠️ **按产物分开判** —— 推理题集要真编译 150 道题（十几分钟）
+    #   ⇒ 改了别的生成器也去重刷它 ⇒ ⇒ 提交被拖死 ⇒ ⇒ 最后就没人提交了。
+    if args.should_refresh_tasks:
+        need, why = needs_refresh("eval/tasks.json", TASKS_GENERATORS,
+                                  with_corpus=True)
+        if need:
+            print("[refresh-artifacts] `eval/tasks.json` 该刷：" + "；".join(why))
+        return 0 if need else 1
+
+    if args.should_refresh_paired:
+        need, why = needs_refresh("eval/tasks-paired.json", PAIRED_GENERATORS,
+                                  with_corpus=True)
+        if need:
+            print("[refresh-artifacts] `eval/tasks-paired.json` 该刷：" + "；".join(why))
+        return 0 if need else 1
+
+    if args.should_refresh_quiz:
+        need, why = needs_refresh("eval/tasks-quiz.json", QUIZ_GENERATORS)
+        if need:
+            print("[refresh-artifacts] `eval/tasks-quiz.json` 该刷：" + "；".join(why))
+        return 0 if need else 1
 
     if args.check:
         report(ok, lines)

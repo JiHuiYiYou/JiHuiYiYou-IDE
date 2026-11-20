@@ -88,7 +88,8 @@
 
 - 知识包 + IDE 当前状态 → 写临时文件 → `--append-system-prompt-file`。
 - ⚠️ **不能用 `--append-system-prompt` 内联传知识包**：Windows 整条命令行有
-  **32767 字符**上限，知识包（中文 ~13.5k 字符）再加工具参数就贴上限了。
+  **32767 字符**上限，知识包（**几万字符的中文文档**）再加工具参数就贴上限了
+  ⇒ ⇒ 走文件通道 ⇒ 长度不受命令行限制（包的实际大小见语言仓 FACTS.md）。
 - ⚠️ `--append-system-prompt-file` 是**隐藏 flag**（`--help` 里没列）。
   实测本机 claude 2.1.302 支持，且与 `--append-system-prompt` **可共存**
   （两个通道的内容都进模型上下文）。

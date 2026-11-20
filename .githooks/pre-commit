@@ -41,10 +41,28 @@ if [ -z "$PY" ]; then
 fi
 
 # 退出码 0 = 该刷；1 = 不用刷
-if "$PY" scripts/dev/refresh-artifacts.py --should-refresh; then
-    echo "[pre-commit] 评测任务集过期了 ⇒ 重刷（真跑编译器 ⇒ 要几分钟）……"
+#
+# ⚠️ **按产物分开判**（2026-11-20 修的洞）：
+#   原来只有一个「全刷」判断 ⇒ 但**推理题集**要真编译 150 道题（十几分钟）
+#   ⇒ 改了别的生成器也去重刷它 ⇒ ⇒ 提交被拖死 ⇒ ⇒ 最后就没人提交了。
+#   ⇒ ⇒ 拆成三个：**各刷各的**（哪个产物脏了才刷哪个）。
+need=0
+if "$PY" scripts/dev/refresh-artifacts.py --should-refresh-tasks; then
+    echo "[pre-commit] 破坏题任务集过期了 ⇒ 重刷（真跑编译器 ⇒ 要几分钟）……"
     npm run eval:tasks
+    need=1
+fi
+if "$PY" scripts/dev/refresh-artifacts.py --should-refresh-paired; then
+    echo "[pre-commit] 配对/翻译题任务集过期了 ⇒ 重刷……"
     npm run eval:tasks:paired
+    need=1
+fi
+if "$PY" scripts/dev/refresh-artifacts.py --should-refresh-quiz; then
+    echo "[pre-commit] 推理题任务集过期了 ⇒ 重刷（150 道题要真编译 ⇒ 要十几分钟）……"
+    npm run eval:tasks:quiz
+    need=1
+fi
+if [ "$need" = 1 ]; then
     # 记账：把「生成时的语料指纹 + 产物哈希」写进锁 ⇒ CI 那道门才有得比
     "$PY" scripts/dev/refresh-artifacts.py --write-lock
     "$PY" scripts/dev/refresh-artifacts.py --stage
