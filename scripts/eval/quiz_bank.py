@@ -1528,7 +1528,7 @@ fn f() -> i64 {
                               0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
                               0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
     let p: *u8 = &buf[0];
-    let n: i64 = fmt_hex_u32(p, 255u32);
+    let n: i64 = fmt_hex_u32(p, 255u32, 1i32);
     buf[n] = 10u8;
     buf[n + 1i64] = 0u8;
     std_io_print(p);

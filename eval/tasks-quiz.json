@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "builtAt": "2026-11-20T11:57:37.597329",
+  "builtAt": "2026-11-20T13:08:41.097027",
   "note": "由 scripts/eval/gen-quiz-tasks.py 生成 —— 读代码说输出，期望值由**真编译真跑**算出",
   "tasks": [
     {
@@ -3039,7 +3039,7 @@
       "specFile": "",
       "specContent": "",
       "broken": "",
-      "quizCode": "fn f() -> i64 {\n    let mut buf: [u8; 32] = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,\n                              0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,\n                              0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,\n                              0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];\n    let p: *u8 = &buf[0];\n    let n: i64 = fmt_hex_u32(p, 255u32);\n    buf[n] = 10u8;\n    buf[n + 1i64] = 0u8;\n    std_io_print(p);\n    return 0i64;\n}",
+      "quizCode": "fn f() -> i64 {\n    let mut buf: [u8; 32] = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,\n                              0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,\n                              0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,\n                              0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];\n    let p: *u8 = &buf[0];\n    let n: i64 = fmt_hex_u32(p, 255u32, 1i32);\n    buf[n] = 10u8;\n    buf[n + 1i64] = 0u8;\n    std_io_print(p);\n    return 0i64;\n}",
       "quizPreCode": "",
       "helperCode": "import fmt;\nimport io;\n\nfn print_i64(v: i64) {\n    let mut buf: [u8; 32] = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,\n                              0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,\n                              0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,\n                              0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];\n    let p: *u8 = &buf[0];\n    let n = fmt_i64(p, v);\n    buf[n] = 10u8;\n    buf[n + 1i64] = 0u8;\n    std_io_print(p);\n}\n",
       "quizAnswerKind": "print",
